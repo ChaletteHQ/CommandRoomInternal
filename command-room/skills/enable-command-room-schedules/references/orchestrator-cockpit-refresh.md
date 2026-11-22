@@ -74,7 +74,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 
 `set` the answer on `feed/people` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
-**Then the Brief tab (cr1#1310).** Today's morning brief as the Morning Brief run saved it, one read beside the data. It reads that one saved file and nothing else, so the tab shows exactly what the brief posted:
+**Then the morning brief (cr1#1310; behind the Hub's Brief button since cr1#1537, the Brief tab before).** Today's morning brief as the Morning Brief run saved it, one read beside the data. It reads that one saved file and nothing else, so the panel shows exactly what the brief posted:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_brief"}'
@@ -90,7 +90,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 
 `set` the answer on `feed/review` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
-**Then the Done tab (cr1#780).** The recap's sections first, one read beside the data:
+**Then the Record tab (cr1#780; the Done tab until cr1#1537).** The recap's sections first, one read beside the data:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "since_iso": "<seven days before now, ISO>", "workspace_root": "<WS>"}, "name": "friday_wrap_helpers:week_sections"}'
@@ -104,7 +104,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 
 It is pinned by the version rule in `cockpit-shared.md`. Like the projects, it never changes the light.
 
-**Then the Settings tab (cr1#781).** Everything learned and every setting, each with its source, read from the stores the skills read, one read beside the data:
+**Then Settings (cr1#781; behind the Hub's gear since cr1#1537, the Settings tab before).** Everything learned and every setting, each with its source, read from the stores the skills read, one read beside the data:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_settings"}'

@@ -3081,15 +3081,20 @@ def record_workspace_registration(workspace_root, *, workspace_basename: str = "
     `registered_task_ids` is one id.
 
     `{ok, written, registered_taskIds}`; a file that exists but cannot be
-    read is left byte-identical and answers `ok: false, written: false` with
-    `reason: config_unreadable` and the one `line` to say."""
+    read, or whose `registered_taskIds` is not a list, is left byte-identical
+    and answers `ok: false, written: false` with `reason: config_unreadable`
+    and the one `line` to say."""
     from atomic_write import atomic_write_json
-    from workspace_config_io import ConfigUnreadable, read_for_update, refused
+    from workspace_config_io import ConfigUnreadable, ids_unreadable, read_for_update, refused
 
     path = Path(workspace_root) / "_hq" / "workspace_config.json"
     try:
         config = read_for_update(path)
     except ConfigUnreadable:
+        return {"ok": False, "written": False, **refused()}
+    if ids_unreadable(config):
+        # An id list that is not a list is a registered set nobody can read:
+        # writing this run's ids would replace it, so write nothing.
         return {"ok": False, "written": False, **refused()}
     stored = config.get("registered_taskIds")
     ids = [str(t) for t in stored] if isinstance(stored, list) else []

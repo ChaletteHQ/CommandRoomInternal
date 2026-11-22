@@ -94,9 +94,10 @@ listing is not a check of the tasks: only Step 2's planner says whether each
 one is current.
 
 On `show my settings` (cr1#781): say the `url` followed by `#settings` and one
-line, "Everything learned and every setting is on the Hub's Settings tab;
+line, "Everything learned and every setting is behind the gear on the Hub;
 learned rules and the question budget can be changed there." (or the same
-no-Hub line above), and STOP. The tab is filled by `cockpit-refresh`
+no-Hub line above), and STOP. That address opens the gear's panel (cr1#1537;
+Settings was a tab before). The panel is filled by `cockpit-refresh`
 (`cockpit_helpers:feed_settings`); its edits go to the book through
 `cockpit-apply` (`cockpit_helpers:apply_settings_choices`).
 
@@ -232,7 +233,10 @@ published. It also answers
 `calendar_direct` (cr1#723): the calendar connector the page answers
 invitations through, Google Calendar or Microsoft 365, with Accept, Maybe and
 Decline on each meeting row; a seat with no such connector, or Superhuman's
-calendar, which has no respond tool, shows no calendar answers.
+calendar, which has no respond tool, shows no calendar answers. And
+`calendar_actions` (cr1#1539): the calendar connector the page books, moves
+and cancels a meeting through, or null, when the page's three buttons open a
+chat with the request typed in.
 
 **The admin switch (cr1#723).** Before the final line, ask what the client's
 admin must still switch on. On a Microsoft 365 seat call the connector's
@@ -260,6 +264,19 @@ a publish with no title or icon leaves the page under the wrong name and
 icon). On `rebuild`, `update`, or a `set up` with a stored `url`, pass the stored `url` from Step 1 so
 the address does not change; on a first set-up, omit it. Never share, widen
 or publicize the page: it shows the owner's own people and work.
+
+**If the publish is refused and the refusal names `sample` or the chat
+connector (cr1#1538).** Publish once more, the same page, with the answer's
+`capabilities_without` entry for what was named: `sample`, `chat`, or
+`sample_and_chat` when both were. Never type that object by hand either. Then
+add one plain line to Step 6's line: without `sample`, "New mail on the Hub
+is listed but not read for you on this account."; without the chat
+connector, "Chat messages are not listed on the Hub on this account." A
+refusal that names a calendar tool that creates, changes or deletes an event
+(cr1#1539) is published once more with the `calendar_actions` entry (`all_new`
+when `sample` or the chat connector was named too), and the line is "Booking,
+moving and cancelling a meeting are not switched on for the Hub on this
+account." Any other refusal is said as it is and nothing is published.
 
 Then record the address:
 
@@ -321,7 +338,7 @@ summary of what was registered.
 ## What the page does and does not do
 
 - **It never writes the book.** Done, Add context, Confirm, Snooze, Send,
-  Draft, Reopen and a press under To confirm or on the Done tab are saved as choices in the page's database;
+  Draft, Reopen and a press under To confirm or on the Record tab (the Done tab until cr1#1537) are saved as choices in the page's database;
   `cockpit-apply`, the one writer from the page to the book, sends them
   through `cockpit_helpers:apply_commitment_choices`,
   `cockpit_helpers:apply_review_choices`, `cockpit_helpers:apply_week_choices`
@@ -346,7 +363,7 @@ summary of what was registered.
   the owner owes, what is owed to the owner, and what has nobody on it yet,
   oldest first, from the feed the Commitments tab reads. Its presses are
   Commitments' own, through Apply.
-- **The Settings tab ends with the usage guide** (cr1#187): one habit per way
+- **Settings, behind the Hub's gear, ends with the usage guide** (cr1#187): one habit per way
   of working and phrases that route well (`usage_guide:guide`), the same text
   a typed `how do I use this` says (`command-room-coach` answers it).
 - **A late row owed to the owner offers a chase** (cr1#219, owner ruling
@@ -354,12 +371,12 @@ summary of what was registered.
   owes it, through the seat's mail connector, citing where the promise came
   from. Nothing is drafted before the press and nothing is sent. The row holds
   back the press for someone just heard from, inside their usual reply time.
-- **The Settings tab shows what was learned and every setting** (cr1#781,
+- **Settings, behind the Hub's gear, shows what was learned and every setting** (cr1#781,
   owner ruling D3 of 2026-11-04), each with where it came from, read from
   the stores the skills read: never a second copy. Learned rules can be
   reworded, switched off or deleted and the question budget changed on the
   page; each is a choice `cockpit-apply` writes through the store's own
-  writer. Everything else on the tab is read-only in this version.
+  writer. Everything else in the panel is read-only in this version.
 - **The morning brief is a section of it** (cr1#782, owner ruling D2 of
   2026-11-04). The Today tab opens with this morning's view, built from the
   feeds the page already holds: the calendar, the mail that needs a reply,
@@ -374,6 +391,22 @@ summary of what was registered.
   recorded on the page as a row; the book learns it from the next calendar
   read. A seat whose admin has not switched writing on sees one plain line
   naming the admin step.
+- **A meeting is booked, moved or cancelled from the page** (cr1#1539,
+  owner ruling 2026-11-21), on the owner's press or drop only, through the
+  seat's calendar connector (`CALENDAR_ACTIONS` in `cockpit_helpers.py`;
+  `render_page_file` declares its tools). The note to the other people is
+  drafted for his OK and never sent by the page; Apply records each change
+  in the book (`cockpit_helpers:record_calendar_changes`).
+- **The Inbox lists new mail and chat itself while it is open** (cr1#1538,
+  owner ruling 2026-11-21): a list with a reader beside it. Between Inbox
+  runs the page reads the seat's newest mail through one read-only list tool
+  on its mail connector (`MAIL_LIST` in `cockpit_helpers.py`), and direct and
+  group messages through one read-only tool where the seat declares a chat
+  connector (`CHAT_DIRECT`); `render_page_file` declares both, and the
+  capability that lets the page ask Claude for a one-line read of each new
+  line. The personal wall and off-limits are the tasks' own answers, carried
+  on the mail-rules feed (`hub_live.wall`). What it reads this way stays in
+  the open page: none of it is written to the page's data.
 - **It never republishes itself.** A task writes feeds; only this skill
   republishes the page. Go's first press each day fires prep, inbox and
   apply at once and refresh once apply is done, so the four lights fill side

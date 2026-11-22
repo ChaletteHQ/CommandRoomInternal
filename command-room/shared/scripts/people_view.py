@@ -50,6 +50,14 @@ KNOWN_FIELDS = (("relationship", ""), ("relationship_type", ""), ("category", ""
                 ("how_known", ""), ("introduced_by", "introduced by "), ("context", ""))
 DIRECTION_WORDS = {"you_owe": "you owe", "owed_to_you": "they owe you", "other": "involves them",
                    "unowned": "no owner yet", "unconfirmed": "waiting for your yes"}
+#: On every person row, empty or not (cr1#1530). The page's search line joins
+#: role, company and email as text, on every Hub page published so far, and a
+#: published page is replaced only when the owner presses Finish update: a
+#: row without one of them would be found by a search for "undefined".
+ROW_ALWAYS = ("id", "name", "role", "company", "email")
+#: Built for the count beside it and never sent (cr1#1530): the page reads
+#: `n_unlinked`, not the list.
+ROW_NEVER = ("unlinked",)
 
 STARRED_LINE = "Starred. {name} is pinned to Home."
 STARRED_ALREADY_LINE = "{name} is already starred; nothing was written."
@@ -337,6 +345,15 @@ def company_of(p: Dict[str, Any], org_names: Dict[str, str]) -> str:
     return str(p.get("company") or "")[:120]
 
 
+def lean_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """The row as it travels (cr1#1530): who the person is always
+    (`ROW_ALWAYS`), every other field only when it holds something, and
+    never the list of unlinked rows (`ROW_NEVER`). The page reads a missing
+    field as empty, so it shows the same; on a large book the empty fields
+    and that list were a third of the feed. Pure."""
+    return {k: v for k, v in row.items() if k in ROW_ALWAYS or (v and k not in ROW_NEVER)}
+
+
 def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
     """READ. `{generated_at, people: [...], starred: [ids], n_people}`: every
     person on file but the owner, most recently in touch first, each with
@@ -346,10 +363,13 @@ def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
     they are, where they work, how they are known and when they were last in
     touch, and the open list's per-person index for what is open, so the
     tab, the card and the open list count one way. Rows that name a person
-    without being linked to them are listed apart (`unlinked`), never in
+    without being linked to them are counted apart (`n_unlinked`), never in
     `open`. The headline `n_open` counts confirmed rows only; rows waiting
     for the owner's yes are `n_waiting` and `n_listed` is both (the owner's
-    ruling on cr1#1012); `open` lists both."""
+    ruling on cr1#1012); `open` lists both.
+
+    cr1#1530: each row travels lean (`lean_row`): a field that is empty,
+    zero or false is left out, and a reader takes a missing field as empty."""
     import person_cards as pc
 
     root = Path(str(workspace_root))
@@ -421,10 +441,10 @@ def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
         })
     out.sort(key=lambda r: (not r["starred"], -(int(r["last_contact"].replace("-", "")) if r["last_contact"] else 0),
                             r["name"].lower()))
-    return {"generated_at": _iso(_now(now_iso)), "people": out[:PEOPLE_CAP], "n_people": len(out),
+    return {"generated_at": _iso(_now(now_iso)), "people": [lean_row(r) for r in out[:PEOPLE_CAP]], "n_people": len(out),
             "starred": [s for s in stars if s in cards], "errors": errors,
             "counted_from_log": bool(cards_from_log or open_from_log)}
 
 
 __all__ = ["STARS_REL", "VERBS", "load_stars", "starred_ids", "star", "unstar",
-           "apply_choices", "people", "stars_path", "list_offers"]
+           "apply_choices", "people", "stars_path", "list_offers", "lean_row"]

@@ -36,7 +36,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - `_hq/data/events.jsonl` — `type == "meeting"` events with the same attendees (from the org-scoped load) to detect usual cadence and propose a time that matches their 1:1 rhythm if applicable.
 - `_hq/data/events.jsonl` — `type == "interaction"` events with attendees (from the org-scoped load) to seed the agenda's "since last touch" context.
 
-**Conflict boundary:** sole writer of `meeting_scheduled` events. Does NOT write to entities.json people records (that's people-crm's domain).
+**Conflict boundary:** sole writer of `meeting_scheduled` events in chat (a meeting booked on the Hub page is recorded by the Hub's Apply run, `cockpit_helpers:record_calendar_changes`, cr1#1539). Does NOT write to entities.json people records (that's people-crm's domain).
 
 ---
 

@@ -49,6 +49,7 @@
         "reminder_deleted",
         "hub_miss_reported",
         "hub_edit",
+        "meeting_changed",
         "morning_message_claimed",
         "morning_message_sent",
         "morning_message_skipped",

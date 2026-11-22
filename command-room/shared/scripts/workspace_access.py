@@ -192,6 +192,11 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # cr1#1016 slice 2: whether each record an answer names is on file
     # (cr1#785 item 4); reads the log, the register and the rules, writes nothing
     "context_loader:check_named",
+    # cr1#1556: one read call for a plain question about the record. It finds
+    # who and what the question names, pulls the entries, the open promises
+    # and the decisions through the readers above, and says whether that is
+    # enough. Reads the log through the org-scoped reader and writes nothing.
+    "recall_reader:answer_pack",
     # cr1#1016 slice 3: the always-loaded diet's measure and plan; both read
     # the brief and the log and write nothing (the cut is the writer below)
     "claude_md_diet:measure",
@@ -547,6 +552,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "schedule_backend:plan_registration",  # BRIDGE2 - registration planned beside the data: the seat digest vs the declaration (R-WALK-3)
     "schedule_backend:plan_default_cron_moves",  # cr1#967 - a kept chat still at an old shipped default time moves, time only; the owner's own time never
     "schedule_config:scheduled_writer",  # BRIDGE2 - the declaration read where the folder is, so a refusal can name the computer
+    "workspace_config_io:install_state",  # schedule setup Step 0.C - first install, re-run, or a record that cannot be read (never a first install)
     "migration_adjudication:adjudication_status",  # BRIDGE2 - the bridge's Phase 1 adjudication gate, read beside the data (R-WALK-5)
     "maintenance_dispatcher:chats_state",  # CHATSON1 (#98) - M1b asks with the scheduler's rows for EVERY chat on the roster; switch-on only for the ones that read off
     "maintenance_dispatcher:own_chat_state",  # FIRE3B - M1b asks with the scheduler's rows; switch-on only when this chat reads off (F-T2-13)
@@ -745,6 +751,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "cockpit_helpers:apply_mail_choices",  # cr1#1020 - see the writer table row
     "cockpit_helpers:apply_people_choices",  # cr1#1020 - see the writer table row
     "cockpit_helpers:record_page_sends",  # cr1#817 - see the writer table row
+    "cockpit_helpers:record_calendar_changes",  # cr1#1539 - see the writer table row
     "cockpit_helpers:save_config",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:land_registration",  # cr1#734 - see the writer table row
     "cockpit_helpers:log_run_receipt",  # COCKPIT1 (cr1#608) - see the writer table row

@@ -91,6 +91,15 @@ STATUSES per task:
                      are EXPECTED here and stay quiet — change-schedule R1
                      owns that render; first-install tasks missing from the
                      registered set are real breakage.
+  switched_off     — registered, but the app's own record holds it switched
+                     off (`enabled: false`), so it will not run whatever the
+                     receipts say. A problem, never "on schedule": before
+                     this status a chat the app turned off after its last
+                     slot ran read "Everything's running" until it was late.
+                     A chat the owner paused through change-schedule is not
+                     in the enabled set at all and never reaches this (the
+                     Hub's four are counted whatever the config says, and
+                     change-schedule does not pause them).
   platform_declined — the scheduler's own run record says the PLATFORM
                      refused the fire (a cap, a quota, a throttle: the
                      `global_limit` shape this PC's pre-merge store recorded
@@ -194,6 +203,37 @@ NEVER_AUTHORIZED_LINE = (
     "<Chat> is registered but has never reached your workspace — the folder "
     "request is still waiting for one Allow on your computer."
 )
+
+
+#: A registered chat the app holds switched off: the ONE problem sentence.
+#: The pause clause is added only where change-schedule could honour it.
+SWITCHED_OFF_LINE = ("<Chat> is switched off in the app, so it will not run. "
+                     "Turn it back on in the app's scheduled list.")
+SWITCHED_OFF_PAUSE_CLAUSE = " If you meant to stop it, say \"pause <chat>\" instead."
+
+
+def switched_off_line(display_name: str, *, can_pause: bool = False) -> str:
+    """`SWITCHED_OFF_LINE` with the chat's name, plus the pause clause when
+    this seat's change-schedule would take the pause."""
+    name = str(display_name or "").strip() or "This chat"
+    line = SWITCHED_OFF_LINE.replace("<Chat>", name)
+    if can_pause:
+        line += SWITCHED_OFF_PAUSE_CLAUSE.replace("<chat>", name.lower())
+    return line
+
+
+def _pause_offer_allowed(r: dict, *, tools=None, backend=None,
+                         workspace_root=None) -> bool:
+    """May the switched-off sentence offer "pause <chat>"? Only for a chat
+    change-schedule pauses (a schedules row that is neither silent nor one of
+    the Hub's four, which the Hub restores and change-schedule does not list),
+    and only where a scheduler this session reaches would take it
+    (`_vantage_gate_allowed`: unknown tools answer the conservative way)."""
+    tid = r.get("task")
+    if (tid not in DEFAULT_SCHEDULES or tid in SILENT_TASKS
+            or r.get("silent") or r.get("hub")):
+        return False
+    return _vantage_gate_allowed(backend, tools, workspace_root)
 
 
 def never_authorized_line(display_name: str) -> str:
@@ -1706,6 +1746,15 @@ def check_tasks(
         if not is_registered:
             status = "not_registered"
             declined = None
+        elif (rec is not None and rec.get("enabled") is False
+              and (records_by_id.get(tid) is rec or served_by is not None)):
+            # Only this chat's own record, or the predecessor it is still
+            # served by: a retired predecessor's switch is not this chat's.
+            # The app's own switch is off: no slot will be served, so the
+            # receipts cannot make this "ok" (or "late" later, or a first
+            # run that is merely waiting).
+            status = "switched_off"
+            declined = None
         elif first_run_window:
             status = "never_fired"
         elif declined is not None:
@@ -2531,7 +2580,8 @@ def _brief_receipt_problems(workspace_root, reports, *, now=None):
     brief = next((r for r in reports if r["task"] == "morning-brief"), None)
     if brief is None:
         return [], []
-    if (brief["status"] in ("late", "never_authorized", "not_registered")
+    if (brief["status"] in ("late", "never_authorized", "not_registered",
+                            "switched_off")
             or brief.get("receipt_gap")):
         return [], []
     # This module's `now` is MACHINE-LOCAL NAIVE (the clock cron evaluates in);
@@ -3344,7 +3394,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
 
     Buckets (priority order — first match wins):
       problems          — late / never_authorized / platform_declined /
-                          missing first-install / receipt_gap: something
+                          switched_off / missing first-install /
+                          receipt_gap: something
                           needs the user (or, for a decline, needs saying).
       caught_up         — newest fire served its slot late (dated info line).
       first_run_pending — registered, zero receipts, inside the grace window.
@@ -3441,7 +3492,7 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
                 and not r.get("hub")):
             continue  # later-add: expected, uncounted; change-schedule renders it
         if r["status"] in ("late", "never_authorized", "not_registered",
-                           "platform_declined") or r["receipt_gap"]:
+                           "platform_declined", "switched_off") or r["receipt_gap"]:
             problems.append(r)
         elif r["caught_up"]:
             caught_up.append(r)
@@ -3451,7 +3502,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
             on_schedule.append(r)
 
     lines = plain_english_lines(reports, binding=binding,
-                                workspace_path=workspace_root)
+                                workspace_path=workspace_root,
+                                tools=tools, backend=backend)
     info_lines = [_caught_up_line(r, now=now) for r in caught_up]
     info_lines += [_first_run_line(r, now=now) for r in first_run]
     # T2 FIRE1 MUST 3: a skill-class job the merged fire left due is waiting,
@@ -3791,7 +3843,7 @@ def normalize_prompt_stamp(prompt: str) -> str:
 
 def plain_english_lines(reports, *, binding=None, include_ok: bool = False,
                         workspace_path=None, include_stamps: bool = False,
-                        now=None) -> list[str]:
+                        now=None, tools=None, backend=None) -> list[str]:
     """One sentence per problem — the ONLY watchdog voice any surface uses.
 
     Facts + the one action, never a cause the watchdog can't know (R3 —
@@ -3819,9 +3871,11 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False,
     if include_stamps:
         return (plain_english_lines(reports, binding=binding,
                                     include_ok=include_ok,
-                                    workspace_path=workspace_path)
+                                    workspace_path=workspace_path,
+                                    tools=tools, backend=backend)
                 + task_stamp_lines(reports, now=now))
     lines: list[str] = []
+    backend_arg = backend
     backend = seat_backend(workspace_path)
     if binding:
         lines.append(folder_renamed_line(binding['stored_basename'],
@@ -3839,7 +3893,12 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False,
                 stamp_phrase = " " + _human_time(_dt.datetime.fromisoformat(r["last_run_at"]))
             except ValueError:
                 stamp_phrase = ""
-        if r["status"] == "platform_declined":
+        if r["status"] == "switched_off":
+            lines.append(switched_off_line(
+                name, can_pause=_pause_offer_allowed(
+                    r, tools=tools, backend=backend_arg or backend,
+                    workspace_root=workspace_path)))
+        elif r["status"] == "platform_declined":
             # R-M1-6. Facts + the one action, and the action is NOT a repair:
             # the limit is the platform's, it clears by itself, and the only
             # thing the customer can do is ask for the work now. Naming the
@@ -3953,6 +4012,8 @@ __all__ = [
     "read_workspace_config",
     "NEVER_AUTHORIZED_LINE",
     "never_authorized_line",
+    "SWITCHED_OFF_LINE",
+    "switched_off_line",
     "seat_backend",
     # TRUTH1 (SPEC_NIGHTM2_LANES §3) — the post-merge sentences and the
     # states that earn them. `TRUTH_LINE` is the name HEAL1 imports.

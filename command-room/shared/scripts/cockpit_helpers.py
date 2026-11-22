@@ -5,12 +5,14 @@ the page saved, and how a saved choice reaches the book.
 WHAT THE COCKPIT IS
 -------------------
 
-One private artifact page the owner opens each morning. Nine tabs, option D's
-List view (cr1#1013), in two rows since cr1#1285: Today, Brief, Week, Settings
-over Inbox, Commitments, Priorities, Work streams, People (`HUB_TABS`; Brief is
-the morning brief as written, cr1#1310; Overdue and Review are the Late and To
-confirm filters inside Commitments since cr1#946 and cr1#1286), one Go button,
-one light per leg. The page
+One private artifact page the owner opens each morning. Six tabs in one row
+since cr1#1537: Today, Inbox, Week, People, Work, Record (`HUB_TABS`). Work
+holds five views since cr1#1540: Triage (opened first), Commitments, Priorities,
+Work streams and Updates (`HUB_WORK_VIEWS`);
+Record is the Done tab that came before it; the morning brief as written
+(cr1#1310) opens from the Brief button and Settings from the gear; Overdue and
+Review are the Late and To confirm filters inside Commitments since cr1#946
+and cr1#1286. One Go button, behind the status line, one light per leg. The page
 keeps its own small database on claude.ai: the feeds a run writes for it, the
 status line per leg, and the choices the owner presses. Nothing on the page
 writes the book. A run of the `cockpit-apply` task reads the choices back and
@@ -145,7 +147,10 @@ COMMITMENT_VERBS = frozenset({"done", "drop", "context", "confirm", "snooze", "r
                               # cr1#1289: the presses on a "No home yet" row
                               "assign", "notwork", "newstream",
                               # cr1#1341: Undo after Apply of Assign to / New work stream
-                              "unassign"})
+                              "unassign",
+                              # cr1#1540: a pile's press on an item owed to the owner
+                              # that went quiet (it rests, still open), and its Undo
+                              "park", "unpark"})
 INBOX_VERBS = frozenset({"send", "draft", "snooze"})
 #: cr1#1020: the inbox presses the owner's mail rules take (`mail_rules`),
 #: applied in code by `apply_mail_choices`, never through a mail handler:
@@ -200,6 +205,25 @@ NEW_STREAM_UNSURE_LINE = ("The work stream {name} could not be set up, and part 
 #: A heard line already tracked when a later step refused (review of part two).
 HEARD_TRACKED_ONLY_LINE = "The line is now tracked, but it was not given a home; it waits under No home yet."
 NOT_WORK_FAILED_LINE = "That one could not be set aside; nothing was written."
+#: cr1#1540: a pile cleared in one press on the Work tab. Each item is its own
+#: choice row with the pile's existing verb; the Apply run asks the pile's
+#: rule again before it writes a row (`hub_work.pile_sets`).
+PARK_REASON = "Parked from the Command Room Hub"
+PARK_EVIDENCE_LINE = "Parked: still open, off your working list."
+PILE_VERB_LINE = "That press does not belong to a pile on your Work tab; nothing was written."
+PILE_UNREADABLE_LINE = "The pile could not be checked just now, so nothing was written. Press Go, then try again."
+PILE_LEFT_LINE = "That one is no longer in that pile, so it was left as it is; nothing was written."
+PILE_DAY_LINE = "That day has passed, so it was left as it is; nothing was written."
+UNPARK_REASON = "Un-parked on the Command Room Hub"
+UNPARK_LINE = "Back on your working list."
+UNPARK_NOT_HUB_LINE = "That one was not parked from the Hub, so it was left as it is; nothing was written."
+UNPARK_ALREADY_LINE = "That one is not parked any more; nothing was written."
+#: cr1#1540: an Undo of a pile's close or park names the write it takes back.
+#: When the item was closed or parked again since, by anyone, that Undo is
+#: not for what stands now, and writes nothing.
+BACK_MOVED_LINE = "That one was changed again after the press this Undo is for, so it was left as it is; nothing was written."
+PRESSED_BEFORE_UNPARK_LINE = ("You un-parked this item after that press, so it was not parked again; "
+                              "press it again if you meant it.")
 #: cr1#1341: Undo after Apply for Assign to and New work stream. The Undo is
 #: its own `unassign` choice naming the press it takes back.
 UNASSIGN_REASON = "Taken back on the Command Room Hub"
@@ -590,17 +614,66 @@ def connector_display_name(server) -> str:
 #: thread and `set_recipients` then sets its To and Cc to exactly the people
 #: the owner saw (Bcc cleared) before `send`; its plain reply tool answers the
 #: sender alone.
+#: `list` (cr1#1538) lists the newest inbox mail while the page is open, read
+#: only; its arguments per provider are in `MAIL_LIST`.
 MAIL_DIRECT = {
     "superhuman": {"server": "Superhuman Mail", "read": "get_thread",
                    "draft": "create_or_update_draft", "send": "send_draft", "thread": "get_thread",
-                   "new_draft": "create_or_update_draft"},
+                   "new_draft": "create_or_update_draft", "list": "list_threads"},
     "gmail": {"server": "Gmail", "read": "get_thread", "draft": None, "send": "reply",
-              "thread": "get_thread", "new_draft": "create_draft"},
+              "thread": "get_thread", "new_draft": "create_draft", "list": "search_threads"},
     "outlook": {"server": "Microsoft 365", "read": "outlook_email_search",
                 "draft": "outlook_create_reply_draft", "send": "outlook_send_draft",
                 "thread": "read_resource", "new_draft": "outlook_create_draft",
-                "reply_all_draft": "outlook_create_reply_all_draft", "set_recipients": "outlook_update_draft"},
+                "reply_all_draft": "outlook_create_reply_all_draft", "set_recipients": "outlook_update_draft",
+                "list": "outlook_email_search"},
 }
+#: Live arrivals (cr1#1538, owner ruling 2026-11-21): how the page lists the
+#: newest inbox mail on each provider, read only. `args` is the first call's
+#: input; `account_key` names the argument that picks one of several linked
+#: mailboxes (None: the connector fronts one mailbox, so a fetch plan that
+#: names a mailbox cannot be kept and the page lists nothing); `cursor_in` is
+#: the argument a later page is asked with and `cursor_out` the answer's key
+#: that carries it (`offset_in` / `offset_out`: the same by number).
+#: `args_verified` says the argument names were read from the connector's own
+#: tool schema (Superhuman and Microsoft 365 were, on 2026-11-21); Gmail's
+#: are the names this repo's inbox run uses and still need a seat to confirm
+#: them. `answer_verified` is False everywhere: no answer was read from a
+#: real connector (that would pull real mail into a build), so the page reads
+#: each answer under every key it is known or described to use, and shows a
+#: plain sentence when it can read none.
+MAIL_LIST = {
+    "superhuman": {"args": {"labels": ["INBOX"], "limit": 50, "sort": "newest"},
+                   "account_key": "acting_email", "cursor_in": "cursor", "cursor_out": "next_cursor",
+                   "args_verified": True, "answer_verified": False},
+    "gmail": {"args": {"query": "in:inbox", "pageSize": 50},
+              "account_key": None, "cursor_in": "pageToken", "cursor_out": "nextPageToken",
+              "args_verified": False, "answer_verified": False},
+    "outlook": {"args": {"order": "newest", "limit": 25},
+                "account_key": None, "cursor_in": "cursor", "cursor_out": "nextCursor",
+                "offset_in": "offset", "offset_out": "nextOffset",
+                "args_verified": True, "answer_verified": False},
+}
+#: Chat messages on the Inbox (cr1#1538): one read-only tool per chat
+#: provider, for direct and group messages of the last days. `after_key` is
+#: the argument that bounds the read in time and `after_kind` its form
+#: (`filter_date`: an `after:YYYY-MM-DD` search modifier inside that argument;
+#: `iso`: an ISO date-time). Argument names were read from each connector's
+#: own tool schema on 2026-11-21; no answer was read, as for mail. Nothing is
+#: sent or written on a chat connector from the page.
+CHAT_DIRECT = {
+    "slack": {"server": "Slack", "list": "slack_search_public_and_private",
+              "args": {"channel_types": "im,mpim", "sort": "timestamp", "limit": 20,
+                       "include_context": False},
+              "after_key": "filters", "after_kind": "filter_date", "cursor_in": "cursor",
+              "args_verified": True, "answer_verified": False},
+    "ms365_teams": {"server": "Microsoft 365", "list": "chat_message_search",
+                    "args": {"query": "*", "limit": 25},
+                    "after_key": "afterDateTime", "after_kind": "iso", "offset_in": "offset",
+                    "args_verified": True, "answer_verified": False},
+}
+#: How far back the page asks for chat messages.
+CHAT_DAYS = 2
 _UUIDISH_RE = re.compile(r"^[0-9a-f]{8}-", re.I)
 
 #: Calendar answers from the page (cr1#723, owner ruling 2026-11-04): Accept,
@@ -638,6 +711,164 @@ MAIL_ADMIN_LINE = {
 #: press is the check.
 MS_SCOPES = {"send": "Mail.Send", "calendar": "Calendars.ReadWrite"}
 CALENDAR_ANSWERS = ("accept", "decline", "tentative")
+
+#: Booking, moving and cancelling a meeting from the page (cr1#1539, owner
+#: ruling 2026-11-21: "nothing changes on a calendar without my press"). One
+#: map per calendar provider, beside `CALENDAR_DIRECT`: the tools the page
+#: calls on the owner's press or drop, and the name of each argument.
+#:   `time`   how the tool takes a time: `rfc3339` (a date-time with its offset
+#:            plus an IANA zone argument) or `wall` (`{dateTime, timeZone}`).
+#:   `free`   the read that finds free time for several people; `create`,
+#:            `move`, `cancel` the three changes. `cancel: None` means the
+#:            connector has no tool that deletes or cancels an event, so the
+#:            page offers no Cancel and no Undo of a booking there.
+#:   `notify` what the provider itself sends the people invited on each
+#:            change: `off` (the call asks it to send nothing), `always` (the
+#:            tool's own description says it sends, and no argument turns it
+#:            off) or `unknown` (the tool has no argument for it and does not
+#:            say). The page says the line for it BEFORE the press.
+#:   `args_verified` on each tool: its argument names were read from the
+#:            connector's own tool schema (Superhuman and Microsoft 365 were,
+#:            on 2026-11-21). Google Calendar's could not be read in the
+#:            build, so they are this repo's expected spelling, marked False,
+#:            and `calendar_actions` switches nothing on for a tool marked
+#:            False: an unverified contract never changes a calendar.
+#:            `answer_verified` is False everywhere: no answer was read from
+#:            a real connector, so the page reads each answer under every key
+#:            it is described to use, and says so when it can read none.
+#: No connector here can bring a cancelled event back, so a cancel is never
+#: offered with an Undo: the second press says so before the owner confirms.
+CALENDAR_ACTIONS = {
+    "superhuman": {
+        "server": "Superhuman Mail", "time": "rfc3339",
+        "free": {"tool": "get_availability", "people_key": "participants", "from_key": "start_date",
+                 "to_key": "end_date", "minutes_key": "duration_minutes", "tz_key": "timezone",
+                 "bounds": "rfc3339", "args": {"working_hours_only": True},
+                 "args_verified": True, "answer_verified": False},
+        "create": {"tool": "create_or_update_event", "title_key": "title", "start_key": "start",
+                   "end_key": "end", "tz_key": "timezone", "people_key": "attendees",
+                   "people_form": "emails", "video_key": "conference",
+                   "args_verified": True, "answer_verified": False},
+        # the tool's schema requires the title on a change too
+        "move": {"tool": "create_or_update_event", "event_key": "event_id", "title_key": "title",
+                 "start_key": "start", "end_key": "end", "tz_key": "timezone",
+                 "args_verified": True, "answer_verified": False},
+        "cancel": None,
+        "notify": {"create": "unknown", "move": "unknown"},
+    },
+    "outlook_calendar": {
+        "server": "Microsoft 365", "time": "wall",
+        "free": {"tool": "outlook_find_available_time", "people_key": "participants",
+                 "from_key": "afterDateTime", "to_key": "beforeDateTime", "minutes_key": "durationMinutes",
+                 "bounds": "utc", "args": {"maxCandidates": 10},
+                 "args_verified": True, "answer_verified": False},
+        "create": {"tool": "outlook_create_event", "title_key": "subject", "start_key": "start",
+                   "end_key": "end", "people_key": "attendees", "people_form": "objects",
+                   "video_key": "isOnlineMeeting", "args_verified": True, "answer_verified": False},
+        "move": {"tool": "outlook_update_event", "event_key": "eventId", "start_key": "start",
+                 "end_key": "end", "args_verified": True, "answer_verified": False},
+        "cancel": {"tool": "outlook_delete_event", "event_key": "eventId",
+                   "args_verified": True, "answer_verified": False},
+        "notify": {"create": "always", "move": "always", "cancel": "always"},
+    },
+    "google_calendar": {
+        "server": "Google Calendar", "time": "rfc3339",
+        "free": {"tool": "suggest_time", "people_key": "attendeeEmails", "from_key": "startTime",
+                 "to_key": "endTime", "minutes_key": "durationMinutes", "tz_key": "timeZone",
+                 "bounds": "rfc3339", "args": {},
+                 "args_verified": False, "answer_verified": False},
+        "create": {"tool": "create_event", "title_key": "summary", "start_key": "startTime",
+                   "end_key": "endTime", "tz_key": "timeZone", "people_key": "attendeeEmails",
+                   "people_form": "emails", "video_key": "addGoogleMeetUrl",
+                   "extra": {"notificationLevel": "NONE"},
+                   "args_verified": False, "answer_verified": False},
+        "move": {"tool": "update_event", "event_key": "eventId", "start_key": "startTime",
+                 "end_key": "endTime", "tz_key": "timeZone", "extra": {"notificationLevel": "NONE"},
+                 "args_verified": False, "answer_verified": False},
+        "cancel": {"tool": "delete_event", "event_key": "eventId", "extra": {"notificationLevel": "NONE"},
+                   "args_verified": False, "answer_verified": False},
+        "notify": {"create": "off", "move": "off", "cancel": "off"},
+    },
+}
+#: What the page says, before the press, about the provider's own notice.
+CALENDAR_NOTIFY_LINES = {
+    "create": {"always": "{server} sends its own invitation to the people you add.",
+               "unknown": "{server} may send its own invitation to the people you add.",
+               "off": "{server} is asked to send the people you add nothing."},
+    "move": {"always": "{server} sends its own update to the people invited when a meeting moves.",
+             "unknown": "{server} may send its own update to the people invited when a meeting moves.",
+             "off": "{server} is asked to send the people invited nothing when a meeting moves."},
+    "cancel": {"always": "{server} sends its own cancellation to the people invited, and that cannot be unsent.",
+               "unknown": "{server} may send its own cancellation to the people invited.",
+               "off": "{server} is asked to send the people invited nothing."},
+}
+CALENDAR_CHANGES = ("create", "move", "cancel")
+#: Said where the seat's calendar connector has no tool that cancels.
+CALENDAR_NO_CANCEL_LINE = "Cancelling a meeting is done in {server} itself."
+#: Said on every cancel before the confirming press: no connector restores one.
+CALENDAR_NO_RESTORE_LINE = "A cancelled meeting cannot be brought back from the Hub."
+#: Said on a booking where the connector cannot remove an event again.
+CALENDAR_NO_UNBOOK_LINE = "A meeting booked here cannot be taken back from the Hub; you would cancel it in {server} itself."
+
+
+def calendar_actions(workspace_root=None, *, include_unverified: bool = False) -> Optional[Dict[str, Any]]:
+    """The page's plan for booking, moving and cancelling a meeting on this
+    seat (cr1#1539): `{provider, server, time, free, create, move, cancel,
+    notify, notify_lines, no_cancel_line, no_restore_line, no_unbook_line,
+    tools, unverified}`, or None when the page may change nothing itself
+    (its three buttons then open a new chat with the request typed in): no
+    calendar connector declared, a provider with no map, a calendar connector
+    the personal wall closes (one marked personal is never called, and a wall
+    that cannot be read closes it too), or no change tool whose argument
+    names were read from the connector. A tool marked `args_verified: False`
+    is left out (named in `unverified`) unless `include_unverified`, which
+    only a suite passes."""
+    if workspace_root is None:
+        return None
+    try:
+        import connector_config
+        row = connector_config.declared_backend("calendar", workspace_root)
+    except Exception:  # noqa: BLE001 - nothing declared is a supported state
+        row = None
+    if not isinstance(row, dict):
+        return None
+    provider = str(row.get("provider") or "").strip().lower()
+    plan = CALENDAR_ACTIONS.get(provider)
+    if not plan:
+        return None
+    try:
+        import connector_reads
+        cwall = connector_reads.chat_wall(workspace_root)
+        if not cwall.get("readable") or any(str(c.get("category") or "") == "calendar"
+                                            for c in cwall.get("connectors") or []):
+            return None
+    except Exception:  # noqa: BLE001 - fail closed
+        return None
+    sid = str(row.get("server_id") or "").strip()
+    server = connector_display_name(sid) if sid and not _UUIDISH_RE.match(sid) else plan["server"]
+    out: Dict[str, Any] = {"provider": provider, "server": server, "time": plan["time"]}
+    tools: List[str] = []
+    unverified: List[str] = []
+    for key in ("free",) + CALENDAR_CHANGES:
+        spec = plan.get(key)
+        if isinstance(spec, dict) and not (spec.get("args_verified") is True or include_unverified):
+            unverified.append(key)
+            spec = None
+        out[key] = json.loads(json.dumps(spec)) if isinstance(spec, dict) else None
+        if out[key] and out[key]["tool"] not in tools:
+            tools.append(out[key]["tool"])
+    if not (out["create"] or out["move"] or out["cancel"]):
+        return None
+    notify = {k: v for k, v in (plan.get("notify") or {}).items() if out.get(k)}
+    out["notify"] = notify
+    out["notify_lines"] = {k: CALENDAR_NOTIFY_LINES[k][v].format(server=server)
+                           for k, v in notify.items() if v in CALENDAR_NOTIFY_LINES.get(k, {})}
+    out["no_cancel_line"] = CALENDAR_NO_CANCEL_LINE.format(server=server)
+    out["no_restore_line"] = CALENDAR_NO_RESTORE_LINE
+    out["no_unbook_line"] = CALENDAR_NO_UNBOOK_LINE.format(server=server)
+    out["tools"] = tools
+    out["unverified"] = unverified
+    return out
 
 
 def calendar_direct(workspace_root=None) -> Optional[Dict[str, Any]]:
@@ -720,7 +951,7 @@ def mail_direct(workspace_root=None) -> Optional[Dict[str, Any]]:
     server = connector_display_name(sid) if sid and not _UUIDISH_RE.match(sid) else plan["server"]
     tools: List[str] = []
     for t in (plan["read"], plan["draft"], plan["send"], plan.get("thread"), plan.get("new_draft"),
-              plan.get("reply_all_draft"), plan.get("set_recipients")):
+              plan.get("reply_all_draft"), plan.get("set_recipients"), plan.get("list")):
         if t and t not in tools:
             tools.append(t)
     out = {"provider": provider, "server": server, "read": plan["read"],
@@ -729,11 +960,51 @@ def mail_direct(workspace_root=None) -> Optional[Dict[str, Any]]:
     if plan.get("reply_all_draft") and plan.get("set_recipients"):
         out["reply_all_draft"] = plan["reply_all_draft"]
         out["set_recipients"] = plan["set_recipients"]
+    # cr1#1538: the read-only list tool for live arrivals, with its contract.
+    if plan.get("list") and provider in MAIL_LIST:
+        out["list"] = plan["list"]
+        out["list_plan"] = json.loads(json.dumps(MAIL_LIST[provider]))
+    return out
+
+
+def chat_direct(workspace_root=None) -> Optional[Dict[str, Any]]:
+    """The page's chat plan for this seat (cr1#1538): `{provider, server,
+    list, args, after_key, after_kind, days, tools, ...}`, or None when the
+    seat declares no chat connector, one the page has no tool for, or one the
+    personal wall closes (`hub_live.wall`: a chat connector marked personal is
+    never called, and a wall that cannot be read closes it too). None shows
+    no chat lines and no error."""
+    if workspace_root is None:
+        return None
+    try:
+        import connector_config
+        row = connector_config.declared_backend("chat", workspace_root)
+    except Exception:  # noqa: BLE001 - nothing declared is a supported state
+        row = None
+    if not isinstance(row, dict):
+        return None
+    provider = str(row.get("provider") or "").strip().lower()
+    plan = CHAT_DIRECT.get(provider)
+    if not plan:
+        return None
+    try:
+        import hub_live
+        if not hub_live.wall(workspace_root).get("chat_ok"):
+            return None
+    except Exception:  # noqa: BLE001 - fail closed
+        return None
+    sid = str(row.get("server_id") or "").strip()
+    server = connector_display_name(sid) if sid and not _UUIDISH_RE.match(sid) else plan["server"]
+    out = json.loads(json.dumps(plan))
+    out.update({"provider": provider, "server": server, "days": CHAT_DAYS, "tools": [plan["list"]]})
     return out
 
 
 def capabilities(server: str, mail: Optional[Dict[str, Any]] = None,
-                 calendar: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 calendar: Optional[Dict[str, Any]] = None,
+                 chat: Optional[Dict[str, Any]] = None, *,
+                 ask: bool = True, chat_server: bool = True,
+                 calendar_actions: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The runtime capabilities the published page declares. The database
     rule: everything in it, feeds, status, config and choices, is readable
     and writable by the artifact's owner alone (plan item 2: the page shows
@@ -741,7 +1012,18 @@ def capabilities(server: str, mail: Optional[Dict[str, Any]] = None,
     reads its data). The connector is named by its display name whatever
     spelling the caller passed (`connector_display_name`). `mail`, from
     `mail_direct`, adds the seat's mail connector with the tools the page
-    sends through (cr1#710)."""
+    sends through (cr1#710). `chat`, from `chat_direct`, adds the seat's chat
+    connector with its one read-only tool (cr1#1538). `sample` lets the page
+    ask Claude for the one-line read of a live arrival (cr1#1538): the viewer
+    is asked on the first read, and a view without it shows "not read yet".
+    `ask=False` leaves `sample` out and `chat_server=False` leaves the chat
+    connector out, for an account whose publish refuses one of them
+    (`render_page_file`'s `capabilities_without`); the page copes with
+    either being absent. `calendar_actions`, from the function of that name,
+    adds the calendar tools the page books, moves and cancels a meeting
+    with (cr1#1539), on the calendar connector's own entry; left out (None),
+    the declaration is what it was before, and the page's three buttons say
+    they are not allowed yet."""
     server = connector_display_name(server)
     servers = [{"server": str(server),
                 "tools": ["list_triggers", "update_trigger", "fire_trigger"]}]
@@ -756,7 +1038,25 @@ def capabilities(server: str, mail: Optional[Dict[str, Any]] = None,
                 break
         else:
             servers.append({"server": str(calendar["server"]), "tools": list(calendar["tools"])})
-    return {
+    # cr1#1539: the tools that book, move and cancel a meeting, on the same
+    # connector as the answers (or its own entry on a seat with no answers).
+    if isinstance(calendar_actions, dict) and calendar_actions.get("server") and calendar_actions.get("tools"):
+        for s in servers:
+            if s["server"] == str(calendar_actions["server"]):
+                s["tools"] = list(s["tools"]) + [t for t in calendar_actions["tools"] if t not in s["tools"]]
+                break
+        else:
+            servers.append({"server": str(calendar_actions["server"]), "tools": list(calendar_actions["tools"])})
+    # cr1#1538: the chat connector, with its one read-only tool. Teams rides
+    # the Microsoft 365 connector a seat's mail may already declare.
+    if chat_server and isinstance(chat, dict) and chat.get("server") and chat.get("tools"):
+        for s in servers:
+            if s["server"] == str(chat["server"]):
+                s["tools"] = list(s["tools"]) + [t for t in chat["tools"] if t not in s["tools"]]
+                break
+        else:
+            servers.append({"server": str(chat["server"]), "tools": list(chat["tools"])})
+    out: Dict[str, Any] = {
         "db": {
             "rules": [
                 {"path": "", "read": "owner", "write": "owner"},
@@ -765,6 +1065,9 @@ def capabilities(server: str, mail: Optional[Dict[str, Any]] = None,
         "user": {},
         "mcp": {"servers": servers},
     }
+    if ask:
+        out["sample"] = {}
+    return out
 
 
 def _script_safe(js: str) -> str:
@@ -780,7 +1083,9 @@ def render_page(template_text: str, *, server: str, basename: str,
                 plugin_version: str, published_at: Optional[str] = None,
                 mail: Optional[Dict[str, Any]] = None,
                 calendar: Optional[Dict[str, Any]] = None,
-                runtime_version: Optional[str] = None) -> str:
+                runtime_version: Optional[str] = None,
+                chat: Optional[Dict[str, Any]] = None,
+                calendar_actions: Optional[Dict[str, Any]] = None) -> str:
     """Fill the template mechanically and refuse a page with a placeholder
     left over or a leak in its visible text. Nothing here is typed by hand:
     cockpit-setup calls this and publishes what it returns. The footer shows
@@ -802,6 +1107,13 @@ def render_page(template_text: str, *, server: str, basename: str,
     # The calendar plan rides as JSON too (cr1#723); null shows no calendar answers.
     cal_js = _script_safe(json.dumps(calendar if isinstance(calendar, dict) else None))
     template_text = template_text.replace("{{CALENDAR_DIRECT_JSON}}", cal_js)
+    # The chat plan rides as JSON too (cr1#1538); null shows no chat lines.
+    chat_js = _script_safe(json.dumps(chat if isinstance(chat, dict) else None))
+    template_text = template_text.replace("{{CHAT_DIRECT_JSON}}", chat_js)
+    # The plan for booking, moving and cancelling rides as JSON too
+    # (cr1#1539); null makes the three buttons open a chat.
+    act_js = _script_safe(json.dumps(calendar_actions if isinstance(calendar_actions, dict) else None))
+    template_text = template_text.replace("{{CALENDAR_ACTIONS_JSON}}", act_js)
     for key in ("{{TRIGGER_SERVER}}", "{{WORKSPACE_BASENAME}}"):
         if not fills[key]:
             raise ValueError(f"render_page: {key} is required")
@@ -862,27 +1174,46 @@ def render_page_file(workspace_root=None, *, server: str = "Claude Code Remote",
     runtime_version = (runtime_version or os.environ.get("CR_RUNTIME_VERSION")
                        or plugin_version_here(plugin_root) or None)
     calendar = calendar_direct(workspace_root)
+    chat = chat_direct(workspace_root)
+    cal_actions = calendar_actions(workspace_root)
     # cr1#925: the stamp is fixed here, so the chat's own render of the
     # recipe is byte-for-byte this page.
     published_at = published_at or _iso(_now())
     html = render_page(path.read_text(encoding="utf-8"), server=server,
                        basename=basename, plugin_version=plugin_version,
                        published_at=published_at, mail=mail, calendar=calendar,
-                       runtime_version=runtime_version)
+                       runtime_version=runtime_version, chat=chat, calendar_actions=cal_actions)
     out = {"ok": True, "html": html, "bytes_len": len(html.encode("utf-8")),
             "sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
-            "capabilities": capabilities(server, mail, calendar), "title": "Command Room Hub",
+            "capabilities": capabilities(server, mail, calendar, chat, calendar_actions=cal_actions),
+            "title": "Command Room Hub",
             "mail_direct": (mail or {}).get("provider"), "plugin_version": plugin_version,
             "runtime_version": runtime_version,
             "calendar_direct": (calendar or {}).get("provider"),
             "calendar_verified": (calendar or {}).get("verified"),
+            "chat_direct": (chat or {}).get("provider"),
+            "calendar_actions": (cal_actions or {}).get("provider"),
+            # cr1#1538: the same declaration with one new part left out, for a
+            # publish that is refused naming it. The page is the same page.
+            # cr1#1539: `calendar_actions` leaves out the tools that book, move
+            # and cancel (the page's three buttons then say they are not
+            # allowed yet); `all_new` leaves out every part added since
+            # cr1#1537, which is the declaration a seat already allowed.
+            "capabilities_without": {
+                "sample": capabilities(server, mail, calendar, chat, ask=False, calendar_actions=cal_actions),
+                "chat": capabilities(server, mail, calendar, chat, chat_server=False, calendar_actions=cal_actions),
+                "sample_and_chat": capabilities(server, mail, calendar, chat, ask=False, chat_server=False,
+                                                calendar_actions=cal_actions),
+                "calendar_actions": capabilities(server, mail, calendar, chat),
+                "all_new": capabilities(server, mail, calendar, chat, ask=False, chat_server=False)},
             "template": str(TEMPLATE_REL).replace("\\", "/")}
     if recipe:
         out.pop("html")
         out["recipe"] = {"server": server, "basename": basename,
                          "plugin_version": plugin_version,
                          "published_at": published_at, "mail": mail,
-                         "calendar": calendar, "runtime_version": runtime_version}
+                         "calendar": calendar, "runtime_version": runtime_version,
+                         "chat": chat, "calendar_actions": cal_actions}
     return out
 
 
@@ -913,7 +1244,8 @@ def render_from_recipe(recipe: Dict[str, Any], *, expect_sha256: Optional[str] =
                        plugin_version=str(recipe.get("plugin_version") or ""),
                        published_at=recipe.get("published_at"),
                        mail=recipe.get("mail"), calendar=recipe.get("calendar"),
-                       runtime_version=recipe.get("runtime_version"))
+                       runtime_version=recipe.get("runtime_version"),
+                       chat=recipe.get("chat"), calendar_actions=recipe.get("calendar_actions"))
     raw = html.encode("utf-8")
     sha = hashlib.sha256(raw).hexdigest()
     if expect_sha256 and sha != str(expect_sha256).strip().lower():
@@ -1546,6 +1878,185 @@ WEEK_AWAY_RE = re.compile(
     r"days off|pto|annual leave|leave|off sick|sick day|away|travel(l)?ing|on leave)\b")
 
 
+# ---------------------------------------------------------------------------
+# what a meeting row carries for the page's calendar actions (cr1#1539)
+# ---------------------------------------------------------------------------
+
+#: The owner's answers to an invitation, as a row may carry them.
+MEETING_ANSWERS = ("accepted", "declined", "tentative", "none")
+#: The most people named on one meeting row, and the most a note is drafted to.
+MEETING_PEOPLE_CAP = 12
+#: The most attendees read from one event; a longer list names nobody (a cut
+#: list would let through whoever was cut).
+MEETING_PEOPLE_READ = 200
+#: The day's ended meetings kept for "Past meetings".
+PAST_MEETINGS_CAP = 30
+#: Working hours when the seat sets none (`workspace.working_hours`), and
+#: the shortest gap worth offering.
+WORK_HOURS = (7, 17)
+FREE_MIN_MINUTES = 30
+FREE_PER_DAY = 12
+_TZ_NAME_RE = re.compile(r"^(UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+\-]+){1,2})$")
+
+
+def _low(value: Any) -> str:
+    return " ".join(str(value or "").split()).lower()
+
+
+def _meeting_wall(workspace_root) -> Optional[Dict[str, Any]]:
+    """Who may be named on a meeting row (cr1#1539): the off-limits addresses
+    and names from the SAME function the Hub's live wall is built from
+    (`hub_live._off_limits`: the gate's own senders, and every address and
+    full name of each person one of them belongs to), and the owner's own
+    addresses. None when any of it cannot be read, or a list is too long to
+    check in full: the rows then name nobody (fail closed)."""
+    try:
+        import connector_reads
+        import hub_live
+        import inbox_helpers
+
+        # A book that cannot be read answers "nobody is off limits" from the
+        # gate, which is no answer: the wall's own reader says so first.
+        if not connector_reads.chat_wall(workspace_root).get("readable"):
+            return None
+        addrs, names = hub_live._off_limits(workspace_root)
+        if max(len(addrs), len(names)) > hub_live.LIST_CAP:
+            return None
+        own = {_low(a) for a in inbox_helpers.own_addresses(str(workspace_root)) if a}
+        return {"addrs": {_low(a) for a in addrs}, "names": {_low(n) for n in names}, "own": own}
+    except Exception:  # noqa: BLE001 - fail closed: nobody is named
+        return None
+
+
+def _meeting_extras(m: Dict[str, Any], wall: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The optional fields a meeting row gains for the page's calendar
+    actions (cr1#1539), each present only when the run's calendar read said
+    it plainly: `event_id` (the event's id on the calendar, as the connector
+    returned it), `link` (a join link, https only), `mine` (the owner
+    organises it), `recurring`, `answer` (the owner's own answer), `tz` (the
+    event's own zone), `people` (the other people's names) and `note_to`
+    (their addresses, only on a meeting the owner organises: the one place a
+    note to them can be drafted), `title_whole` (the row's title is the
+    calendar's own, uncut and untrimmed) and `held` (True when anybody on it
+    was left out below or could not be checked: the page then moves and
+    cancels nothing on it).
+
+    The personal wall and off-limits hold here. An event on a personal
+    calendar gains nothing: no id, no link, no people, so the page offers
+    nothing on it. A person who is off limits (by any address on file or by
+    full name) is never named and never written to, and neither is anyone
+    whose address the read did not give while somebody is off limits. When
+    the wall cannot be read, nobody is named at all."""
+    out: Dict[str, Any] = {}
+    if str(m.get("calendar") or "").lower() == "personal":
+        return out
+    eid = str(m.get("event_id") or "").strip()
+    if eid and len(eid) <= 512:
+        out["event_id"] = eid
+    link = str(m.get("link") or "").strip()
+    if link.startswith("https://") and len(link) <= 2000 and not re.search(r"[\s<>\"']", link):
+        out["link"] = link
+    if isinstance(m.get("organiser"), bool):
+        out["mine"] = m["organiser"]
+    if isinstance(m.get("recurring"), bool):
+        out["recurring"] = m["recurring"]
+    answer = str(m.get("answer") or "").strip().lower()
+    if answer in MEETING_ANSWERS:
+        out["answer"] = answer
+    tz = str(m.get("tz") or "").strip()
+    if tz and len(tz) <= 64 and _TZ_NAME_RE.match(tz):
+        out["tz"] = tz
+    # The title as the row carries it is the calendar's own, character for
+    # character, only when nothing here trimmed or cut it. A connector whose
+    # change call takes the title is sent it only then.
+    raw_title = m.get("title")
+    out["title_whole"] = bool(isinstance(raw_title, str) and raw_title and raw_title == raw_title.strip()
+                              and len(raw_title) <= 200)
+    # `held`: somebody on this meeting was left out here (off limits, or not
+    # checkable), or the wall or the list could not be read. The page then
+    # changes nothing on it: a move or a cancel from the Hub would act on a
+    # person the Hub may not show. False only when everyone was checked.
+    out["held"] = True
+    att = m.get("attendees")
+    if wall is not None and not isinstance(att, list) and _no_one_else(m):
+        out["held"] = False   # the read says nobody else is on it
+        return out
+    if not isinstance(att, list) or wall is None or len(att) > MEETING_PEOPLE_READ:
+        return out
+    people: List[str] = []
+    to: List[str] = []
+    left_out = False
+    anyone_off = bool(wall["addrs"] or wall["names"])
+    # Which entry is the owner has to be known, by the read's own mark or by
+    # his addresses on file: otherwise he would be named as one of the others
+    # and written to, so nobody is.
+    if not wall["own"] and not any(isinstance(a, dict) and a.get("self") is True for a in att):
+        return out
+    for a in att:
+        if not isinstance(a, dict):
+            return out   # a list this cannot read names nobody
+        email = _low(a.get("email"))
+        name = " ".join(str(a.get("name") or "").split())[:80]
+        if email and not re.match(r"^[^@\s<>\"',;]+@[^@\s<>\"',;]+\.[^@\s<>\"',;]+$", email):
+            email = ""
+        if a.get("self") is True or (email and email in wall["own"]):
+            continue
+        if (email and email in wall["addrs"]) or (name and _low(name) in wall["names"]):
+            left_out = True
+            continue
+        if not email and anyone_off:
+            left_out = True
+            continue
+        if name and name not in people:
+            people.append(name)
+        if email and email not in to:
+            to.append(email)
+    out["people"] = people[:MEETING_PEOPLE_CAP]
+    out["held"] = left_out
+    if out.get("mine") is True and to and len(to) <= MEETING_PEOPLE_CAP and not left_out:
+        out["note_to"] = to
+    return out
+
+
+def _work_hours(workspace_root) -> tuple:
+    """The seat's working hours as whole hours `(start, end)`: the
+    workspace's `working_hours` (`{"start": 8, "end": 18}`) when it sets
+    them, else 7 AM to 5 PM."""
+    try:
+        import connector_config as cc
+
+        ent = cc.load_entities(workspace_root)
+        inner = ent.get("entities") if isinstance(ent.get("entities"), dict) else ent
+        wh = (inner.get("workspace") or {}).get("working_hours")
+        a, b = wh.get("start"), wh.get("end")
+        if (isinstance(a, int) and isinstance(b, int) and not isinstance(a, bool)
+                and not isinstance(b, bool) and 0 <= a < b <= 24):
+            return (a, b)
+    except Exception:  # noqa: BLE001 - nothing set is the usual state
+        pass
+    return WORK_HOURS
+
+
+def _free_slots(busy: List[tuple], lo: _dt.datetime, hi: _dt.datetime) -> List[Dict[str, str]]:
+    """The gaps of `FREE_MIN_MINUTES` or more between `lo` and `hi` around
+    the busy intervals, in order."""
+    out: List[Dict[str, str]] = []
+    at = lo
+    for b0, b1 in sorted(busy):
+        if b1 <= at:
+            continue
+        if b0 >= hi:
+            break
+        if b0 - at >= _dt.timedelta(minutes=FREE_MIN_MINUTES):
+            out.append({"start": _iso(at), "end": _iso(min(b0, hi))})
+        at = max(at, b1)
+        if at >= hi:
+            break
+    if hi - at >= _dt.timedelta(minutes=FREE_MIN_MINUTES):
+        out.append({"start": _iso(at), "end": _iso(hi)})
+    return out[:FREE_PER_DAY]
+
+
 def _week_dates(today: _dt.date) -> List[_dt.date]:
     return [today + _dt.timedelta(days=i) for i in range(WEEK_DAYS)]
 
@@ -1554,7 +2065,7 @@ def _day_name(d: _dt.date, today: _dt.date) -> str:
     return "Today" if d == today else d.strftime("%A")
 
 
-def _week_days(workspace_root, meetings, now: _dt.datetime) -> Dict[str, Any]:
+def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -> Dict[str, Any]:
     """The seven days' meetings for the Week view, from the same calendar
     read as the Today list (the run reads seven days for it). Each day: its
     date, its name ("Today" for the first), `away` (the title of an all-day
@@ -1564,13 +2075,21 @@ def _week_days(workspace_root, meetings, now: _dt.datetime) -> Dict[str, Any]:
     cr1#1299: a day's meetings are counted by the Today feed's rule
     (cr1#1293, `_no_one_else`): a timed event with nobody else on it is
     marked `solo`, stays on the day, is counted in `n_blocks` and not in
-    `n_meetings`, and is never a clash."""
+    `n_meetings`, and is never a clash.
+    cr1#1539: a timed row also carries the page's calendar fields
+    (`_meeting_extras`), and each day its `free` time: the gaps inside the
+    working hours around every timed event read for it, a personal one
+    included (it is time taken, and the gap says nothing of what took it).
+    A day marked away has none; today's start at the next quarter hour."""
     tzinfo = _workspace_tz(workspace_root)
     today = now.astimezone(tzinfo).date()
     dates = _week_dates(today)
     first, last = dates[0], dates[-1]
     by_day: Dict[_dt.date, List[Dict[str, Any]]] = {d: [] for d in dates}
     away: Dict[_dt.date, str] = {}
+    busy: Dict[_dt.date, List[tuple]] = {d: [] for d in dates}
+    if wall is False:
+        wall = _meeting_wall(workspace_root)
     for m in meetings or []:
         if not isinstance(m, dict):
             continue
@@ -1622,10 +2141,15 @@ def _week_days(workspace_root, meetings, now: _dt.datetime) -> Dict[str, Any]:
             for d in span:
                 away.setdefault(d, title)
             continue
+        extras = _meeting_extras(m, wall)
         for d in span:
-            by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
-                              "start": _iso(start), "end": _iso(end), "all_day": False,
-                              "personal": personal, "clash": False, "solo": _no_one_else(m)})
+            row = {"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
+                   "start": _iso(start), "end": _iso(end), "all_day": False,
+                   "personal": personal, "clash": False, "solo": _no_one_else(m)}
+            row.update(extras)
+            by_day[d].append(row)
+            busy[d].append((start, end))
+    h0, h1 = _work_hours(workspace_root)
     days = []
     for d in dates:
         ms = by_day[d]
@@ -1633,12 +2157,24 @@ def _week_days(workspace_root, meetings, now: _dt.datetime) -> Dict[str, Any]:
             for x in ms:
                 x["clash"] = bool(not x["all_day"] and not x["personal"] and not x["solo"])
         ms.sort(key=lambda x: (not x["all_day"], x["start"] or ""))
+        free: List[Dict[str, str]] = []
+        if d not in away:
+            lo = _dt.datetime.combine(d, _dt.time(h0), tzinfo)
+            hi = (_dt.datetime.combine(d, _dt.time(0), tzinfo) + _dt.timedelta(days=1)
+                  if h1 >= 24 else _dt.datetime.combine(d, _dt.time(h1), tzinfo))
+            if d == today:
+                local = now.astimezone(tzinfo).replace(second=0, microsecond=0)
+                local += _dt.timedelta(minutes=(-local.minute) % 15)
+                lo = max(lo, local)
+            if lo < hi:
+                free = _free_slots(busy[d], lo, hi)
         days.append({"date": d.isoformat(), "name": _day_name(d, today), "away": away.get(d),
                      "meetings": ms[:WEEK_DAY_MEETINGS],
                      "n_meetings": sum(1 for x in ms if not x["solo"]),
                      "n_blocks": sum(1 for x in ms if x["solo"]),
-                     "n_clashes": sum(1 for x in ms if x["clash"])})
-    return {"today": today.isoformat(), "days": days}
+                     "n_clashes": sum(1 for x in ms if x["clash"]),
+                     "free": free})
+    return {"today": today.isoformat(), "days": days, "hours": {"start": h0, "end": h1}}
 
 
 def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
@@ -1788,12 +2324,24 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
     the owner's own time (`solo`, cr1#1293): it stays on the list and is left
     out of `n_meetings`. Each row comes with its prep when a
     `prep_brief` receipt names one, shown until an hour after the meeting
-    ends. The calendar read is the run's; this only joins it to the book."""
+    ends. The calendar read is the run's; this only joins it to the book.
+
+    cr1#1539: each row also carries the page's calendar fields, where the
+    read gave them (`_meeting_extras`: the event's id, a join link, the
+    other people's names, whether the owner organises it, his answer). The
+    day's meetings that ended more than that hour ago are kept apart, in
+    `past`, so "Past meetings" lists the whole day and `meetings` (what the
+    day's sentence, its count and its clash read) is the list it always was.
+    Every new field is optional: an older page reads none of them."""
     now = _now(now_iso)
     horizon = now + _dt.timedelta(hours=UPCOMING_HOURS)
     hold = _dt.timedelta(minutes=PREP_HOLD_MINUTES)
     tzinfo = None
     rows = []
+    past: List[Dict[str, Any]] = []
+    ended: set = set()
+    wall = _meeting_wall(workspace_root)
+    day_start = None
     for m in meetings or []:
         if not isinstance(m, dict):
             continue
@@ -1812,7 +2360,22 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
             if start is None:
                 continue
             end = _parse(m.get("end")) or (start + _dt.timedelta(hours=1))
-            if end + hold < now or start > horizon:
+            if end + hold < now:
+                # cr1#1539: ended today, past the hour its row stays up.
+                if day_start is None:
+                    tzinfo = tzinfo or _workspace_tz(workspace_root)
+                    day_start = now.astimezone(tzinfo).replace(hour=0, minute=0, second=0, microsecond=0)
+                ended.add(id(m))
+                if start >= day_start:
+                    gone = {"meeting_id": str(m.get("meeting_id") or "").strip(),
+                            "title": str(m.get("title") or "").strip()[:200],
+                            "start": _iso(start), "end": _iso(end), "solo": _no_one_else(m)}
+                    # a personal one says so, as a row does; any other names no calendar
+                    if str(m.get("calendar") or "").lower() == "personal":
+                        gone["calendar"] = "personal"
+                    past.append(gone)
+                continue
+            if start > horizon:
                 continue
         rows.append({
             "meeting_id": str(m.get("meeting_id") or "").strip(),
@@ -1824,6 +2387,8 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
             "prep_shown_until": _iso(end + hold), "all_day": all_day,
             "solo": not all_day and _no_one_else(m),
         })
+        if not all_day:
+            rows[-1].update(_meeting_extras(m, wall))
     ids = [r["meeting_id"] for r in rows if r["meeting_id"]]
     if ids:
         try:
@@ -1856,13 +2421,17 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
             if rec.get("dt"):
                 r["prep_at"] = _iso(rec["dt"])
     rows.sort(key=lambda r: r["start"])
+    past.sort(key=lambda r: r["start"])
     try:
-        week = _week_days(workspace_root, meetings, now)
+        # The week keeps the read it always had: a meeting that ended more
+        # than the hold ago is in `past`, and is no row and no clash here.
+        week = _week_days(workspace_root, [m for m in meetings or [] if id(m) not in ended], now, wall)
     except Exception:  # noqa: BLE001 - the list never fails for the week's sake
         week = {"today": None, "days": [], "error": True}
     return _with_words(workspace_root, {"generated_at": _iso(now), "meetings": rows,
             "n_meetings": sum(1 for r in rows if not r["solo"]), "n_prepped": sum(1 for r in rows if r["prep"]),
-            "week": week, "about": _today_about(workspace_root, now)})
+            "week": week, "about": _today_about(workspace_root, now),
+            "past": past[-PAST_MEETINGS_CAP:]})
 
 
 def _today_about(workspace_root, now: _dt.datetime) -> Optional[Dict[str, Any]]:
@@ -2259,11 +2828,28 @@ PROJECTS_CAP = 200
 #: (cr1#1310) sits after Today: the morning's own text, read only. The
 #: `week` tab is labelled Done since cr1#1223: it holds what was done this
 #: month and what was done for the owner, not the week ahead.
-HUB_TABS = (("today", "Today"), ("brief", "Brief"), ("week", "Done"), ("settings", "Settings"),
-            ("inbox", "Inbox"), ("plate", "Commitments"), ("priorities", "Priorities"),
-            ("projects", "Work streams"), ("people", "People"))
+#: Since cr1#1537 (owner ruling 2026-11-21) the page shows six tabs in one
+#: row, `HUB_TABS`, and the page's nav is pinned to that list (HUBLIST1). Work
+#: holds three views, `HUB_WORK_VIEWS`, each the body its own tab had; Record
+#: is the Done tab's body (its feed is still `feed/week`); `week` now names
+#: the week board, which sat inside Today. Brief and Settings left the tab
+#: row for a button and the gear.
+HUB_TABS = (("today", "Today"), ("inbox", "Inbox"), ("week", "Week"), ("people", "People"),
+            ("work", "Work"), ("record", "Record"))
+#: Since cr1#1540 (owner ruling 2026-11-21) Work opens on Triage and ends on
+#: Updates; the three views between them are the old tabs, unchanged.
+HUB_WORK_VIEWS = (("triage", "Triage"), ("plate", "Commitments"), ("priorities", "Priorities"),
+                  ("projects", "Work streams"), ("updates", "Updates"))
+#: What every feed carries as `words.tabs`, unchanged by cr1#1537: the nine
+#: wire keys and labels a page published before it reads its tab labels from.
+#: No feed changes shape, so an older page keeps its labels against a newer
+#: feed. The page built since cr1#1537 reads only the three Work views from
+#: it (`plate`, `priorities`, `projects`) and names its six tabs itself.
+HUB_WORD_TABS = (("today", "Today"), ("brief", "Brief"), ("week", "Done"), ("settings", "Settings"),
+                 ("inbox", "Inbox"), ("plate", "Commitments"), ("priorities", "Priorities"),
+                 ("projects", "Work streams"), ("people", "People"))
 #: The tabs whose label is a seat's word (cr1#1017 part 1b), by the key in
-#: `words.DEFAULTS`; every other tab keeps its label from `HUB_TABS`.
+#: `words.DEFAULTS`; every other tab keeps its label from `HUB_WORD_TABS`.
 HUB_TAB_WORDS = {"projects": "work_stream"}
 
 
@@ -2271,9 +2857,9 @@ def hub_words(workspace_root) -> Dict[str, Any]:
     """READ (cr1#1017 part 1b, ruling A6). The seat's words as every Hub feed
     carries them under `words`: the word for one piece of work and for a group
     of them, each `{one, many}`, whether the seat set them (`source`, `set`),
-    and the tabs in `HUB_TABS` order with the seat's label on each. The page
+    and the tabs in `HUB_WORD_TABS` order with the seat's label on each. The page
     reads the labels from here (train 3); a seat with no list reads the ruled
-    defaults, which are `HUB_TABS` as written. Never raises: a list that will
+    defaults, which are `HUB_WORD_TABS` as written. Never raises: a list that will
     not read costs the seat's words for one render, never the feed."""
     import words as _w
     try:
@@ -2285,7 +2871,7 @@ def hub_words(workspace_root) -> Dict[str, Any]:
     w = doc["words"]
     tabs = [{"key": key, "label": (_w.label(w, HUB_TAB_WORDS[key], many=True, title=True)
                                    if key in HUB_TAB_WORDS else text)}
-            for key, text in HUB_TABS]
+            for key, text in HUB_WORD_TABS]
     return {"thread": dict(w["thread"]), "work_stream": dict(w["work_stream"]),
             "source": doc.get("source") or "default", "set": list(doc.get("set") or []),
             "tabs": tabs}
@@ -2513,7 +3099,23 @@ def _feed_priorities(tc, root: Path, now_iso: str) -> Dict[str, Any]:
              "threads": list(p.get("built_from") or []),
              "waits_for": str(p.get("waits_for") or "")}
             for p in pv.get("suggested") or []]
-    return {"confirmed": conf[:PRIORITIES_CAP], "n_confirmed": len(conf), "suggested": sugg}
+    out = {"confirmed": conf[:PRIORITIES_CAP], "n_confirmed": len(conf), "suggested": sugg}
+    # cr1#1540: the owner's own order for them, and which a star on the Hub
+    # made (with the press its Undo names). Optional: the list above keeps
+    # the order every other reader has; a page that knows `order` sorts by it.
+    try:
+        import hub_work
+        from events_io import load_events_owner_scoped
+
+        evs = load_events_owner_scoped(str(root))[0]
+        ids = [c["id"] for c in conf]
+        out["order"] = hub_work.ordered(ids, hub_work.stored_order(evs))[:PRIORITIES_CAP]
+        out["ordered"] = bool(hub_work.stored_order(evs))
+        out["starred"] = {k: v for k, v in hub_work.starred(evs).items() if k in ids}
+        out["max_shown"] = hub_work.PRIORITY_SHOWN
+    except Exception:  # noqa: BLE001 - no order: the page shows them as they came
+        pass
+    return out
 
 
 #: The "No home yet" section of the Work streams tab (cr1#1013 part 3): how
@@ -2647,6 +3249,8 @@ def feed_projects(workspace_root, *, now_iso=None) -> Dict[str, Any]:
                       "overdue": bool(nxt.get("overdue")), "direction": nxt.get("direction")}
                      if nxt else None),
             "contact": str(key.get("name") or "")[:120] or None,
+            # cr1#1540: who that is, so "Ask for an update" can open their draft
+            "contact_id": str(key.get("id") or key.get("person_id") or "")[:80] or None,
             "stands": [{"text": str(ln.get("text") or "")[:200], "day": ln.get("day") or None}
                        for ln in ((c.get("stands") or {}).get("lines") or [])][:tc.STANDS_LINES],
             "last_decision": _card_line(c.get("last_decision")),
@@ -2678,6 +3282,16 @@ def feed_projects(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         out["priorities"] = _feed_priorities(tc, root, _iso(now))
     except Exception:  # noqa: BLE001 - an unread priority list leaves that tab empty, and says so
         out["errors"].append("priorities")
+    # cr1#1540: the updates the owner posted on his threads, newest first.
+    try:
+        import hub_work
+        from events_io import load_events_owner_scoped
+
+        posted = hub_work.updates(load_events_owner_scoped(str(root))[0], {r["id"]: r["name"] for r in rows})
+        out["updates"] = posted[:hub_work.UPDATES_CAP]
+        out["n_updates"] = len(posted)
+    except Exception:  # noqa: BLE001 - an unread log leaves the list off, and says so
+        out["errors"].append("updates")
     out.update({
         "rows": shown, "n_rows": len(rows), "n_hidden": max(0, len(rows) - PROJECTS_CAP),
         "by_status": by_status, "work_streams": streams,
@@ -3616,7 +4230,10 @@ def apply_review_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
     writer, then ONE `apply_choices_applied` audit row (cr1#779):
 
       * `confirm` on a proposed close: `watch_gate.confirm_review_rows`, the
-        shared fence; a weak row is parked and closes nothing;
+        shared fence; a weak row is parked and closes nothing. A row that
+        names a `pile` (cr1#1540, the Work tab's Looks done) is first held to
+        that pile's rule as it stands now (`_pile_gate`), which lets through
+        only a question the fence would accept, so nothing is parked by it;
       * `not relevant`: one `commitment_review_dismissed`, the commitment stays
         open; `hold` and `snooze proposal 7d`: `mute_ledger.hold_item`;
       * `dismiss proposal`: `brain_proposals.resolve_proposal(declined)`;
@@ -3644,6 +4261,8 @@ def apply_review_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
     events_path = Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl"
     results: List[Dict[str, Any]] = []
     audit: List[Dict[str, Any]] = []
+    pile_memo: Dict[str, Any] = {}  # cr1#1540: as in `apply_commitment_choices`
+    reopens: Optional[Dict[str, _dt.datetime]] = None
     for c in rows:
         verb = str(c.get("action") or "").strip().lower()
         n = str(c.get("n") or "").strip()
@@ -3655,6 +4274,45 @@ def apply_review_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
             if verb not in REVIEW_VERBS or not n:
                 r.update(outcome="error", line=UNKNOWN_VERB_LINE.format(verb=verb or "none"))
                 handler = {"status": "error"}
+            elif c.get("pile"):
+                # cr1#1540: a Looks done pile's row. It is the review row's own
+                # confirm, held first to the pile's rule as it stands now, and
+                # then handed to the shared fence with the queue's own inputs
+                # for that question, never the page's.
+                pcid = str(c.get("commitment_id") or "")
+                piled, held = _pile_gate(workspace_root, c, pcid, verb, now, pile_memo, row_kind="review")
+                look = ((pile_memo.get("sets") or {}).get("looks") or {}).get(pcid) if piled else None
+                if reopens is None:
+                    reopens = _owner_reopens(workspace_root)
+                pressed = _parse(c.get("created_at"))
+                r["commitment_id"] = pcid
+                if held is not None:
+                    r.update(outcome=held[0], line=held[1], reason=held[2].get("error") or held[2].get("status"))
+                    handler = held[2]
+                elif not look or look.get("id") != n:
+                    r.update(outcome="refused", line=PILE_LEFT_LINE, reason="pile_left")
+                    handler = {"status": "refused", "error": "pile_left"}
+                elif pressed is not None and pcid in reopens and pressed < reopens[pcid]:
+                    r.update(outcome="refused", line=PRESSED_BEFORE_REOPEN_LINE, reason="pressed_before_reopen")
+                    handler = {"status": "refused", "error": "pressed_before_reopen"}
+                else:
+                    fence = _review_close(workspace_root, dict(c, payload=dict(look)), actor, now)
+                    if (fence or {}).get("n_confirmed"):
+                        r.update(outcome="applied", line="Closed.")
+                        note = f"review {kind} accepted"
+                        handler = {"status": "closed"}
+                        pile_memo.pop("sets", None)
+                        mark = _standing_close(workspace_root, pcid)
+                        if mark and mark.get("seq") is not None:
+                            r["seq"] = mark["seq"]
+                    else:
+                        handler = ((fence or {}).get("results") or [{"status": "not_closed"}])[0]
+                        if (fence or {}).get("n_held"):
+                            r.update(outcome="refused", line=REVIEW_HELD_LINE)
+                        elif handler.get("status") in ("not_open", "already_resolved"):
+                            r.update(outcome="already", line=ALREADY_CLOSED_LINE)
+                        else:
+                            r.update(outcome="error", line=ROW_ERROR_LINE)
             elif (verb in REVIEW_ACCEPT_VERBS or verb == REVIEW_SAME_AS_VERB or verb == "proposal not relevant"
                   or (verb == "not relevant" and n.split(":", 1)[0] in _REVIEW_LEGACY_DECLINES)
                   or (verb == "dismiss proposal" and kind in ("objective_link", "person_link", "craft_amend"))):
@@ -4938,6 +5596,14 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         if offer:
             r["chase"] = None if offer.get("note") else offer
             r["chase_note"] = offer.get("note") or ""
+    # cr1#1540: the Work tab's plate and piles, an optional block read from
+    # the open list and the exit rules as they stand (`hub_work`). A feed
+    # without it gives the page no pile; nothing above reads it.
+    try:
+        import hub_work
+        feed["work"] = hub_work.work_block(workspace_root, _iso(now))
+    except Exception:  # noqa: BLE001 - no block: the page then offers no pile
+        pass
     return _with_words(workspace_root, feed, seat)
 
 
@@ -5318,7 +5984,21 @@ PAGE_RECORD_SOURCE = "email-writer"
 PAGE_CHOICE_KEY = "page_choice_id"
 #: The page's own choice kinds that carry a mail: a reply, a chase (cr1#219),
 #: and a person's list from the People tab (cr1#1017 part A).
-PAGE_RECORD_KINDS = ("inbox", "chase", "list")
+PAGE_RECORD_KINDS = ("inbox", "chase", "list", "calnote")
+#: cr1#1539: a note to the other people after a meeting moved or was
+#: cancelled from the Hub is the product's own text too, drafted only on the
+#: owner's press and never sent by the page: recorded like a chase, under the
+#: calendar surface, with no snapshot.
+PAGE_NOTE_SOURCE = "calendar-writer"
+#: A meeting booked, moved or cancelled on the page (cr1#1539): the page made
+#: the change on the calendar on the owner's press; the book learns of it
+#: here. `remove` is a booking taken back (the Undo of Book), `move` with
+#: `back` a meeting put back at its original time.
+CAL_RECORD_KIND = "meeting"
+CAL_RECORD_VERBS = ("book", "move", "cancel", "remove")
+CAL_RECORD_LINE = "Recorded in your book."
+CAL_RECORD_NO_EVENT_LINE = "No meeting on the press, so nothing was recorded."
+CAL_CHANGE_WORDS = {"move": "moved", "cancel": "cancelled", "remove": "removed"}
 #: A chase and a list are the product's own text, so each is recorded under
 #: the commitments surface with no snapshot: an edit to it is no lesson about
 #: the owner's voice.
@@ -5344,16 +6024,20 @@ def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, 
     each (`{record_claimed_by, record_claimed_at}`), ready to send as ONE
     ArtifactData `batch`. A row another live run holds is `taken`; one this
     run already holds is `held` and goes straight to `entries`. Answers `{ok,
-    run_id, writes, entries, taken, held, n_more, line}`: `entries` are the rows
-    to hand `record_page_sends` once the batch landed (the ones in `writes`)
-    or already held."""
+    run_id, writes, entries, calendar, taken, held, n_more, line}`: `entries`
+    are the rows to hand `record_page_sends` once the batch landed (the ones
+    in `writes`) or already held, and `calendar` (cr1#1539) the meetings
+    booked, moved or cancelled on the page, to hand `record_calendar_changes`
+    the same way."""
     rid_ = str(run_id or "").strip()
     if len(rid_) < 8:
         return {"ok": False, "run_id": rid_, "writes": [], "entries": [], "taken": [], "held": [],
+                "calendar": [],
                 "n_more": 0, "line": "A claim needs this run's own id (8 characters or more)."}
     now = _now(now_iso)
     writes: List[Dict[str, Any]] = []
     entries: List[Dict[str, Any]] = []
+    calendar: List[Dict[str, Any]] = []
     taken: List[str] = []
     held: List[str] = []
     seen = set()
@@ -5366,14 +6050,41 @@ def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, 
             continue
         verb = str(c.get("action") or "").strip().lower()
         res = c.get("result") if isinstance(c.get("result"), dict) else {}
-        if str(c.get("kind") or "") not in PAGE_RECORD_KINDS or verb not in PAGE_RECORD_VERBS or res.get("outcome") not in PAGE_RECORD_OUTCOMES:
+        # cr1#1539: a meeting booked, moved or cancelled on the page goes to
+        # `calendar`, for `record_calendar_changes`, under the same claim.
+        is_cal = (str(c.get("kind") or "") == CAL_RECORD_KIND and verb in CAL_RECORD_VERBS
+                  and res.get("outcome") in PAGE_RECORD_OUTCOMES)
+        if not is_cal and (str(c.get("kind") or "") not in PAGE_RECORD_KINDS or verb not in PAGE_RECORD_VERBS or res.get("outcome") not in PAGE_RECORD_OUTCOMES):
             continue
-        # A list is only ever a draft: the owner sends it from their own mail.
-        if str(c.get("kind") or "") == "list" and verb != "draft":
+        # A list is only ever a draft: the owner sends it from their own mail,
+        # and so is a note about a meeting (cr1#1539).
+        if str(c.get("kind") or "") in ("list", "calnote") and verb != "draft":
             continue
         seen.add(cid)
         if _record_claim_live(c, now) and str(c.get("record_claimed_by")) != rid_:
             taken.append(cid)
+            continue
+        if is_cal:
+            cal_entry = {"id": cid, "action": verb, "event_id": str(c.get("n") or "")[:512],
+                         "title": str(c.get("title") or "")[:200],
+                         "start": str(c.get("start") or "")[:40], "end": str(c.get("end") or "")[:40],
+                         "from_start": str(c.get("from_start") or "")[:40], "from_end": str(c.get("from_end") or "")[:40],
+                         "back": c.get("back") is True, "via": str(c.get("via") or "")[:20],
+                         "people": [str(x)[:120] for x in (c.get("people") if isinstance(c.get("people"), list) else [])[:MEETING_PEOPLE_CAP]],
+                         "provider": str(c.get("provider") or "")[:40],
+                         "applied_at": str(c.get("applied_at") or c.get("created_at") or "")}
+            if _record_claim_live(c, now):
+                held.append(cid)
+                calendar.append(cal_entry)
+                continue
+            if len(writes) >= CLAIM_BATCH_MAX:
+                continue
+            cw: Dict[str, Any] = {"op": "update", "collection": "choices", "doc_id": cid,
+                                  "data": {"record_claimed_by": rid_, "record_claimed_at": _iso(now)}}
+            if c.get("_version") is not None:
+                cw["if_version"] = c["_version"]
+            writes.append(cw)
+            calendar.append(cal_entry)
             continue
         draft = c.get("draft") if isinstance(c.get("draft"), dict) else {}
         entry = {"id": cid, "action": verb, "provider": str(c.get("provider") or ""),
@@ -5388,6 +6099,8 @@ def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, 
             entry["list_for"] = str(c.get("n") or "")
             direction = str(c.get("direction") or "")
             entry["list_direction"] = direction if direction in PAGE_LIST_DIRECTIONS else ""
+        if str(c.get("kind") or "") == "calnote":
+            entry["note_for"] = str(c.get("n") or "")[:512]
         if _record_claim_live(c, now):
             held.append(cid)
             entries.append(entry)
@@ -5400,8 +6113,9 @@ def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, 
             w["if_version"] = c["_version"]
         writes.append(w)
         entries.append(entry)
-    n_more = max(0, len(seen) - len(taken) - len(entries))
+    n_more = max(0, len(seen) - len(taken) - len(entries) - len(calendar))
     return {"ok": True, "run_id": rid_, "writes": writes, "entries": entries, "taken": taken, "held": held,
+            "calendar": calendar,
             "n_more": n_more, "line": CLAIM_MORE_LINE.format(n=n_more) if n_more else ""}
 
 
@@ -5482,7 +6196,7 @@ def record_page_sends(workspace_root, entries: Optional[List[Dict[str, Any]]] = 
             draft = e.get("draft") if isinstance(e.get("draft"), dict) else {}
             found = re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", str(draft.get("to") or ""))
             recipient = found.group(0).lower() if found else ""
-            if e.get("list_for") and verb != "draft":
+            if (e.get("list_for") or e.get("note_for")) and verb != "draft":
                 r.update(outcome="refused", line=PAGE_LIST_SEND_LINE)
                 results.append(r)
                 continue
@@ -5500,9 +6214,11 @@ def record_page_sends(workspace_root, entries: Optional[List[Dict[str, Any]]] = 
                     provider=provider, server_id=server_id, address=address,
                     topic=str(draft.get("subject") or ""), recipient_id=_recipient_person(workspace_root, recipient),
                     domain=recipient.rsplit("@", 1)[-1].lower(), voice_block_sha256=e.get("voice_block_sha256"),
-                    source_skill=PAGE_CHASE_SOURCE if (e.get("chase_for") or e.get("list_for")) else PAGE_RECORD_SOURCE,
-                    snapshot=not (e.get("chase_for") or e.get("list_for")),
+                    source_skill=(PAGE_NOTE_SOURCE if e.get("note_for") else PAGE_CHASE_SOURCE
+                                  if (e.get("chase_for") or e.get("list_for")) else PAGE_RECORD_SOURCE),
+                    snapshot=not (e.get("chase_for") or e.get("list_for") or e.get("note_for")),
                     extra={PAGE_CHOICE_KEY: cid, "sent_from": "hub",
+                           **({"note_for": e["note_for"]} if e.get("note_for") else {}),
                            **({"chase_for": e["chase_for"]} if e.get("chase_for") else {}),
                            **({"list_for": e["list_for"], "list_direction": e.get("list_direction") or ""}
                               if e.get("list_for") else {})})
@@ -5538,6 +6254,108 @@ def record_page_sends(workspace_root, entries: Optional[List[Dict[str, Any]]] = 
             else:
                 r.update(outcome="applied" if on_book["drafted"] is None else "already",
                          line=PAGE_RECORD_LINE if on_book["drafted"] is None else PAGE_RECORD_ALREADY_LINE)
+        except Exception as exc:  # noqa: BLE001 - one row's failure never stops the batch
+            r.update(_row_error(exc))
+        results.append(r)
+    return {"ok": True, "results": results, "recorded_at": _iso(now),
+            "n_recorded": sum(1 for x in results if x["outcome"] == "applied"),
+            "n_errors": sum(1 for x in results if x["outcome"] == "error")}
+
+
+def _calendar_record_on_book(workspace_root, cid: str) -> Optional[Any]:
+    """The seq of the row the book already holds for this page choice, else
+    None. Read with the personal-lane drop off, as `_page_record_on_book`
+    reads: nothing read here is shown or returned beyond one seq."""
+    from events_io import load_events_org_scoped
+
+    try:
+        events, _skipped = load_events_org_scoped(str(workspace_root), drop_personal=False)
+    except Exception:  # noqa: BLE001 - an unreadable book is read as empty, and the append says so
+        events = []
+    for ev in events:
+        if not isinstance(ev, dict) or not isinstance(ev.get("data"), dict):
+            continue
+        if ev.get("type") in ("meeting_scheduled", "meeting_changed") and str(ev["data"].get(PAGE_CHOICE_KEY) or "") == cid:
+            return ev.get("seq")
+    return None
+
+
+def _people_on_file(workspace_root, ids: List[str]) -> List[str]:
+    """Those of `ids` that are people on file, in order."""
+    try:
+        from entities_io import entities_collection, read_entities_json
+
+        ent = read_entities_json(Path(str(workspace_root)) / "_hq" / "data" / "entities.json")
+        known = {str(p.get("id") or "") for p in entities_collection(ent, "people") if isinstance(p, dict)}
+    except Exception:  # noqa: BLE001 - nobody is named on the row
+        return []
+    out: List[str] = []
+    for i in ids:
+        if i and i in known and i not in out:
+            out.append(i)
+    return out
+
+
+def record_calendar_changes(workspace_root, entries: Optional[List[Dict[str, Any]]] = None,
+                            *, now_iso=None) -> Dict[str, Any]:
+    """A WRITER. The book record of each meeting the owner booked, moved or
+    cancelled on the Hub page (cr1#1539), one row per change, through the one
+    append path (`event_gate.append_event`). It records what the page already
+    did on the owner's press: it never calls a calendar and never sends
+    anything. A booking is `meeting_scheduled`, the type calendar-writer
+    writes for the same thing; a move, a cancel and a booking taken back are
+    `meeting_changed`. Each row names the page's choice id, and a choice the
+    book already names is answered from its first write, so a retried run
+    never records a change twice. Answers `{ok, results: [{id, action,
+    outcome, line, seq}], n_recorded, n_errors}`."""
+    from event_gate import append_event
+
+    rows = [e for e in (entries or []) if isinstance(e, dict)]
+    now = _now(now_iso)
+    events_path = Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl"
+    results: List[Dict[str, Any]] = []
+    for e in rows:
+        cid = str(e.get("id") or "").strip()
+        verb = str(e.get("action") or "").strip().lower()
+        r: Dict[str, Any] = {"id": cid, "action": verb, "outcome": "error", "line": ROW_ERROR_LINE, "seq": None}
+        try:
+            event_id = str(e.get("event_id") or "").strip()
+            start = _parse(e.get("start"))
+            end = _parse(e.get("end"))
+            timed = verb in ("book", "move")
+            if (not cid or verb not in CAL_RECORD_VERBS or not event_id
+                    or (timed and (start is None or end is None or end <= start))):
+                r.update(outcome="refused", line=CAL_RECORD_NO_EVENT_LINE)
+                results.append(r)
+                continue
+            on_book = _calendar_record_on_book(workspace_root, cid)
+            if on_book is not None:
+                r.update(outcome="already", line=PAGE_RECORD_ALREADY_LINE, seq=on_book)
+                results.append(r)
+                continue
+            title = str(e.get("title") or "")[:200]
+            if verb == "book":
+                who = _people_on_file(workspace_root, [str(x) for x in e.get("people") or []])
+                ev: Dict[str, Any] = {"type": "meeting_scheduled", "source_skill": PAGE_NOTE_SOURCE,
+                                      "data": {"calendar_event_id": event_id, "scheduled_at_ts": _iso(start),
+                                               "duration_minutes": int((end - start).total_seconds() // 60),
+                                               "attendee_person_ids": who, "title": title,
+                                               PAGE_CHOICE_KEY: cid, "sent_from": "hub"}}
+                if who:
+                    ev["person_ids"] = who
+            else:
+                data: Dict[str, Any] = {"change": CAL_CHANGE_WORDS[verb], "calendar_event_id": event_id,
+                                        "title": title, PAGE_CHOICE_KEY: cid, "sent_from": "hub"}
+                if verb == "move":
+                    data.update({"to_start": _iso(start), "to_end": _iso(end), "put_back": e.get("back") is True})
+                    for key in ("from_start", "from_end"):
+                        was = _parse(e.get(key))
+                        if was is not None:
+                            data[key] = _iso(was)
+                ev = {"type": "meeting_changed", "source_skill": PAGE_NOTE_SOURCE, "data": data}
+            written = append_event(events_path, ev, holder="cockpit_helpers")
+            r.update(outcome="applied", line=CAL_RECORD_LINE,
+                     seq=written[0].get("seq") if written and isinstance(written[0], dict) else None)
         except Exception as exc:  # noqa: BLE001 - one row's failure never stops the batch
             r.update(_row_error(exc))
         results.append(r)
@@ -5714,7 +6532,13 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             commitment.append({"id": cid, "commitment_id": _choice_commitment_id(raw),
                                "action": verb, "input": raw.get("input"),
                                "created_at": str(raw.get("created_at") or ""),
-                               "title": str(raw.get("title") or "")[:200]})
+                               "title": str(raw.get("title") or "")[:200],
+                               # cr1#1540: the pile the press came from, when one,
+                               # and on an Undo of a pile's item the write it takes back
+                               **({"pile": str(raw.get("pile"))[:80]} if raw.get("pile") else {}),
+                               **({"back_of": str(raw.get("back_of"))[:160]} if raw.get("back_of") else {}),
+                               **({"back_seq": raw.get("back_seq")} if isinstance(raw.get("back_seq"), int)
+                                  and not isinstance(raw.get("back_seq"), bool) else {})})
         elif kind == "person":
             # cr1#1020 slice 3: a star or an unstar on the People tab.
             if verb not in PERSON_VERBS:
@@ -5797,7 +6621,10 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
                            "payload": raw.get("payload") if isinstance(raw.get("payload"), dict) else {},
                            "review_kind": str(raw.get("review_kind") or ""), "group": str(raw.get("group") or ""),
                            "commitment_id": raw.get("commitment_id"), "seq": raw.get("seq"),
-                           "thread_id": raw.get("thread_id"), "title": str(raw.get("title") or "")[:200]})
+                           "thread_id": raw.get("thread_id"), "title": str(raw.get("title") or "")[:200],
+                           # cr1#1540: a Looks done pile's row, and when it was pressed
+                           **({"pile": str(raw.get("pile"))[:80], "created_at": str(raw.get("created_at") or "")}
+                              if raw.get("pile") else {})})
         elif kind == "week":
             # cr1#780: the Done tab's press, for `apply_week_choices`.
             if verb not in WEEK_VERBS:
@@ -5824,9 +6651,7 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             # taken back (`hub_edit`), written there as well; slice 4: a
             # commitment's wording edited, or that edit taken back.
             verbs = (REMINDER_VERBS if kind == "reminder" else TODO_VERBS if kind == "todo"
-                     else MISS_VERBS if kind == "miss" else COMMIT_EDIT_VERBS
-                     if kind == "commitment_edit" else CONTEXT_EDIT_VERBS
-                     if kind in CONTEXT_EDIT_KINDS else EDIT_VERBS)
+                     else MISS_VERBS if kind == "miss" else _edit_verbs(kind))
             if verb not in verbs:
                 refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
                                 "reason": "unknown_verb"})
@@ -5919,7 +6744,13 @@ def feed_mail_rules(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     (`mail_rules.feed`)."""
     import mail_rules
 
-    return _with_words(workspace_root, mail_rules.feed(workspace_root, now_iso=_iso(_now(now_iso))))
+    out = mail_rules.feed(workspace_root, now_iso=_iso(_now(now_iso)))
+    # cr1#1538: what the page may list by itself (the personal wall and
+    # off-limits, from the functions the tasks use). An older page ignores it.
+    import hub_live
+
+    out["live"] = hub_live.wall(workspace_root)
+    return _with_words(workspace_root, out)
 
 
 #: The Brief tab (cr1#1310): today's morning brief as the Morning Brief run
@@ -6107,6 +6938,23 @@ COMMIT_EDIT_VERBS = frozenset({"rename", "undo"})
 #: or a commitment edit (named on cr1#1383).
 CONTEXT_EDIT_KINDS = ("stream_edit", "person_edit")
 CONTEXT_EDIT_VERBS = EDIT_VERBS | {"context"}
+#: cr1#1540: an update the owner posts on a thread (`update`, on `stream_edit`
+#: only), the order he keeps his priorities in and a thread starred into one
+#: (`order` and `star`, on `priority_edit` only). `hub_edit` writes each.
+STREAM_EDIT_VERBS = CONTEXT_EDIT_VERBS | {"update"}
+PRIORITY_EDIT_VERBS = EDIT_VERBS | {"order", "star"}
+
+
+def _edit_verbs(kind: str) -> frozenset:
+    """The verbs one edit kind takes, the one answer `plan_apply` and
+    `apply_hub_choices` both read."""
+    if kind == "commitment_edit":
+        return COMMIT_EDIT_VERBS
+    if kind == "stream_edit":
+        return STREAM_EDIT_VERBS
+    if kind == "priority_edit":
+        return PRIORITY_EDIT_VERBS
+    return CONTEXT_EDIT_VERBS if kind in CONTEXT_EDIT_KINDS else EDIT_VERBS
 TODO_SOURCE = "hub_todo"
 TODO_REF_SCHEME = "user:hub_todo"
 PRIORITY_NAMES = {1: "High", 2: "Medium", 3: "Low"}
@@ -7205,7 +8053,8 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                         r.update(outcome="applied", line=f"Moved to {when}.")
             elif kind == "miss" and verb == "tell":
                 r.update(_apply_miss(root, c, actor, now, answered, live, inbox))
-            elif kind in EDIT_KINDS and (verb in EDIT_VERBS or (verb == "context" and kind in CONTEXT_EDIT_KINDS)):
+            elif kind in EDIT_KINDS and (verb in EDIT_VERBS or (verb == "context" and kind in CONTEXT_EDIT_KINDS)
+                                         or (verb in ("update", "order", "star") and verb in _edit_verbs(kind))):
                 import hub_edit
 
                 r.update(hub_edit.apply_one(root, c, actor))
@@ -7977,6 +8826,121 @@ def _undo_home(workspace_root, cid_in: str, press_id: Any, undo_id: str, ledger_
     return handler, "applied", line
 
 
+def _pile_gate(workspace_root, c: Dict[str, Any], cid: str, verb: str, now: _dt.datetime,
+               memo: Dict[str, Any], row_kind: str = "commitment") -> Tuple[str, Optional[Tuple[str, str, Dict[str, Any]]]]:
+    """cr1#1540: the fence on a pile's row, asked before anything is written.
+    Answers `(pile kind, refusal)`: the kind when the row may be written,
+    else `("", (outcome, line, handler))`. A row from no pile answers
+    `("", None)` and is applied as it always was, but for `park`, which only
+    a pile presses.
+
+    Refused, writing nothing: a row whose pile is not one the Work tab has, or
+    whose kind or verb is not that pile's; a pile that cannot be checked now
+    (the wall, the mail rules, the owner or the open list unread); an item
+    the pile's own rule does not hold now (closed, confirmed since, parked,
+    moved, dated by the owner, walled, off limits, a close question the
+    review fence would hold); a move to a day already past.
+
+    `memo` is the batch's: `sets` is the piles as the book stands, read again
+    after every write this batch lands (the caller drops it), so a row is
+    judged against what the rows before it did; `done` is every item this
+    batch already wrote for a pile, so no item is written twice in one."""
+    import hub_work
+
+    named = c.get("pile")
+    if not named and verb != "park":
+        return "", None
+    kind = hub_work.pile_kind(named)
+    if not kind or hub_work.PILE_VERBS[kind] != verb or hub_work.PILE_ROW_KINDS[kind] != row_kind:
+        return "", ("refused", PILE_VERB_LINE, {"status": "refused", "error": "pile_verb"})
+    if "sets" not in memo:
+        memo["sets"] = hub_work.pile_sets(workspace_root, _iso(now))
+    sets = memo["sets"]
+    if not sets.get("ok"):
+        return "", ("refused", PILE_UNREADABLE_LINE, {"status": "refused", "error": "pile_unreadable"})
+    done = memo.setdefault("done", set())
+    if cid not in sets["piles"].get(kind, set()) or (kind, cid) in done:
+        return "", ("refused", PILE_LEFT_LINE, {"status": "refused", "error": "pile_left"})
+    if verb == "snooze":
+        import commitment_state as cs
+
+        when = cs.parse_later_when(str(c.get("input") or "")[:80], _iso(now), workspace_path=str(workspace_root))
+        day = cs._now_calendar_day(_iso(now), workspace_path=str(workspace_root))
+        if not when or not day or str(when)[:10] < day.isoformat():
+            return "", ("refused", PILE_DAY_LINE, {"status": "refused", "error": "pile_day"})
+    done.add((kind, cid))
+    return kind, None
+
+
+def _standing_close(workspace_root, cid: str) -> Optional[Dict[str, Any]]:
+    """cr1#1540: the close that stands on an item now, `{seq, source_skill}`:
+    its newest `commitment_resolved` with no reopen after it. None when the
+    item is open."""
+    from events_io import load_events_owner_scoped
+
+    last: Optional[Dict[str, Any]] = None
+    for ev in load_events_owner_scoped(str(workspace_root))[0]:
+        d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+        if str(d.get("commitment_id") or "") != cid:
+            continue
+        if ev.get("type") == "commitment_resolved":
+            last = {"seq": ev.get("seq"), "source_skill": str(ev.get("source_skill") or "")}
+        elif ev.get("type") == "commitment_reopened":
+            last = None
+    return last
+
+
+def _back_is_for(standing: Optional[Dict[str, Any]], c: Dict[str, Any]) -> bool:
+    """cr1#1540: whether an Undo row of a pile's item (`back_of`) is for the
+    write that stands now. With the write's seq on the row (`back_seq`, the
+    seq the Apply run answered for the pile's row) it must be that very
+    write. A row with no seq (a result written before seqs were kept) is
+    taken only for a write this surface made, never for one made elsewhere."""
+    if standing is None:
+        return False
+    if isinstance(c.get("back_seq"), int):
+        return standing.get("seq") == c.get("back_seq")
+    return standing.get("source_skill") == COMMITMENT_SRC
+
+
+def _owner_unparks(workspace_root) -> Dict[str, _dt.datetime]:
+    """cr1#1540: the time of each item's latest un-park from the Hub (the
+    time it was pressed, else written), so a park pressed before it is stale
+    (the #1462 guard, for `park`). Never raises."""
+    out: Dict[str, _dt.datetime] = {}
+    try:
+        from events_io import load_events_owner_scoped
+
+        for ev in load_events_owner_scoped(str(workspace_root))[0]:
+            d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+            if ev.get("type") != "commitment_updated" or not d.get("unparked") or not d.get("cockpit_batch"):
+                continue
+            cid = str(d.get("commitment_id") or "")
+            at = _parse(d.get("pressed_at")) or _parse(ev.get("ts"))
+            if cid and at is not None and (cid not in out or at > out[cid]):
+                out[cid] = at
+    except Exception:  # noqa: BLE001 - the check only tightens
+        return {}
+    return out
+
+
+def _hub_parked(workspace_root, cid: str) -> Optional[Dict[str, Any]]:
+    """cr1#1540: the item's standing park, `{hub, seq}` (`hub`: a Hub pile
+    wrote it, `PARK_REASON`), or None when it is not parked at all. Un-park
+    from the Hub reaches only its own parks."""
+    from events_io import load_events_owner_scoped
+
+    last: Optional[Dict[str, Any]] = None
+    for ev in load_events_owner_scoped(str(workspace_root))[0]:
+        d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") == "commitment_updated" and str(d.get("commitment_id") or "") == cid \
+                and ("status_hint" in d or d.get("unparked")):
+            last = dict(d, _seq=ev.get("seq"))
+    if last is None or last.get("status_hint") != "parked":
+        return None
+    return {"hub": str(last.get("park_reason") or "") == PARK_REASON, "seq": last.get("_seq")}
+
+
 def _wait_typed(workspace_root, cid, c, actor, now, label) -> Optional[Dict[str, Any]]:
     """cr1#1291: the Snooze box's words when they set or clear a wait on an
     event rather than give a date (`commitment_wait.apply_wait_text`), under
@@ -8028,7 +8992,29 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
         stream, naming that press (`_undo_home`): the item goes back to no
         home by a later `hub_assign` reclassification, and a stream the press
         created is archived through the one archive path while nothing else
-        is on it.
+        is on it;
+      * `park` (cr1#1540): a pile's press on an item owed to the owner that
+        went quiet: `commitment_state.park_commitments`, the park the silence
+        door itself uses, as the owner's own act and with no batch, so no
+        surface reads it as a park the product made. The item stays open;
+      * `unpark` (cr1#1540): that park's Undo, through
+        `commitment_state.unpark_commitments`. It reaches only a park the Hub
+        wrote.
+
+    A row that names a `pile` (cr1#1540, the Work tab's Triage) is held to
+    `_pile_gate` first: its verb must be the pile's and the pile's own rule
+    must hold the item as the book stands when the row is reached (the
+    piles are read again after every write of the batch). Then it is
+    written exactly as the same press on the item's own row is written: a
+    close through `close_commitment` with nothing added, so its Undo is the
+    row's own `reopen`. Two differences: a pile's moves share that press's
+    batch (`hub_work.pile_batch`) in place of the run's, so one Put it back
+    (`brain_undo.undo_batch`, the Record tab's own) takes back that press's
+    moves and no other; and a move covers a copy folded under the line only
+    when the pile's rule holds that copy too. The row's answer carries the
+    `seq` of what it wrote. An Undo row of a pile's item (`back_of`, with
+    that `seq` as `back_seq`) reopens or un-parks that write and no other:
+    an item closed or parked again since is left as it is.
 
     Context lands before Done on the same row, so a note and a close pressed
     together both land. A refusal of one row never stops the rest. Answers
@@ -8087,6 +9073,14 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
     # they were pressed, against the state the batch has written so far.
     order = {"context": 0, "snooze": 1}
     counted_now: Optional[set] = None  # the overdue verdict, read once if a snooze needs it
+    pile_memo: Dict[str, Any] = {}  # cr1#1540: the piles as the book stands, and what this batch wrote
+    from hub_work import pile_batch as _pile_batch
+    _unparked: Dict[str, Any] = {}
+
+    def _unparks() -> Dict[str, _dt.datetime]:
+        if "at" not in _unparked:
+            _unparked["at"] = _owner_unparks(workspace_root)
+        return _unparked["at"]
     # cr1#1377: each refusal above is on the batch's one audit row, with the
     # page's word for it (cr1#1378), so a batch of broken presses is named on
     # the Hub; an expired or already-applied document is a refusal on purpose.
@@ -8103,11 +9097,20 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
         verb = str(c.get("action") or "").strip().lower()
         r: Dict[str, Any] = {"id": c.get("id"), "commitment_id": cid, "action": verb}
         handler: Any = None
+        piled = ""
+        held: Optional[Tuple[str, str, Dict[str, Any]]] = None
         try:
+            if verb in COMMITMENT_VERBS:
+                # cr1#1540: a pile's row is checked against the pile's own rule
+                # before anything is written; any other row passes untouched.
+                piled, held = _pile_gate(workspace_root, c, cid, verb, now, pile_memo)
             if verb not in COMMITMENT_VERBS:
                 r.update(outcome="error", line=UNKNOWN_VERB_LINE.format(verb=verb or "none"))
                 # cr1#1171: an empty handler result is audited ok
                 handler = {"status": "error", "error": "unknown_verb", "verb": verb}
+            elif held is not None:
+                r.update(outcome=held[0], line=held[1], reason=held[2].get("error") or held[2].get("status"))
+                handler = held[2]
             elif verb == "notwork" and cid not in seqs and cid.startswith("obs_"):
                 # cr1#1289: a heard line has no capture row of its own.
                 handler, outcome, line = _not_work_queued(workspace_root, cid, actor)
@@ -8128,7 +9131,13 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 r.update(outcome=outcome, line=line)
                 if handler.get("seq") is not None:
                     r["seq"] = handler["seq"]
-            elif (verb in _CLOSING_VERBS and cid in reopens
+            elif (verb == "park" and _parse(c.get("created_at")) is not None
+                  and cid in _unparks() and _parse(c.get("created_at")) < _unparks()[cid]):
+                # cr1#1540: the same guard for a park pressed before the
+                # owner's latest un-park of the item.
+                r.update(outcome="refused", reason="pressed_before_unpark", line=PRESSED_BEFORE_UNPARK_LINE)
+                handler = {"status": "refused", "error": "pressed_before_unpark"}
+            elif (verb in _CLOSING_VERBS + ("park",) and cid in reopens
                   and _parse(c.get("created_at")) is not None
                   and _parse(c.get("created_at")) < reopens[cid]):
                 # cr1#1462: a press made before the owner's latest reopen is
@@ -8148,6 +9157,10 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 if row is None:
                     r.update(outcome="already", line=ALREADY_CLOSED_LINE)
                     handler = {"status": "already_resolved"}
+                elif row.get("pending") and piled:
+                    # cr1#1540: a pile closes confirmed items only.
+                    r.update(outcome="refused", line=PILE_LEFT_LINE, reason="pile_left")
+                    handler = {"status": "refused", "error": "pile_left"}
                 elif row.get("pending"):
                     from needs_review_queue import done_items
 
@@ -8281,6 +9294,14 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                     # Hub hands it the fold it already holds and the
                     # verdict, read once per batch.
                     folded = list((open_rows.get(cid) or {}).get("folded_ids") or [])
+                    if piled:
+                        # cr1#1540: a pile moves only what its rule holds. A copy
+                        # folded under the line moves with it only when the
+                        # pile's own rule holds that copy too.
+                        _in = (pile_memo.get("sets") or {}).get("piles", {}).get(piled, set())
+                        _done = pile_memo.setdefault("done", set())
+                        folded = [f for f in folded if str(f) in _in and (piled, str(f)) not in _done]
+                        _done.update((piled, str(f)) for f in folded)
                     if folded and counted_now is None:
                         try:
                             counted_now = _counted_ids(workspace_root, now)
@@ -8289,7 +9310,9 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                     full = cs.apply_later_covering_folded(
                         str(workspace_root), cid, when_iso=when, actor_id=actor,
                         source_skill=COMMITMENT_SRC, reason=SNOOZE_REASON,
-                        surface=SOURCE_SKILL, brain_batch_id=label, now_iso=_iso(now),
+                        surface=SOURCE_SKILL, now_iso=_iso(now),
+                        # cr1#1540: a pile's moves share the pile's own batch
+                        brain_batch_id=_pile_batch(c.get("pile")) if piled else label,
                         folded_ids=folded, counted_ids=counted_now or set())
                     handler = {k: v for k, v in (full or {}).items() if k not in ("covered", "copies")}
                     st = (handler or {}).get("status")
@@ -8306,10 +9329,68 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                             r["line"] = r["line"] + " " + cs.folded_covered_line(covered)
                     else:
                         r.update(outcome="error", line=str((handler or {}).get("ack") or NOT_OPEN_LINE))
+            elif verb == "park":
+                # cr1#1540: the silence door's own park, as the owner's act
+                # (the gate above let it through). No batch: a park that
+                # carries one reads as the product's own everywhere else.
+                res = cs.park_commitments(
+                    str(workspace_root),
+                    [{"commitment_id": cid, "reason": PARK_REASON,
+                      "extra_data": {"cockpit_batch": label, "user_confirmed": True,
+                                     cs.REASON_ORIGIN_KEY: cs.REASON_ORIGIN_PRODUCT}}],
+                    parked_by=actor, source_skill=COMMITMENT_SRC)
+                handler = {k: v for k, v in ((res or [{}])[0]).items() if k != "event"}
+                st = handler.get("status")
+                if st == "parked":
+                    r.update(outcome="applied", line=PARK_EVIDENCE_LINE,
+                             seq=(((res or [{}])[0]).get("event") or {}).get("seq"))
+                    # the audit's own words: a write that landed (the writer's word kept beside it)
+                    handler = {**handler, "status": "updated", "writer_status": st}
+                elif st in ("already_parked", "not_open"):
+                    r.update(outcome="already", line=ALREADY_CLOSED_LINE if st == "not_open"
+                             else "That one is already parked; nothing was written.")
+                    handler = {**handler, "status": "already_resolved", "writer_status": st}
+                else:
+                    r.update(outcome="error", line=NOT_OPEN_LINE)
+            elif verb == "unpark":
+                # cr1#1540: the Undo of a pile's park, and of nothing else.
+                mine = _hub_parked(workspace_root, cid)
+                if mine is None:
+                    r.update(outcome="already", line=UNPARK_ALREADY_LINE)
+                    handler = {"status": "already_open"}
+                elif not mine["hub"]:
+                    r.update(outcome="refused", line=UNPARK_NOT_HUB_LINE, reason="not_hub_park")
+                    handler = {"status": "refused", "error": "not_hub_park"}
+                elif isinstance(c.get("back_seq"), int) and mine["seq"] != c.get("back_seq"):
+                    # parked again since the park this Undo is for
+                    r.update(outcome="already", line=BACK_MOVED_LINE, reason="back_moved")
+                    handler = {"status": "already_resolved"}
+                else:
+                    _pressed = str(c.get("created_at") or "").strip()
+                    res = cs.unpark_commitments(str(workspace_root), [cid], unparked_by=actor, source_skill=COMMITMENT_SRC,
+                                                reason=UNPARK_REASON, keep_wait=True,
+                                                extra_data={"cockpit_batch": label, "user_confirmed": True,
+                                                            **({"pressed_at": _pressed} if _parse(_pressed) else {})})
+                    handler = {k: v for k, v in ((res or [{}])[0]).items() if k != "event"}
+                    st = handler.get("status")
+                    if st == "unparked":
+                        r.update(outcome="applied", line=UNPARK_LINE,
+                                 seq=(((res or [{}])[0]).get("event") or {}).get("seq"))
+                        handler = {**handler, "status": "updated", "writer_status": st}
+                    elif st in ("already_open", "not_open"):
+                        r.update(outcome="already", line=UNPARK_ALREADY_LINE)
+                        handler = {**handler, "status": "already_resolved", "writer_status": st}
+                    else:
+                        r.update(outcome="error", line=str(handler.get("ack") or NOT_OPEN_LINE))
             elif verb == "reopen":
                 if cid in open_rows or cid in ledger_open:
                     r.update(outcome="already", line="That one is already open.")
                     handler = {"status": "already_open"}
+                elif c.get("back_of") and not _back_is_for(_standing_close(workspace_root, cid), c):
+                    # cr1#1540: the Undo of a pile's close reopens that close
+                    # and no other: an item closed again since stays closed.
+                    r.update(outcome="already", line=BACK_MOVED_LINE, reason="back_moved")
+                    handler = {"status": "already_resolved"}
                 else:
                     # cr1#1462 review: the reopen keeps the time the owner
                     # pressed it, so a later press is judged against the
@@ -8335,6 +9416,18 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
         except Exception as exc:  # noqa: BLE001 - one row's failure never stops the batch
             r.update(_row_error(exc))
             handler = {"status": "error", "error": type(exc).__name__}
+        if r.get("outcome") == "applied":
+            # cr1#1540: the next pile row is judged against the book as this
+            # write left it, never against a read from before it.
+            pile_memo.pop("sets", None)
+            if piled and r.get("seq") is None:
+                # the write this row made, so its Undo can name it
+                try:
+                    _mark = _hub_parked(workspace_root, cid) if verb == "park" else _standing_close(workspace_root, cid)
+                    if _mark and _mark.get("seq") is not None:
+                        r["seq"] = _mark["seq"]
+                except Exception:  # noqa: BLE001 - the write landed; the Undo falls back to the surface check
+                    pass
         results.append(r)
         # cr1#1378: the row's own answer goes with it, so the audit can never
         # say ok over a row this writer answered as an error.
@@ -8736,7 +9829,7 @@ __all__ = [
     "render_page_file", "template_path", "status_doc", "running_timed_out",
     "settle_statuses", "feed_today", "feed_plate", "feed_inbox", "feed_projects", "feed_mine", "apply_hub_choices", "plan_apply",
     "apply_commitment_choices", "log_run_receipt", "plan_task_registration",
-    "plan_cockpit_registration", "PRE_HUB_NAMES", "mail_direct", "MAIL_DIRECT", "plan_claim", "CLAIM_STALE_MINUTES", "COCKPIT_TASKS", "COCKPIT_TASK_IDS", "SURVIVING_CHATS",
+    "plan_cockpit_registration", "PRE_HUB_NAMES", "mail_direct", "MAIL_DIRECT", "calendar_actions", "CALENDAR_ACTIONS", "record_calendar_changes", "plan_claim", "CLAIM_STALE_MINUTES", "COCKPIT_TASKS", "COCKPIT_TASK_IDS", "SURVIVING_CHATS",
     "newer_message_arrived", "prep_text", "PREP_TEXT_CAP", "sent_tokens_update", "SENT_TOKENS_CAP",
     "plan_prune_choices",
     "add_chat_priority",
@@ -8745,7 +9838,7 @@ __all__ = [
     "ORIGIN_LINE_CAP",
     "feed_review", "apply_review_choices", "REVIEW_EMPTY_LINE",
     "land_registration", "LANDING_ID",
-    "PROJECT_LIVE_ORDER", "PROJECTS_CAP", "HUB_TABS", "FILTERED_GROUPS", "feed_filtered", "PRIORITIES_CAP",
+    "PROJECT_LIVE_ORDER", "PROJECTS_CAP", "HUB_TABS", "HUB_WORK_VIEWS", "HUB_WORD_TABS", "FILTERED_GROUPS", "feed_filtered", "PRIORITIES_CAP",
     "NO_HOME_CAP",
     "feed_board", "WEEK_AWAY_TIMED_HOURS", "WEEK_DAYS", "WEEK_DAY_MEETINGS", "WEEK_DAY_CARDS", "WEEK_LANES", "WEEK_AWAY_RE",
     "maintenance_status", "START_MAINTENANCE_BEHIND_HOURS",

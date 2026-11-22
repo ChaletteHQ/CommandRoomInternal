@@ -418,16 +418,17 @@ Three branches based on candidate count:
 
 **Step 0.C — Detect first install vs re-run + persist the choice.**
 
-**First-install detection (onboarding-v2 / 2026-05-17+):** read `<chosen_workspace>/_hq/workspace_config.json`. The workspace is treated as **first-install** if any of:
+**First-install detection (onboarding-v2 / 2026-05-17+):** never decide this by reading `<chosen_workspace>/_hq/workspace_config.json` yourself. Ask the read door: render `workspace_access.py plan run_helper --json '{"name": "workspace_config_io:install_state", "args": {"workspace_root": "<WS>"}}'` and paste what it prints. Keep the answer as `INSTALL_STATE`; Phase 3 reads the registered ids from it. Its `state` is one of:
 
-- File doesn't exist.
-- File exists but `registered_taskIds` is missing, null, or `[]`.
+- `first_install`: no file yet, or no ids on file (`registered_taskIds` missing, null, or `[]`).
+- `rerun`: ids are on file; `registered_taskIds` names them.
+- `unreadable`: the file will not read as a JSON object (empty, cut off part way, not text, a cloud drive still syncing it), or its `registered_taskIds` is not a list.
 
-**A file that exists but does not read as a JSON object is never written over (cr1#1504).** Empty, cut off part way, not text, or valid JSON that is not `{...}`: it can be a file a cloud drive is still syncing, and it is not a first install. Write nothing to it, register nothing, say `workspace_config_io.CONFIG_UNREADABLE_LINE` verbatim as the whole reply, and STOP. Never treat it as `{}`, and never write anything over it: that erases every key the file held (the trigger rows, the fingerprint, the registered set).
+**`unreadable` is never a first install and is never written over (cr1#1504).** Write nothing, register nothing, say the answer's `line` (it is `workspace_config_io.CONFIG_UNREADABLE_LINE`) verbatim as the whole reply, and STOP. Never treat it as `{}`: writing over it erases every key the file held (the trigger rows, the fingerprint, the registered set).
 
-If first-install, set the local variable `FIRST_INSTALL = True` and use `FIRST_INSTALL_TASK_IDS` (from `shared/scripts/schedule_config.py` — read the frozenset, never a literal typed here; since SHELVE1, cr1#618 and #847, it is `morning-brief` plus the silent `maintenance`) as the registration set. Every other default row is a shelved chat, and no path registers one.
+If `first_install`, set the local variable `FIRST_INSTALL = True` and use `FIRST_INSTALL_TASK_IDS` (from `shared/scripts/schedule_config.py`: read the frozenset, never a literal typed here; since SHELVE1, cr1#618 and #847, it is `morning-brief` plus the silent `maintenance`) as the registration set. Every other default row is a shelved chat, and no path registers one.
 
-If NOT first-install (`registered_taskIds` is populated), set `FIRST_INSTALL = False`. The skill enters Phase 6 management flow (`add` / `change` / `remove` / `reset`) — do NOT silently delete or disable tasks the customer already has. Existing customers with all 5, 6, or 7 registered keep what they have.
+If `rerun`, set `FIRST_INSTALL = False`. The skill enters Phase 6 management flow (`add` / `change` / `remove` / `reset`). Do NOT silently delete or disable tasks the customer already has. Existing customers with all 5, 6, or 7 registered keep what they have.
 
 **Record the run once, after Phase 3's registrations land, through ONE writer call (cr1#1504), never by writing the file yourself.** The writer merges into what the file holds: it sets the folder name and this run's time, adds the chats this run registered to `registered_taskIds` (none dropped; a removal is `record_removals`'s), sets `first_install` and `workspace_root` only when the file has none, and keeps every other key exactly as it was (`triggers`, `root_fingerprint` and any key another writer owns). A file that does not exist is created. Render it and paste what it prints:
 
@@ -437,7 +438,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"r
 
 Render it with `workspace_access.py plan run_writer --json '…'`. An answer with `reason: config_unreadable` wrote nothing (the file could not be read when the writer ran): say its `line` once in the summary, verbatim. Never compose the file's content by hand: a whole-file write from a list of keys erases every key the list does not name.
 
-The `first_install` flag is set true ONLY on the first registration; subsequent re-runs leave it as it was, and Phase 3 reads `len(registered_taskIds_before_this_run)` to decide first-install vs not.
+The `first_install` flag is set true ONLY on the first registration; subsequent re-runs leave it as it was, and whether this run is a first install is Step 0.C's `INSTALL_STATE` answer, never a count read from the file by hand.
 
 Future re-runs read this file first; if present, pre-select that workspace and only ask for confirmation if a different workspace is now connected. Idempotent.
 
@@ -976,7 +977,7 @@ else:
     # fleet and a second chat appearing beside a renamed one on their next
     # registration run. It also takes out every shelved id; `add end of day` is
     # refused (cr1#847), so nothing ever adds the successor.
-    existing_registered = set(load_registered_taskIds())  # from workspace_config.json
+    existing_registered = set(INSTALL_STATE["registered_taskIds"])  # Step 0.C's install_state answer; never re-read the file by hand
     target_set = registration_target_set(existing_registered)
     tasks_to_register = {
         tid: fname for tid, fname in ORCHESTRATOR_MAP.items() if tid in target_set

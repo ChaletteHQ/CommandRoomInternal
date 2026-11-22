@@ -75,5 +75,35 @@ def refused() -> dict:
     return {"reason": UNREADABLE_REASON, "line": CONFIG_UNREADABLE_LINE}
 
 
+def ids_unreadable(config: dict) -> bool:
+    """True when `registered_taskIds` is there but is not a list (a hand
+    edit, a foreign writer). That is a record nobody can read, not an empty
+    one: never a first install, and never replaced by a writer."""
+    raw = config.get("registered_taskIds")
+    return raw is not None and not isinstance(raw, list)
+
+
+def install_state(workspace_root) -> dict:
+    """A READ for schedule setup's Step 0.C: first install, re-run, or a file
+    nobody can read. Writes nothing.
+
+    `{state, registered_taskIds}`, plus `reason` and `line` when `state` is
+    `unreadable`. `first_install`: no file, or no ids on file (missing, null
+    or `[]`). `rerun`: ids on file. `unreadable`: the file will not read as a
+    JSON object, or its id list is not a list. Unreadable is never a first
+    install: the caller says `line` and stops."""
+    try:
+        config = read_for_update(config_path(workspace_root))
+    except ConfigUnreadable:
+        return {"state": "unreadable", "registered_taskIds": [], **refused()}
+    if ids_unreadable(config):
+        return {"state": "unreadable", "registered_taskIds": [], **refused()}
+    # Every entry counts, as `record_workspace_registration` keeps it: a list
+    # with anything in it is a registered set, never a first install.
+    ids = [str(t) for t in (config.get("registered_taskIds") or [])]
+    return {"state": "rerun" if ids else "first_install", "registered_taskIds": ids}
+
+
 __all__ = ["CONFIG_RELPARTS", "CONFIG_UNREADABLE_LINE", "ConfigUnreadable",
-           "UNREADABLE_REASON", "config_path", "read_for_update", "refused"]
+           "UNREADABLE_REASON", "config_path", "ids_unreadable", "install_state",
+           "read_for_update", "refused"]

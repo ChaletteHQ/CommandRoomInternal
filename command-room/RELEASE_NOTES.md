@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.4.0 (2026-11-21)
+
+The Hub has a new layout and does more from the page. Six tabs: Today, Inbox, Week, People, Work and Record. Today shows your calendar to scale beside what needs you. Inbox is a list with a reader, and new mail shows while the page is open, without waiting for a scheduled run. You can book a meeting, move one and cancel one from the Hub; nothing changes on your calendar without your press, and the note to the other person is drafted for you, never sent. Work opens on Triage: your whole plate at a glance, piles you can clear in one press with one Undo, lanes named for what each item wants next, threads with dated updates, and up to five priorities in your own order. After updating, say "update my hub" and allow the new tools once.
+
 ## v6.3.1 (2026-11-20)
 
 Fixes to closing and to Maintenance. A won deal closes an item only when the deal is with the person the item is about, and a sent file closes an item only when the file is that item. A reopened item is asked about once, not again with every new clue. An out-of-date Maintenance task is now noticed and brought up to date, your settings file is never overwritten when it cannot be read, and the health check says why a step was left unfinished instead of asking you to run it again. When a scheduled run cannot read your past chats, the Hub says so. Items from the old discuss-later list become tasks only when they read as tasks; the rest are kept as notes. Where an earlier update already turned such items into tasks, a one-time repair can be run by hand to turn them back into notes.

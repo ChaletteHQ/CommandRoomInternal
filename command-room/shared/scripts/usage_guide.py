@@ -44,7 +44,7 @@ LOOP_TITLE = "How a promise gets on and off your list"
 LOOP = ("It picks promises out of your meetings and mail and puts them on Commitments. If one is wrong, say so "
         "on the row and it learns. A promise closes when you press Done and Apply, when you say it is done, when "
         "it sees the work happen in your mail or calendar, or after a long quiet spell. Settings shows "
-        "whether the quiet spell and your own word are on. What it closed on its own in the last week is on the Done tab, where you can put it back.")
+        "whether the quiet spell and your own word are on. What it closed on its own in the last week is on the Record tab, where you can put it back.")
 ASK_WHY = ("To see where a promise came from, open its row. To see what it knows about you, say \"my profile\", "
            "then ask \"how do you know that\" about any line.")
 KNOWN_TITLE = "How sure it is about you"

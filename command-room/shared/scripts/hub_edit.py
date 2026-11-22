@@ -78,7 +78,7 @@ if str(_HERE) not in sys.path:
 
 EVENT = "hub_edit"
 KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit")
-VERBS = frozenset({"add", "rename", "set", "undo", "context"})
+VERBS = frozenset({"add", "rename", "set", "undo", "context", "update", "order", "star"})
 #: Add context (cr1#1383): the kinds that take a free note, a thread's
 #: (`stream_edit` on a thread that is not a work stream) and a person's.
 CONTEXT_KINDS = ("stream_edit", "person_edit")
@@ -150,6 +150,29 @@ CONTEXT_SAME_LINE = "{name} already has that note; nothing was written."
 CONTEXT_STREAM_LINE = ("{name} is a work stream, so a note goes on one of its threads, or say it in a chat. "
                        "Nothing was written.")
 CONTEXT_NO_TARGET_LINE = "A note goes on a thread or a person; nothing was written."
+
+#: cr1#1540: an update the owner posts on a thread, the order he keeps his
+#: priorities in, and a thread starred into a priority.
+UPDATE_CAP = 240
+UPDATE_LINE = "Posted on {name}: {note}"
+UPDATE_TAKEN_LINE = "Took back your update on {name}."
+NEEDS_UPDATE_LINE = "Type the update; nothing was written."
+UPDATE_NO_TARGET_LINE = "An update goes on a thread; nothing was written."
+#: The order is one record of the owner's, not a field on any priority, so
+#: its row names this in place of a record id.
+ORDER_TARGET = "priority_order"
+ORDER_CAP = 60
+ORDER_LINE = "Saved the order of your priorities."
+ORDER_SAME_LINE = "Your priorities are already in that order; nothing was written."
+ORDER_EMPTY_LINE = "That press names no priority; nothing was written."
+ORDER_GONE_LINE = "One of those is not a priority any more, so the order was left as it is; nothing was written."
+ORDER_UNDO_LINE = "Put your priorities back in the order they were."
+ORDER_NEWER_LINE = "You changed the order again after this, so it was left as it is; nothing was written."
+STAR_LINE = "Made {name} a priority."
+STAR_ALREADY_LINE = "{name} is already behind one of your priorities; nothing was written."
+STAR_FULL_LINE = "Five priorities at most. Take one off first. Nothing was written."
+STAR_NO_TARGET_LINE = "A star goes on a thread; nothing was written."
+STAR_NAME_TRIES = 9
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +301,15 @@ def apply_one(workspace_root, c: Dict[str, Any], actor: str) -> Dict[str, Any]:
         return _ok(str(d.get("line") or "Already applied."), replayed=True, target_id=d.get("target_id"),
                    seq=done.get("seq"))
     before = _max_seq(evs)
+    if verb == "update":
+        # cr1#1540: a dated update on a thread, the press's own row and no other.
+        return _thread_update(root, target, inp, choice_id, before) if kind == "stream_edit" \
+            else _no(UPDATE_NO_TARGET_LINE)
+    if verb in ("order", "star"):
+        if kind != "priority_edit":
+            return _no(NO_TARGET_LINE)
+        return _priority_order(root, inp, choice_id, evs, before) if verb == "order" \
+            else _priority_star(root, target, choice_id, before)
     if verb == "context":
         if kind == "stream_edit":
             return _thread_context(root, target, inp, choice_id, before)
@@ -636,6 +668,10 @@ def _undo(root: Path, kind: str, press_id: str, undo_id: str, actor: str, evs: L
         return _no(UNDO_ALREADY_LINE, "already")
     if pd.get("action") == "context":
         return _context_undo(root, kind, press, undo_id, actor, evs)
+    if pd.get("action") == "update":
+        return _update_undo(root, press, undo_id, evs)
+    if pd.get("action") == "order":
+        return _order_undo(root, press, undo_id, evs)
     is_set = pd.get("action") == "set"
     rec, now_value = _current(root, kind, tid, str(pd.get("field") or "") if is_set else "")
     name = str(pd.get("new") or tid)
@@ -664,7 +700,7 @@ def _undo(root: Path, kind: str, press_id: str, undo_id: str, actor: str, evs: L
         # Add context (cr1#1383) writes a note, not the name, so a note
         # added since does not stand in the way either.
         newer = [e for e in edits if _seq(e) > _seq(press) and e["data"].get("target_id") == tid
-                 and e["data"].get("action") not in ("undo", "set", "context")]
+                 and e["data"].get("action") not in ("undo", "set", "context", "update")]
         if newer:
             return _no(UNDO_NEWER_LINE.format(name=now_value or name))
         if now_value != pd.get("new"):
@@ -677,7 +713,7 @@ def _undo(root: Path, kind: str, press_id: str, undo_id: str, actor: str, evs: L
         # The whole log is read, not only the rows after the press: a work
         # stream an earlier Apply left half made and this press finished
         # (`resume`) is older than the press, and what named it then counts.
-        if _named_since(root, ids, -1, evs) \
+        if _named_since(root, ids, -1, evs) or _has_update(evs, ids) \
                 or (kind == "stream_edit" and len(ids) > 2):
             return _no(UNDO_IN_USE_LINE.format(name=now_value or name))
     before = _max_seq(evs)
@@ -990,7 +1026,7 @@ def _context_undo(root: Path, kind: str, press: dict, undo_id: str, actor: str,
     if rec is None:
         return _no(GONE_LINE.format(name=name))
     if any(_seq(e) > _seq(press) and e["data"].get("target_id") == tid
-           and e["data"].get("action") != "undo" for e in edits):
+           and e["data"].get("action") not in ("undo", "update") for e in edits):
         return _no(UNDO_NEWER_LINE.format(name=name))
     fact = None
     if kind == "person_edit":
@@ -1037,6 +1073,154 @@ def _context_undo(root: Path, kind: str, press: dict, undo_id: str, actor: str,
     ev = _record(root, before, {"hub_choice": undo_id, "kind": kind, "action": "undo", "target_id": tid,
                                 "undoes_choice": str(pd.get("hub_choice") or ""), "line": line})
     return _ok(line, target_id=tid, seq=ev.get("seq"))
+
+
+# ---------------------------------------------------------------------------
+# Updates, the order of the priorities, and a star (cr1#1540)
+# ---------------------------------------------------------------------------
+
+def _has_update(evs: List[dict], ids: set) -> bool:
+    """Whether an update the owner posted, and did not take back, stands on
+    one of `ids`: content, as a note is, so the record is in use."""
+    edits = _edits(evs)
+    undone = {e["data"].get("undoes_choice") for e in edits if e["data"].get("action") == "undo"}
+    return any(e["data"].get("action") == "update" and str(e["data"].get("target_id") or "") in ids
+               and e["data"].get("hub_choice") not in undone for e in edits)
+
+
+def _thread_update(root: Path, tid: str, inp: dict, choice_id: str, before: int) -> Dict[str, Any]:
+    """An update on a thread: a short note with the day it was posted. The
+    press's `hub_edit` row IS the record (one append, no other writer), so an
+    update never edits the thread and is no activity on it. It does not
+    replace Add context, which writes the thread's notes."""
+    rec = _thread(root, tid) if tid else None
+    if rec is None or rec.get("kind") == "objective":
+        return _no(UPDATE_NO_TARGET_LINE)
+    name = _thread_name(rec)
+    if not _live(rec):
+        return _no(GONE_LINE.format(name=name))
+    note = _clean(inp.get("text"), UPDATE_CAP)
+    if not note:
+        return _no(NEEDS_UPDATE_LINE)
+    line = UPDATE_LINE.format(name=name, note=note)
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "stream_edit", "action": "update",
+                                "target_id": tid, "old": name, "new": note, "line": line})
+    if not ev:
+        return _no(FAILED_LINE.format(name=name), "error")
+    return _ok(line, target_id=tid, seq=ev.get("seq"))
+
+
+def _update_undo(root: Path, press: dict, undo_id: str, evs: List[dict]) -> Dict[str, Any]:
+    """Take back an update: one row that names the press. Both rows stay in
+    the log; the readers leave a taken-back update out."""
+    pd = press["data"]
+    tid = str(pd.get("target_id") or "")
+    name = _thread_name(_thread(root, tid) or {}) or str(pd.get("old") or tid)
+    line = UPDATE_TAKEN_LINE.format(name=name)
+    ev = _record(root, _max_seq(evs), {"hub_choice": undo_id, "kind": "stream_edit", "action": "undo",
+                                       "target_id": tid, "undoes_choice": str(pd.get("hub_choice") or ""),
+                                       "line": line})
+    if not ev:
+        return _no(UNDO_FAILED_LINE.format(name=name), "error")
+    return _ok(line, target_id=tid, seq=ev.get("seq"))
+
+
+def _open_priorities(root: Path) -> List[dict]:
+    return [t for t in _thread_recs(root) if _objective_open(t)]
+
+
+def _priority_order(root: Path, inp: dict, choice_id: str, evs: List[dict], before: int) -> Dict[str, Any]:
+    """The owner's order for his priorities. The press names them in order;
+    every one must be an open priority now, or nothing is written. The row
+    keeps the whole order it leaves and the one it replaced. No priority's
+    own record is touched, so none of them reads as moved."""
+    import hub_work
+
+    raw = inp.get("order") if isinstance(inp.get("order"), list) else []
+    want: List[str] = []
+    for i in raw[:ORDER_CAP]:
+        i = str(i or "").strip()[:80]
+        if i and i not in want:
+            want.append(i)
+    if not want:
+        return _no(ORDER_EMPTY_LINE)
+    live = sorted(str(t.get("id") or "") for t in _open_priorities(root))
+    if any(i not in live for i in want):
+        return _no(ORDER_GONE_LINE)
+    old = hub_work.stored_order(evs)
+    new = hub_work.ordered(live, want)
+    if old and hub_work.ordered(live, old) == new:
+        return _no(ORDER_SAME_LINE, "already")
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "priority_edit", "action": "order",
+                                "target_id": ORDER_TARGET, "order": new, "old_order": old, "line": ORDER_LINE})
+    if not ev:
+        return _no(FAILED_LINE.format(name="The order"), "error")
+    return _ok(ORDER_LINE, target_id=ORDER_TARGET, seq=ev.get("seq"))
+
+
+def _order_undo(root: Path, press: dict, undo_id: str, evs: List[dict]) -> Dict[str, Any]:
+    """Put the order back as it was before this press: refused when a newer
+    order press stands, so an undo never erases a later choice."""
+    edits = _edits(evs)
+    undone = {e["data"].get("undoes_choice") for e in edits if e["data"].get("action") == "undo"}
+    if any(_seq(e) > _seq(press) and e["data"].get("action") == "order"
+           and e["data"].get("hub_choice") not in undone for e in edits):
+        return _no(ORDER_NEWER_LINE)
+    ev = _record(root, _max_seq(evs), {"hub_choice": undo_id, "kind": "priority_edit", "action": "undo",
+                                       "target_id": ORDER_TARGET,
+                                       "undoes_choice": str(press["data"].get("hub_choice") or ""),
+                                       "line": ORDER_UNDO_LINE})
+    if not ev:
+        return _no(UNDO_FAILED_LINE.format(name="The order"), "error")
+    return _ok(ORDER_UNDO_LINE, target_id=ORDER_TARGET, seq=ev.get("seq"))
+
+
+def _priority_star(root: Path, tid: str, choice_id: str, before: int) -> Dict[str, Any]:
+    """A thread starred into a priority: one objective in the thread's own
+    name, tied to the thread the way a confirmed suggestion is
+    (`thread_cards.suggested_priorities`'s own `confirm` shape), through
+    `objective_state.create_objective`. Refused once five priorities are
+    open. Its Undo is the priority's own (`_undo`: archived through the one
+    archive path while nothing else is on it)."""
+    import hub_work
+    import objective_state as obs
+    from objective_math import _linked_ids
+
+    rec = _thread(root, tid) if tid else None
+    if rec is None or rec.get("kind") == "objective":
+        return _no(STAR_NO_TARGET_LINE)
+    name = _clean(_thread_name(rec), STATEMENT_CAP)
+    if not _live(rec):
+        return _no(GONE_LINE.format(name=name))
+    live = _open_priorities(root)
+    held = next((t for t in live if tid in _linked_ids(t.get("objective") or {})), None)
+    if held is not None:
+        return _no(STAR_ALREADY_LINE.format(name=name), "already", target_id=held.get("id"))
+    if len(live) >= hub_work.PRIORITY_SHOWN:
+        return _no(STAR_FULL_LINE)
+    key = _norm(name)
+    if any(_norm((t.get("objective") or {}).get("statement")) == key for t in live):
+        return _no(PRIORITY_EXISTS_LINE.format(name=name), "already")
+    made = None
+    for n in range(1, STAR_NAME_TRIES + 1):
+        # A thread's name is its key, so the priority's record takes the
+        # thread's name with a word after it; its statement is the name alone.
+        label = f"{name} (priority)" if n == 1 else f"{name} (priority {n})"
+        try:
+            made = obs.create_objective(root, statement=name, name=label,
+                                        binding=dict(type="activity", entity_ids=[tid]),
+                                        anchor_thread_id=tid, source_skill=SOURCE_SKILL)
+            break
+        except ValueError as exc:
+            if "already exists" not in str(exc):
+                return _no(FAILED_LINE.format(name=name), "error")
+    if made is None:
+        return _no(FAILED_LINE.format(name=name), "error")
+    pid = str(made.get("id") or "")
+    line = STAR_LINE.format(name=name)
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "priority_edit", "action": "star",
+                                "target_id": pid, "thread_id": tid, "new": name, "line": line}, ids={pid})
+    return _ok(line, target_id=pid, seq=ev.get("seq"))
 
 
 def undo_seqs(events: List[dict]) -> set:
