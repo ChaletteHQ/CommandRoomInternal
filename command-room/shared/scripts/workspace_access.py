@@ -164,6 +164,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "advisor_sheet:load_sheet",
     "onboarding_confirm:plan_confirm",  # cr1#1163 part 2: the step-5 cards' current values and evidence (writes nothing)
     "whats_new_setup:plan_whats_new",  # cr1#1235: on an existing seat, the connectors and accounts with no role and the unset step-5 cards (writes nothing)
+    "project_folder:plan_folder",  # cr1#1582: what making a project's folder would do, or why the name cannot be a folder name (writes nothing)
     # FILECARD1 (cr1#611): has this seat been shown the paste-in block (walks the ledger, writes nothing)
     "claude_instructions:shown_status",
     # DORMSCOPE1 (cr1#170): whose accounts the dormancy scan may rank
@@ -368,6 +369,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # The substrate alarm lines are NOT here: they sweep resolved alerts
     # as they run, so they go through `run_writer`.
     "staff_meeting_helpers:health_report",
+    "everything_ok:answer",  # cr1#1585 - the one "is everything OK?" answer (tasks, workspace, what needs a yes), read only
     "staff_meeting_helpers:health_substrate",
     "bug_log:open_bug_count",  # cr1#852: how many logged bugs are still open, for the health check
     "staff_meeting_helpers:lateness",
@@ -544,6 +546,10 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cleanup_actions:check_analytical_view_staleness",  # stale views (reads)
     "skill_config_writer:lint_skill_configs",  # the settings lint (reads)
     "brain_undo:undo_listing_lines",  # the bare-undo listing (pure)
+    # cr1#1580: where a project's session notes are read and appended,
+    # `SESSION_NOTES_<folder name>.md` or the older spelling a folder already
+    # holds. Lists one folder and writes nothing; the skill writes the file.
+    "session_notes_file:notes_file",
     # KEEP THIS NAME LAST, directly above the closing brace.
     # `run_access1_test`'s B-1 removal proof anchors on the exact two-line
     # string `"workspace_root:find_workspace_root",` + `})` and puts the
@@ -742,6 +748,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "release_actions.claude_md_docs_rule_v1:claude_md_docs_rule_v1",  # DOCS lane (DOCS1 D-1): the rule into CLAUDE.md, one applied row
     "release_actions.claude_md_filecard_rule_v1:claude_md_filecard_rule_v1",  # FILECARD1 (cr1#610): the file-card line into CLAUDE.md, one applied row
     "release_actions.claude_md_nomd_rule_v1:claude_md_nomd_rule_v1",  # FILECARD1 (cr1#610): the no-Markdown line into CLAUDE.md, one applied row
+    "release_actions.claude_md_notes_line_v1:claude_md_notes_line_v1",  # cr1#1580: the "Project notes" line in CLAUDE.md rewritten to the one notes name, one applied row
     "release_actions.discuss_list_retired_v1:discuss_list_retired_v1",  # cr1#552: the retired discuss-later list emptied into notes and My Plate tasks, one applied row
     "deliverables:export_claude_doc",  # DOCS lane (DOCS1 D-2): a Claude Doc landed in the folder + its receipt row
     "lifecycle_pass:bring_back",  # cr1#753 - see the writer table row
@@ -772,6 +779,9 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "onboarding_confirm:apply_confirm",  # cr1#1163 part 2 - see the writer table row
     "whats_new_setup:apply_walk",  # cr1#1235 - see the writer table row
     "schedule_config:set_morning_time",  # cr1#1163 part 2 - see the writer table row
+    "project_folder:create_project",  # cr1#1582 - see the writer table row
+    "project_folder:make_project_folders",  # cr1#1582 - see the writer table row
+    "project_folder:undo_create_project",  # cr1#1582 - see the writer table row
     # KEEP THIS NAME LAST, directly above the closing brace - the same anchor
     # discipline as `RUN_HELPER_ALLOWLIST`: removal proofs and later lanes
     # (ORCH2 adds entries) anchor on the two-line string
@@ -2105,7 +2115,9 @@ LISTING_ARG_HELPERS = {"staff_meeting_helpers:health_report": "task_records",
                        # cr1#1005 part 4: the verdict the report wraps, the same listing
                        "task_watchdog:health_verdict": "task_records",
                        # cr1#967: compares each record's folder by digest, never opens it
-                       "schedule_backend:plan_default_cron_moves": "registered"}
+                       "schedule_backend:plan_default_cron_moves": "registered",
+                       # cr1#1585: the one "is everything OK?" answer hands the same listing to the health report
+                       "everything_ok:answer": "task_records"}
 LISTING_FOLDER_KEYS = ("folders",)
 
 

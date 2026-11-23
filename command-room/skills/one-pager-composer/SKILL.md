@@ -130,13 +130,13 @@ Corrections on user-edited drafts append to `_hq/voice/corrections-one-pager-com
 Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 
 **Primary writer for:**
-- `[project]/deliverables/[Topic]_OnePager_[YYYY-MM-DD].docx` (or `_hq/deliverables/` if no project scope) — the polished one-page brief.
+- `[project]/deliverables/[Topic]_OnePager_[YYYY-MM-DD].docx` (or `_hq/notes/` if no project scope — the one home for documents with no project, cr1#1581) — the polished one-page brief.
 
 **Appends to:**
 - `_hq/data/events.jsonl` — event type `one_pager_drafted` with `{topic, audience, primary_thread_id, artifact_path, source_decision_ids[], source_intel_ids[]}`. This lets `insight-generator` detect topical patterns ("you've written 4 one-pagers about pricing this month") and `operator-report` surface one-pagers in the work-produced section.
 
 **Reads from (v3.7.1+ substrate enrichment — was read-only over the data layer pre-v3.7.1):**
-- The CEO's input text + relevant `[project]/SESSION_NOTES_*.md` + `PROJECT_CONTEXT.md` + `PROJECT_BRAIN.md` for project-specific facts.
+- The CEO's input text + relevant `[project]/SESSION_NOTES*.md` + `PROJECT_CONTEXT.md` + `PROJECT_BRAIN.md` for project-specific facts.
 - `_hq/data/entities.json` for org / person / project context (e.g., if the one-pager is about Acme Co, pull their record).
 - `_hq/data/events.jsonl` for prior decisions on the topic — **read via the org-scoped reader, never a raw load** (PGUARD2 — the one-pager's audience is external): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then filter `type == "decision"` with topic match. The reader applies the account-scope mask and drops personal-lane rows by design. Pulled into the brief's context so the one-pager doesn't contradict positions you've already taken. Source seqs go into `source_decision_ids[]` on the emitted event. **Subject-scoped when the project carries subjects (SPEC THREADANN1 §0 ruling 3):** once the topic resolves to a project (`primary_thread_id`), narrow the filtered decisions the same way call-prep does — `from thread_subjects import scope_events_to_subject; decisions = scope_events_to_subject(workspace_root, primary_thread_id, decisions, evidence={"attendee_org_ids": <the topic's org context, when known>})`. A project the weekly cleanup job never annotated passes `decisions` back UNCHANGED (the byte-identity fence the acceptance pins) — this only narrows a project that's ALREADY been split into evidence-scored subjects, never a project without them.
 - `_hq/intel/*.md` for captured intel on the topic — surfaced as "what we know" if the one-pager is research-heavy. Source ids go into `source_intel_ids[]` on the emitted event.
@@ -246,7 +246,7 @@ Total length: fits on one US Letter page with 1-inch margins, 11pt Calibri. If c
 3. If web research is needed and the user hasn't said "use my notes only," use the web research connector to pull 2-3 authoritative sources.
 4. Draft using the skeleton above. Voice comes from the baked-in `## Voice Block` in this SKILL.md (Voice Protocol v3.0) — do not read external `VOICE_SAMPLES.md` files.
 5. **Render via the canonical brief_writer (v3.13.8+ — Bug #53):** call `shared/scripts/brief_writer.py` `make_brief(brief_kind="one_pager", ...)`. Do NOT invoke the `docx` skill or hand-roll docx-js. brief_writer enforces canonical Calibri typography, navy heading hierarchy (Heading 1/2/3 per Bug #7), eyebrow label "ONE-PAGER", and runs the universal post-render leak scanner (Bug #57/#59/#54) automatically. **Visual grammar (FS-12 — MUST):** data-bearing sections (supporting data, metrics, comparisons) render through the `table` / `matrix` / `tiles` primitives, never a bullet wall; before the visual pass run `visual_gate.flag_zero_table_data_heavy(sections, "one_pager")` and restructure any section it names. Fewer, structured facts also protect the single-page fit.
-6. Save to `[Current Project]/deliverables/` with filename `[Topic]_OnePager_[YYYY-MM-DD].docx`. If no current project context, save to `_hq/deliverables/` (matches the Writer Contract — this is the ONLY fallback location).
+6. Save to `[Current Project]/deliverables/` with filename `[Topic]_OnePager_[YYYY-MM-DD].docx`. If no current project context, save to `_hq/notes/` (matches the Writer Contract — this is the ONLY fallback location, the same home the export door uses for a document with no project).
 7. Return the file link + a 2-sentence summary of what's in it. Done.
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.

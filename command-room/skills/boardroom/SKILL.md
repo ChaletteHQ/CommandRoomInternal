@@ -34,7 +34,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes
 
 **Primary writer for:**
 - `board_convened` event appended to `_hq/data/events.jsonl` via `shared/scripts/atomic_write.py::atomic_append_jsonl` (omit `seq` — the append gate auto-stamps it; never pre-compute via `next_seq`). Shape: `{subject, scope_project_label, seats[], verdicts[], conflicts[], asks[], artifact_path}`. Seats list each seat's `{name, type}` where type ∈ `archetype` | `persona`. Sole writer of `board_convened`.
-- The board memo `.docx` at `[Project]/deliverables/BoardReview_[Topic]_[YYYY-MM-DD].docx` (or `_hq/deliverables/BoardReview_[Topic]_[YYYY-MM-DD].docx` with no project scope). Per CONTRACT Rule 27 the deliverable is `.docx`, never `.md`. Surface it as an H2 clickable link via `shared/scripts/brief_path.py::get_brief_artifact_url()`.
+- The board memo `.docx` at `[Project]/deliverables/BoardReview_[Topic]_[YYYY-MM-DD].docx` (or `_hq/notes/BoardReview_[Topic]_[YYYY-MM-DD].docx` with no project scope — the one home for documents with no project). Per CONTRACT Rule 27 the deliverable is `.docx`, never `.md`. Surface it as an H2 clickable link via `shared/scripts/brief_path.py::get_brief_artifact_url()`.
 
 ## Deliverable Render Gate (GATE1 — MUST, P1.9)
 
@@ -54,7 +54,7 @@ This skill produces a `.docx` deliverable. It MUST be produced through the canon
 - `_hq/data/entities.json` — project + person context; `workspace.user_first_name`.
 - `_hq/intel/*.md` — captured intel on the subject (the strategy seat).
 - QuickBooks MCP — P&L / cash / AR aging for the CFO seat when connected.
-- Project context (`PROJECT_BRAIN.md`, `SESSION_NOTES_*`) when the subject references a project.
+- Project context (`PROJECT_BRAIN.md`, `SESSION_NOTES*.md`) when the subject references a project.
 
 **Conflict boundary:** sole writer of `board_convened` and of `boardroom.json`. No writes to `entities.json` / `aliases.json` / advisor packs (those belong to people-crm and advisor-export respectively). Deliverable file + one event append + config write only.
 

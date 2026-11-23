@@ -22,7 +22,7 @@ Lifted from `migration-v2` Path A (Phases 2–6) and adapted to emit into the sh
     audit-reports/**               ← preserved, not parsed
     intel/**                       ← preserved, not parsed
   [Project Folder]/
-    SESSION_NOTES_[NAME].md        ← dated entries → events
+    SESSION_NOTES*.md              ← dated entries → events (any spelling)
     PROJECT_CONTEXT.md             ← narrative only
     PROJECT_BRAIN.md               ← v1.7+ only; has Decisions Log + Glossary
     SUCCESS_CRITERIA.md            ← optional; feeds thread.success_criteria
@@ -205,7 +205,7 @@ Per decision:
 }
 ```
 
-### P5. Parse per-project `SESSION_NOTES_[NAME].md` → events
+### P5. Parse per-project `SESSION_NOTES*.md` → events
 
 For each project folder, open its SESSION_NOTES file. Split on dated session boundaries:
 

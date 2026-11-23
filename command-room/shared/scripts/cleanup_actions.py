@@ -64,6 +64,7 @@ import render_decision_log  # noqa: E402
 import render_master_tracker  # noqa: E402
 import render_router_misses  # noqa: E402
 import render_craft_view  # noqa: E402
+import session_notes_file as snf  # noqa: E402  (cr1#1580: the one notes name)
 
 
 # --- D6: stale lock-file sweep (archive-move, never delete) --------------------
@@ -538,12 +539,6 @@ def _version_key(value: str) -> tuple:
 _DEFAULT_TEMPLATE = ROOT.parent.parent / "references" / "session-notes-template.md"
 
 
-def _name_token(folder_name: str) -> str:
-    """Derive the `[NAME]` token used in SESSION_NOTES_[NAME].md. Mirrors the
-    workspace convention of keeping the human folder name (spaces allowed)."""
-    return folder_name.strip()
-
-
 def _render_scaffold(project_display: str, today: str, template_path: Path | None) -> str:
     tpl_path = template_path or _DEFAULT_TEMPLATE
     try:
@@ -561,11 +556,18 @@ def backfill_session_notes(root: str | Path, folder_name: str | None,
                            project_display: str | None = None,
                            today: str | None = None,
                            template_path: str | Path | None = None) -> str | None:
-    """Scaffold a SESSION_NOTES file for a project folder that has none.
+    """Scaffold a session-notes file for a project folder that has none.
 
-    CLIENT SAFETY: if ANY `SESSION_NOTES*.md` already exists in the folder, this
-    returns None and writes nothing — an existing notes file is never
-    overwritten. Returns the workspace-relative path created, or None.
+    The file is `SESSION_NOTES_<folder name>.md`, named by
+    `session_notes_file.ruled_name` (cr1#1580): the folder's own name exactly
+    as spelled, and for a nested `folder_name` its last segment, so the file
+    lands inside the folder (the whole nested value used to go into the file
+    name, which made a stray subfolder).
+
+    CLIENT SAFETY: if ANY notes-family file (live, archive or index, any
+    spelling) already exists in the folder, this returns None and writes
+    nothing — an existing notes file is never overwritten or doubled.
+    Returns the workspace-relative path created, or None.
 
     The scaffold carries the backfill provenance line so it's obvious the file
     was machine-created and is safe for the next "end session" to fill in."""
@@ -582,10 +584,13 @@ def backfill_session_notes(root: str | Path, folder_name: str | None,
     if not folder.is_dir():
         return None
     # Never overwrite — any existing notes file (live / archive / index) wins.
-    for _ in folder.glob("SESSION_NOTES*.md"):
+    if snf.has_any_notes(folder):
+        return None
+    name = snf.ruled_name(folder.resolve())
+    if not name:
         return None
     today = today or datetime.date.today().isoformat()
-    target = folder / f"SESSION_NOTES_{_name_token(folder_name)}.md"
+    target = folder / name
     content = _render_scaffold(project_display or folder_name, today,
                               Path(template_path) if template_path else None)
     atomic_write_text(target, content)
@@ -646,7 +651,6 @@ _LONG_DATE_RE = re.compile(
 # reads as a dated entry and gets archived away.
 _ENTRY_PREFIX_RE = re.compile(r"^(Session|Meeting)\b")
 
-_ROLLOVER_SKIP_DIR_RE = re.compile(r"archive|backup", re.I)
 # A markdown table's alignment rule, with or without leading/trailing pipes:
 # `|---|---|`, `--- | :---:`, `:--|--:`. Rows themselves start with `|`.
 _TABLE_RULE_RE = re.compile(r"^[|:\- ]*-{3,}[|:\- ]*$")
@@ -746,17 +750,20 @@ def _entry_summary(block: dict) -> str:
 
 
 def _notes_name_token(path: Path) -> str:
-    """`SESSION_NOTES_ACME.md` -> `ACME`; a bare `SESSION_NOTES.md` -> ``."""
+    """`SESSION_NOTES_ACME.md` -> `ACME`; a file with no name part -> ``.
+    The archive and index beside a notes file follow that file's own name,
+    whatever its spelling (cr1#1580 never renames one)."""
     stem = path.stem
-    if stem.upper().startswith("SESSION_NOTES_"):
-        return stem[len("SESSION_NOTES_"):]
+    head = snf.PREFIX + "_"
+    if stem.upper().startswith(head):
+        return stem[len(head):]
     return ""
 
 
 def _sibling(path: Path, suffix: str) -> Path:
     token = _notes_name_token(path)
-    base = f"SESSION_NOTES_{token}" if token else "SESSION_NOTES"
-    return path.parent / f"{base}_{suffix}.md"
+    base = f"{snf.PREFIX}_{token}" if token else snf.PREFIX
+    return path.parent / f"{base}_{suffix}{snf.SUFFIX}"
 
 
 def _maintenance_overrides(root: Path) -> dict[str, str]:
@@ -784,33 +791,28 @@ def _maintenance_overrides(root: Path) -> dict[str, str]:
 
 def _iter_session_notes(root: Path):
     """Live SESSION_NOTES files, resolved the way the rest of the module treats
-    project folders: anything under `_archive/`, a dot-directory, or a folder
-    whose name says archive/backup is out; so is any file that IS an archive,
-    an index, or the shipped template."""
-    for p in sorted(root.rglob("SESSION_NOTES*.md")):
+    project folders: anything in a folder this product keeps as an archive,
+    backup or quarantine, or a dot-directory, is out
+    (`session_notes_file.in_live_folder`, cr1#1624: exact folder shapes, so a
+    client's "Archive Migration 2026" rolls over); so is any file that IS an
+    archive, an index, or the shipped template."""
+    for p in sorted(root.rglob(snf.GLOB)):
         try:
             rel = p.relative_to(root)
         except ValueError:
             continue
-        parts = rel.parts[:-1]
-        if any(part.startswith(".") or part == _ARCHIVE_ROOT
-               or _ROLLOVER_SKIP_DIR_RE.search(part) for part in parts):
+        if not snf.in_live_folder(rel.parts[:-1]):
             continue
-        # Case-insensitive, matching the directory fence above: a workspace
-        # that shouted its archive filename (`..._ARCHIVE_2026.md`) would
-        # otherwise be reshaped as if it were the live file.
-        name = p.name.upper()
-        if "_ARCHIVE" in name or name.endswith("_INDEX.MD"):
-            continue
-        if "TEMPLATE" in name:
-            continue
-        # SESSQUAR1: the swept-narrative sidecar (`SESSION_NOTES*.swept.md`,
-        # see session_narrative.py) matches this glob but is quarantined,
-        # unconfirmed content — rolling it over would archive swept entries
-        # into the shared SESSION_NOTES_ARCHIVE family, un-quarantining them.
-        # Infix check (not endswith) so SWEEPSTALE1's `.swept.rejected.md`
-        # preserve file is fenced from rollover the same way.
-        if ".SWEPT." in name:
+        # The file-name fence is the one notes-name rule's
+        # (`session_notes_file.is_live_name`, cr1#1580), case-insensitive like
+        # the directory fence above: an archive or index (a workspace that
+        # shouted `..._ARCHIVE_2026.md` included), the shipped template, and
+        # SESSQUAR1's swept sidecar (`.swept.md`, and SWEEPSTALE1's
+        # `.swept.rejected.md`) are never reshaped as the live file; rolling
+        # the sidecar over would archive swept entries into the shared
+        # archive family, un-quarantining them. A folder's own ruled-name file
+        # stays live even when the folder's name carries one of those marks.
+        if not snf.is_live_name(p):
             continue
         if p.is_file():
             yield p

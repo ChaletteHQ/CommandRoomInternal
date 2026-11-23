@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="day">
+<html lang="en" data-theme="evening">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -25,9 +25,11 @@
 
   LOOK (cr1#1537, owner ruling 2026-11-21: the design board is the reference).
   One masthead row over the page, no band. The board's standard style as
-  tokens, in a Day look and an Evening look; Day by default, Evening is the
-  viewer's own switch, remembered in this browser only (a browser that had
-  saved the white look opens in Day, one that had saved ink in Evening).
+  tokens, in a Day look and an Evening look; Evening by default (cr1#1634,
+  owner 2026-11-22), drawn by the markup itself so it holds from the first
+  paint; Day is the viewer's own switch, remembered in this browser only (a
+  browser that had saved the white look opens in Day, one that had saved ink
+  in Evening).
   The font stacks name the design's faces first and load nothing: a seat
   without them sees its system face.
 -->
@@ -231,7 +233,8 @@
   /* cr1#1017 behaviour 2, shortened by cr1#1591 B1: the day's headline, its full sentence and each part's detail one press away. */
   .daysent { font-size: 24px; line-height: 1.35; font-weight: 600; color: var(--ink); margin: 2px 0 8px; }
   .firstcard { border: 1px solid var(--olive); border-left: 4px solid var(--olive); border-radius: 0 var(--radius) var(--radius) 0; padding: 12px 16px; margin-bottom: 6px; }
-  .firstcard .k { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--olive); }
+  /* cr1#1636 item 3: its label in sentence case, like every other label (cr1#1605) */
+  .firstcard .k { font-size: 13px; font-weight: 700; color: var(--olive); }
   .firstcard .t { font-size: 17px; font-weight: 600; margin-top: 2px; }
   .firstcard .why { font-size: 13px; color: var(--ink-soft); margin-top: 2px; }
   .lanehint { color: var(--ink-soft); font-size: 13px; margin: -4px 0 4px; }
@@ -304,6 +307,9 @@
   .card.closed .ct { text-decoration: line-through; color: var(--ink-soft); }
   .card .cacts { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
   .card .cmenu { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  /* cr1#1644: a card whose press waits is one line, what was chosen and its Undo */
+  .card.chosencard .chosen { font-size: 12px; gap: 6px; }
+  .card.chosencard .chosen .ct { display: block; -webkit-line-clamp: unset; line-clamp: none; font-weight: 400; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* cr1#1591: a section folded to its heading and its count (Week's priorities,
      Record's sections after the first); one press opens it. */
   details.secfold { margin: 10px 0 2px; }
@@ -350,12 +356,17 @@
   nav.tabs .count:empty { display: none; }
   button.beat { background: none; border: 0; padding: 4px 2px; font-size: 13px; color: var(--ink-soft); display: flex; align-items: center; gap: 7px; text-align: left; max-width: 260px; min-width: 0; }
   button.beat:hover { color: var(--ink); }
-  button.beat .dayline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  /* cr1#1635: never cut off mid-word: a long line wraps, at most two lines */
+  button.beat .dayline { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; line-height: 1.3; }
   .beatdot { width: 7px; height: 7px; border-radius: 50%; background: var(--go); display: inline-block; flex: none; }
   /* cr1#1591: trouble is the needs-a-look mark, not a dot; the words beside it name what */
   .beatdot.bad { width: 15px; height: 15px; background: none; color: var(--need-text); }
   .beatdot svg { width: 15px; height: 15px; display: block; }
   .beatdot.live { animation: blink 1.6s ease-in-out infinite; }
+  /* cr1#1635: what is running, by name, behind the icon beside the status line */
+  .beatrow { display: inline-flex; align-items: center; min-width: 0; }
+  .beattip { display: inline-flex; align-items: center; flex: none; }
+  .beattip[hidden] { display: none; }
   button.ghost { background: none; border: 1px solid var(--line); border-radius: var(--pill); padding: 6px 12px; font: 500 13px var(--font-sans); color: var(--ink); display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
   button.ghost:hover { background: var(--raise); }
   button.ghost svg { width: 15px; height: 15px; display: block; }
@@ -453,6 +464,21 @@
   .tside .row.one > details.rmore[open] > summary { color: var(--ink); }
   .tside .row.one > details.rmore .sub { margin-top: 3px; }
   .tside .row.one > details.rmore .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  /* cr1#1636 item 6: the title comes first on its line and is cut only at a
+     word (the words that do not fit go to a second line that is not shown;
+     the whole text is its hover); the when takes only the room the title
+     leaves (it starts at nothing and grows to its own width), shown whole or
+     not at all (the same second line that is not shown), and a row with no
+     More takes back the room More's word keeps */
+  .tside .row.one .title .tt { flex: 0 1 auto; min-width: 3em; white-space: normal; overflow-wrap: normal; word-break: normal; text-overflow: clip; line-height: 1.45; max-height: 1.45em; }
+  .tside .row.one .title .when { flex: 1 1 0; max-width: max-content; min-width: 0; display: block; overflow: hidden; white-space: normal; line-height: 1.45; height: 1.45em; }
+  .tside .row.one .title .when > .w0 { display: inline-block; width: 0; }
+  .tside .row.one .title .when > .w1 { display: inline-block; white-space: pre; }
+  .tside .row.one.nomore { padding-right: 12px; }
+  /* cr1#1636 item 5: a starred person's fold on Today: the rest of what is open, and who they are */
+  .pfold { margin-top: 4px; font-size: 13px; color: var(--ink-soft); }
+  .pfold > summary { cursor: pointer; font-weight: 500; width: max-content; }
+  .pfold[open] > summary { color: var(--ink); margin-bottom: 2px; }
   /* cr1#1591 B1: the headline, its info icon beside it, and the clash or goal each its own short line under it */
   .dayhead { display: flex; align-items: flex-start; gap: 8px; }
   .dayhead .daysent { flex: 0 1 auto; min-width: 0; font: 600 24px/1.25 var(--font-display); letter-spacing: -.02em; margin: 2px 0 10px; }
@@ -509,8 +535,20 @@
   .needhead .needn:empty { display: none; }
   .needhead button.viewswitch { background: none; border: 0; padding: 0; font: 500 13px var(--font-sans); color: var(--go-text); cursor: pointer; }
   .needhead button.viewswitch:hover { text-decoration: underline; text-underline-offset: 3px; }
-  #focusrows .fr { grid-template-columns: minmax(0, 1fr) auto; }
-  #focusrows .fr .fro { grid-column: 1 / -1; }
+  #focusrows .fr, #brieffirst .fr { grid-template-columns: minmax(0, 1fr) auto; }
+  #focusrows .fr .fro, #brieffirst .fr .fro { grid-column: 1 / -1; }
+  /* cr1#1644: Everything's Needs you rows, the first in the Do this first card; a chosen row is one line */
+  .firstcard .fr { border-top: 0; padding: 4px 0 0; }
+  .frmore { font-size: 12px; font-weight: 600; color: var(--ink-soft); margin: 14px 0 0; }
+  #focusrows .fr.pressed, #brieffirst .fr.pressed { display: block; padding: 6px 0; }
+  .row.chosenrow { padding: 6px 16px; flex-direction: row; align-items: center; }
+  .chosenrow .cfold { flex: 1 1 auto; min-width: 0; }
+  .cfold .parts { margin-top: 4px; }
+  .chosen { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13.5px; color: var(--ink-soft); }
+  .chosen .cw { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--ink); }
+  .chosen .ct { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chosen .cs { flex: none; white-space: nowrap; }
+  .chosen button.act.undo, .irc button.act.undo { flex: none; margin-left: auto; padding: 2px 8px; }
   .fquiet:empty { display: none; }
   .fr { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 2px 14px; align-items: center; padding: 14px 0; border-top: 1px solid var(--line); }
   .fr:first-child { border-top: 0; }
@@ -684,6 +722,9 @@
   button.ir:hover { background: var(--surface); }
   button.ir[aria-selected="true"] { background: var(--raise); box-shadow: inset 3px 0 0 var(--go); }
   button.ir.cleared { opacity: .5; }
+  /* cr1#1644: a line set aside is one line, with its Undo beside it */
+  .irc { display: flex; align-items: center; gap: 4px; }
+  .irc button.ir.chosen { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 5px 10px; opacity: 1; font-size: 13.5px; color: var(--ink-soft); }
   .ir .idot { width: 8px; height: 8px; border-radius: 50%; }
   .ir .idot.need { background: var(--need); }
   .ir .iwho { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -739,7 +780,8 @@
     nav.tabs { order: 5; flex: 1 0 100%; scrollbar-width: thin; }
     nav.tabs button[data-tab] { padding: 6px 8px; font-size: 13.5px; }
     .mastsp { display: none; }
-    button.beat { order: 6; flex: 1 1 0; max-width: none; }
+    .beatrow { order: 6; flex: 1 1 0; }
+    button.beat { flex: 0 1 auto; max-width: none; }
     .ringwrap { order: 7; }
     .daysent, .dayhead .daysent { font-size: 21px; }
     .row { flex-direction: column; align-items: flex-start; }
@@ -794,7 +836,7 @@
   <button role="tab" aria-selected="false" aria-controls="tab-record" tabindex="-1" data-tab="record">Record</button>
   </nav>
   <span class="mastsp"></span>
-  <button class="beat" id="beatBtn" type="button" aria-expanded="false" aria-controls="rundetails" title="How the day's run stands. Press for Run details: the lights and any note."><span class="beatdot" id="beatDot"></span><span class="dayline" id="dayline" aria-live="polite">Loading the day.</span></button>
+  <span class="beatrow"><button class="beat" id="beatBtn" type="button" aria-expanded="false" aria-controls="rundetails" title="How the day's run stands. Press for Run details: the lights and any note."><span class="beatdot" id="beatDot"></span><span class="dayline" id="dayline" aria-live="polite">Loading the day.</span></button><span class="beattip" id="beatTip" hidden></span></span>
   <div class="ringwrap idle" id="ringwrap">
     <span class="halo"></span>
     <svg aria-hidden="true" focusable="false">
@@ -821,6 +863,7 @@
   <div class="runside">
     <div class="runmeta"><span class="meta" id="metaline">{{WORKSPACE_BASENAME}}</span><span class="clock" id="clock"></span><span class="waiting none" id="waiting"></span></div>
     <div class="lights" id="lights"></div>
+    <div class="maintnote" id="oknote" hidden></div>
     <div class="maintnote" id="maintnote" hidden></div>
     <div class="maintnote" id="holdernote" hidden></div>
   </div>
@@ -842,9 +885,8 @@
 <div class="banner" id="updatebar" hidden><span class="noteic info" role="img" aria-label="Information"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="7" fill="currentColor"></circle><path d="M8 7.3v4.2" fill="none" stroke="var(--raise)" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="var(--raise)"></circle></svg></span><span class="notetext" id="updatetext"></span> <a class="act primary" id="finishUpdate" href="#" target="_blank" rel="noopener" title="Open a chat with finish update typed in. Nothing runs until you send it.">Finish update</a></div>
 
 <section class="tab on" id="tab-today" role="tabpanel">
-  <!-- cr1#1591: a tab's one line, and each section's, sits behind the shared icon
-       (infoTip in the script draws the same markup), word for word, one press away. -->
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-today" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-today" hidden>Your calendar, the few things that need you now, and your to-dos and reminders.</span></span></div>
+  <!-- cr1#1636 item 7: Today's own line sits in the headline's icon (renderSentence), beside
+       Today's heading, never alone under the top bar; each section's line sits beside its heading. -->
   <div class="today3">
   <!-- the calendar: the next meetings as a short list, then the meetings already over, folded (cr1#1591; the day grid is on Week) -->
   <aside class="tcal" aria-label="Calendar">
@@ -874,9 +916,10 @@
       <div class="fquiet" id="focusquiet"></div>
     </div>
     <div id="todayList" hidden>
+      <!-- cr1#1644: Everything opens with the same Needs you rows as Focus, in the same order, the first marked Do this first; then the rest -->
+      <div id="brieffirst"></div>
       <div class="donestrip" id="donestrip" hidden></div>
       <div class="morning" id="morning" role="status" aria-live="polite"></div>
-      <div id="brieffirst"></div>
       <div id="changed" class="changed" role="status" aria-live="polite"></div>
       <div id="starred"></div>
       <div class="cols people">
@@ -910,9 +953,9 @@
 
 <section class="tab" id="tab-inbox" role="tabpanel">
   <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-inbox" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-inbox" hidden>Mail that may need you, to reply to, put in your drafts or set aside.</span></span></div>
+  <!-- cr1#1643: no Apply on a tab; the top bar's Apply shows while a choice waits, with its count -->
   <div class="parts">
     <button class="act" data-part="inbox" disabled>Check inbox</button>
-    <button class="act primary" data-part="apply" disabled>Apply</button>
   </div>
   <div class="quiet" id="inboxhead" hidden></div>
   <!-- cr1#1538: what the page lists itself while it is open, and when it last looked.
@@ -989,9 +1032,6 @@
   <div id="overduerows" class="col"></div>
   </div>
   <div id="confirmwrap" hidden>
-  <div class="parts">
-    <button class="act primary" data-part="apply" disabled title="Send your answers to your book">Apply</button>
-  </div>
   <div id="reviewhead" class="quiet"></div>
   <div id="reviewrows" class="col"></div>
   <div id="confirmplate" class="col"></div>
@@ -1018,6 +1058,8 @@
   </div>
   <div id="projecthead" class="quiet"></div>
   <div id="projectrows" class="col"></div>
+  <!-- cr1#1584: Tidy, the workspace's loose ends as piles, drawn only when one holds something. -->
+  <div id="tidy"></div>
 </div>
 <div class="workview" id="tab-updates" hidden>
   <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-updates" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-updates" hidden>Short notes from you on your work, each with its date, to post one or take one back.</span></span></div>
@@ -1028,9 +1070,6 @@
 <!-- cr1#1537: Record is the Done tab's body, unchanged (its feed is still feed/week). -->
 <section class="tab" id="tab-record" role="tabpanel">
   <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-record" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-record" hidden>What was done this month, then this week's changes for you and by you, with Put it back on any you disagree with.</span></span></div>
-  <div class="parts">
-    <button class="act primary" data-part="apply" disabled title="Send your choices to your book">Apply</button>
-  </div>
   <div id="weekmonth"></div>
   <div id="weekmeasure" class="quiet"></div>
   <div id="weekhead" class="quiet"></div>
@@ -1050,11 +1089,10 @@
 <aside class="drawer" id="drawer-settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" hidden>
   <div class="drawerhead"><h2 id="settingsTitle">Settings</h2><button class="ghost" type="button" data-drawer-close>Close</button></div>
   <p class="tabhelp">How Command Room works for you: what it learned, its connectors and how it talks to you.</p>
-  <div class="parts">
-    <button class="act primary" data-part="apply" disabled title="Send your changes to your book">Apply</button>
-  </div>
+  <!-- cr1#1643 review: the top bar's Apply sits under this panel and its backdrop -->
+  <div class="quiet" id="settingsapply" hidden>Close Settings and press Apply.</div>
   <!-- cr1#1591 (Part A 11): the look, moved here from the top bar; it changes this browser only, at once, with no Apply. -->
-  <div class="row lookrow"><div class="main"><div class="title">Look</div></div><div class="acts"><div class="viewseg" id="lookrow" role="group" aria-label="Look"><button type="button" data-look="day" aria-pressed="true">Day</button><button type="button" data-look="evening" aria-pressed="false">Evening</button></div></div></div>
+  <div class="row lookrow"><div class="main"><div class="title">Look</div></div><div class="acts"><div class="viewseg" id="lookrow" role="group" aria-label="Look"><button type="button" data-look="day" aria-pressed="false">Day</button><button type="button" data-look="evening" aria-pressed="true">Evening</button></div></div></div>
   <div id="settingshead" class="quiet"></div>
   <div id="settingsrows" class="col"></div>
   <div id="settingsguide" class="col"></div>
@@ -1082,6 +1120,10 @@
 <script>
 (function () {
   "use strict";
+  // cr1#1634 review: the page is published through a document skeleton that
+  // may not keep the html tag's look, so with no look stored this script
+  // sets Evening first, before anything is drawn, and saves nothing.
+  try { var bootLook = null; try { bootLook = localStorage.getItem("hub.theme"); } catch (e) {} if (bootLook !== "day" && bootLook !== "paper") document.documentElement.setAttribute("data-theme", "evening"); } catch (e) {}
   var CFG = {
     server: {{TRIGGER_SERVER_JSON}},
     basename: {{WORKSPACE_BASENAME_JSON}},
@@ -1503,9 +1545,11 @@
   // cr1#1537: Day and Evening replace the white and ink looks, under the same
   // key: a browser that saved "paper" opens in Day, one that saved "ink" in
   // Evening. cr1#1591 (Part A 11): the switch is Settings' first row, Look,
-  // with Day and Evening; the one in use is pressed.
+  // with Day and Evening; the one in use is pressed. cr1#1634: Evening is the
+  // default, set on the page's html tag and pressed in the markup; only a stored Day (or
+  // the old "paper") turns the page to Day, and a plain boot stores nothing.
   function setTheme(name) {
-    name = name === "evening" || name === "ink" ? "evening" : "day";
+    name = name === "day" || name === "paper" ? "day" : "evening";
     document.documentElement.setAttribute("data-theme", name);
     var looks = document.querySelectorAll("button[data-look]");
     for (var i = 0; i < looks.length; i++) looks[i].setAttribute("aria-pressed", looks[i].getAttribute("data-look") === name ? "true" : "false");
@@ -1635,6 +1679,15 @@
   // A place's note rows, drawn again only when what they say changed: the
   // lights redraw every second, and a redraw would close an open popup.
   var NOTES_DRAWN = {};
+  // cr1#1585 review round 1: a few words as the row ("All OK", "Needs a look:
+  // Inbound Mail", "3 wait for a yes"), the full answer behind the info mark.
+  function okNote(eo) {
+    if (!eo || typeof eo !== "object" || !eo.line) return [];
+    var go = /^[a-z]+$/.test(String(eo.goto || "")) ? String(eo.goto) : "";
+    var few = String(eo.short || "") || String(eo.line);
+    return [{ kind: eo.ok ? "info" : "look", text: few, why: few === String(eo.line) ? "" : String(eo.line),
+      act: go ? '<button class="act" type="button" data-goto="' + go + '">' + esc(String(eo.goto_label || "Open")) + "</button>" : "" }];
+  }
   function drawNotes(id, rows) {
     var el = $(id); if (!el) return;
     var key = JSON.stringify(rows || []);
@@ -1658,6 +1711,10 @@
     // job failed or a connector went unread (cr1#822). cr1#1590: one row a
     // finding, today's sentence (maintLine's words) behind each row's icon.
     var said = maintLine(S.status.maintenance);
+    // cr1#1585: the one "is everything OK?" answer, the line the chat's answer
+    // is made of, with the place its yes-questions wait. An older Maintenance
+    // record has none, and nothing is drawn.
+    drawNotes("oknote", okNote((S.status.maintenance || {}).everything_ok));
     drawNotes("maintnote", said ? maintNotes(S.status.maintenance) : []);
     // cr1#1138: which computer and account hold the scheduled work, as the
     // health check says it (one producer, `cockpit_helpers.schedule_holder_status`);
@@ -1724,11 +1781,14 @@
       if (!found.own && hub.length) look = look.concat(hub); else look.push("Maintenance");
     }
     var trouble = look.length ? look.join(", ") + (look.length === 1 ? " needs" : " need") + " a look" : "";
+    // cr1#1635: what runs is a count ("Running 2"), never a list cut off
+    // mid-word; the names are behind the icon beside the line (renderBeat).
+    // A trouble comes first, so its mark sits beside the words that name it.
     var busy = "";
     if (SEQ.starting) busy = "Starting the morning";
-    else if (run.length) busy = "Running: " + run.join(", ");
+    else if (run.length) busy = "Running " + run.length;
     else if (view.allDone && SEQ.readyLine && !SEQ.settled) busy = SEQ.readyLine;
-    if (busy) return trouble ? busy.replace(/\.$/, "") + " · " + trouble : busy;
+    if (busy) return trouble ? trouble + " · " + busy.replace(/\.$/, "") : busy;
     if (trouble) return trouble;
     var last = "";
     legs.forEach(function (x) { if (x.st.state !== "idle" && x.st.at && (!last || after(x.st.at, last))) last = x.st.at; });
@@ -1750,12 +1810,62 @@
     S.choices.forEach(function (c) { if (c.kind === kind && String(c.n) === String(n) && c.applied) { if (!best || (c.applied_at || "") > (best.applied_at || "")) best = c; } });
     return best;
   }
+  // cr1#1644: a press that takes a row off the owner's plate shows at once.
+  // While it waits for Apply the row folds to one line that says so ("Done",
+  // its title, "sent at Apply"), it leaves its count, and its Undo stays in
+  // that line. Only these presses do; a note, a reply or a rule leaves the
+  // row as it was. Nothing more is written than before: the press is the
+  // page's own waiting choice until Apply carries it to the book.
+  var PRESS_WORDS = { done: "Done", confirm: "Confirmed", drop: "Dropped", snooze: "Snoozed" };
+  // A snooze the Week plan saved places the item on a day, so it reads Planned.
+  function pressVerb(c) { var w = c && !c.applied ? PRESS_WORDS[c.action] || "" : ""; return w && c.action === "snooze" && c.plan ? "Planned" : w; }
+  function pressTail(c) { return claimed(c) ? "being applied" : "sent at Apply"; }
+  function pressWords(c) { var w = pressVerb(c); return w ? w + ", " + pressTail(c) : ""; }
+  // cr1#1644, the owner's request of 2026-11-22 ("when a selection is made it
+  // should collapse more"): a row whose choice is made folds to one short
+  // line, what was chosen and on what, with its Undo, and the list closes up
+  // under it. Undo opens it back as it was.
+  // cr1#1644 review: a press Apply has carried (applied, or already so) that
+  // the read the row came from has not caught up with yet stays as it was
+  // pressed, folded and out of its count, until the next read drops the row
+  // (as closedHere keeps a Done and dropDone a Drop).
+  function landedSince(res, feed) {
+    var o = res && res.result ? res.result.outcome : "";
+    return (o === "applied" || o === "already") && feed && feed.generated_at && after(res.applied_at || res.created_at, feed.generated_at) ? res : null;
+  }
+  function doneVerb(c) { return c ? (c.action === "snooze" && c.plan ? "Planned" : PRESS_WORDS[c.action] || "") : ""; }
+  // cr1#1644 review: what else waits on a folded commitment (a reminder made
+  // from it, a note, an edit of its words or date) stays in sight under its
+  // one line, each with its own Undo.
+  function foldUnder(cid, r) {
+    var h = typeof remindTag === "function" ? remindTag(cid) : "";
+    h = h ? '<div class="parts">' + h + "</div>" : "";
+    if (typeof cCtxShown === "function") h += cCtxShown(cid);
+    if (typeof edPresses === "function" && typeof edPressActs === "function") {
+      var last = edPresses("commitment_edit", cid).sort(edNewest)[0];
+      if (last && (!last.applied || (edLanded(last) && !edUndone(last)))) h += '<div class="parts">' + edPressActs(last) + "</div>";
+    }
+    return h;
+  }
+  // A save that did not land after a press closed its opened row: the row opens again.
+  function pressLost() {
+    var nb = S.needBack;
+    if (!nb || !nb.reopen) return;
+    S.focusOpen[nb.key] = true; S.needBack = null;
+    if (typeof renderFocus === "function") renderFocus();
+  }
+  function chosenLine(verb, title, tail, undo) {
+    return '<div class="chosen"><span class="cw">' + esc(verb) + '</span><span class="ct" title="' + esc(title) + '">' + esc(title) + "</span>"
+      + (tail ? '<span class="cs">' + esc(tail) + "</span>" : "") + (undo || "") + "</div>";
+  }
   function renderWaiting() {
     var w = waitingChoices(), el = $("waiting");
     // cr1#1591 (Part A 11): the top bar's Apply is drawn only while a choice
     // waits, with the count ("Apply 3"); its name says so in words.
     var an = $("applyN"), ab = an ? an.parentNode : null;
     an.textContent = w.length ? " " + w.length : "";
+    // cr1#1643 review: Settings covers the top bar's Apply, so it says where to go
+    var sa = $("settingsapply"); if (sa) sa.hidden = !w.length;
     if (ab && ab.setAttribute) { ab.hidden = !w.length; ab.setAttribute("aria-label", w.length ? "Apply, " + w.length + (w.length === 1 ? " choice" : " choices") + " waiting" : "Apply"); }
     if (!w.length) { el.textContent = dbMissing ? "This view cannot reach the page's data." : (dbReady ? "Nothing waiting." : "Connecting to the page's data."); el.className = "waiting none"; return; }
     var oldest = w.map(function (c) { return c.created_at || ""; }).sort()[0];
@@ -1868,7 +1978,7 @@
     return out;
   }
   function saveChoice(doc) {
-    if (!db) { banner("The page cannot reach its data right now, so nothing was saved.", true); return Promise.resolve(null); }
+    if (!db) { banner("The page cannot reach its data right now, so nothing was saved.", true); if (typeof pressLost === "function") pressLost(); return Promise.resolve(null); }
     var row = { id: rid(), applied: false, created_at: nowIso() };
     for (var k in doc) row[k] = doc[k];
     return db.collection("choices").doc(row.id).set(row).then(function () {
@@ -1876,7 +1986,7 @@
       if (typeof noteHandled === "function") noteHandled(row);
       if (typeof applySoonArm === "function") applySoonArm(row);
       return row;
-    }, function (e) { banner("That press was not saved; try again.", true, errText(e)); return null; });
+    }, function (e) { banner("That press was not saved; try again.", true, errText(e)); if (typeof pressLost === "function") pressLost(); return null; });
   }
 
   // ---- today tab -----------------------------------------------------------
@@ -1912,7 +2022,11 @@
     // The page's own sentence from the two feeds (cr1#633: the first build
     // showed the chat's quick read, which tells a chat what to type next).
     var bits = [];
-    var focus = p && p.focus ? p.focus : [];
+    // cr1#1636 item 2: when nothing else leads the headline it falls back to
+    // this line, so it names only live work, and only from today's plate (a
+    // plate from an earlier day waits for today's first refresh).
+    var stale = !!(p && p.today && typeof hubDay === "function" && p.today !== hubDay());
+    var focus = p && p.focus && !stale ? (typeof liveOnly === "function" ? liveOnly(p.focus) : p.focus) : [];
     if (focus.length) {
       var names = focus.slice(0, 2).map(function (r) { return showTitle(r.title, { empty: "" }); }).filter(Boolean);
       bits.push(focus.length + " to move today" + (names.length ? ": " + names.join(", ") + (focus.length > 2 ? " and more" : "") : ""));
@@ -1925,6 +2039,7 @@
     }
     if (bs.length) bits.push(blockWords(bs));
     if (bits.length) return bits.join(". ") + ".";
+    if (p && stale) return "Today fills in after its first refresh.";
     if (p) return "Nothing to move today.";
     if (t) return "Your day, as of " + fmtWhen(t.generated_at) + ".";
     return isRunning("refresh") || isRunning("prep") ? "Filling the day." : "Press Go to fill the day.";
@@ -2051,14 +2166,25 @@
     if (!c.closed && !c.opened) { el.innerHTML = (c.done ? "No commitments opened or closed since " : "Nothing has changed since ") + esc(when) + "."; return; }
     var bits = [], least = c.short ? "at least " : "";
     if (c.opened) bits.push(least + "<b>" + c.opened + "</b> new " + (c.opened === 1 ? "commitment" : "commitments"));
+    // cr1#1636 item 4: who closed them, in two plain words: by you (the
+    // owner's own press, "closed by you") or for you (everything Command
+    // Room closed). The feed's closer words never reach this line, so a
+    // skill's name in an older feed ("closed by <skill>") never shows.
     if (c.closed) {
-      var how = Object.keys(c.by).sort(function (a, b) { return c.by[b] - c.by[a] || (a < b ? -1 : 1); }).map(function (k) { return c.by[k] + " " + esc(String(k).replace(/^closed /, "")); });
-      bits.push(least + "<b>" + c.closed + "</b> closed (" + how.join(", ") + ")");
+      var mine = c.by["closed by you"] || 0, theirs = c.closed - mine;
+      bits.push(least + "<b>" + c.closed + "</b> closed " + (!theirs ? "by you" : !mine ? "for you" : "(" + mine + " by you, " + theirs + " for you)"));
     }
     el.innerHTML = "Since " + esc(when) + ": " + bits.join(" · ") + ".";
   }
   // ---- end only what changed ---------------------------------------------------
   // ---- fixed morning (cr1#1017, train 8 behaviour 3) -------------------------
+  // cr1#1636 item 2: the day names only live work. A row the plate feed marks
+  // as sitting on an archived or retired thread (`live: false`) never leads
+  // the headline, counts or is named in "need you", is the day's clash, nor
+  // is in Needs you or Do this first; a feed from before the mark reads every
+  // row as live. Here, at the top of the morning's code, so every part that
+  // reads the plate has it.
+  function liveOnly(rows) { return (rows || []).filter(function (r) { return !r || r.live !== false; }); }
   // The owner's definition: the number of things needing the owner is set when
   // the page opens and only goes down as they act; new arrivals wait in a quiet
   // "since you opened" line; zero is the "done for today" finish; the old
@@ -2089,7 +2215,7 @@
   }
   function needsYou(S, day) {
     var p = S.plate, out = {};
-    if (p && p.today === day) out.plate = (p.rows || []).filter(function (r) {
+    if (p && p.today === day) out.plate = liveOnly(p.rows).filter(function (r) {
       // anything past its date is the backlog, whatever its lane
       var late = r.counted === true || r.horizon === "overdue" || r.horizon === "past_due";
       return r.id != null && !late && (r.lane === "chase" || (r.due && String(r.due).slice(0, 10) === p.today));
@@ -2098,9 +2224,10 @@
       .map(function (r) { return { id: "q:" + r.id, title: r.title, acted: pressed("review", r.id) }; });
     if (S.inbox) {
       // an Inbox row's number is its place in that read, so the key is the
-      // message itself: its id, its thread, else its sender and subject
+      // message itself: its id, its thread, else its sender and subject.
+      // cr1#1635: a row the Inbox run marked as needing nothing is not one.
       var seen = {};
-      out.inbox = (S.inbox.items || []).map(function (it) {
+      out.inbox = (S.inbox.items || []).filter(function (it) { return !it || it.needs !== false; }).map(function (it) {
         var k = "m:" + (it.message_id || it.thread_id || (String(it.name || "") + "|" + String(it.subject || "")));
         seen[k] = (seen[k] || 0) + 1;
         return { id: seen[k] > 1 ? k + "#" + seen[k] : k, title: it.subject || it.name, acted: pressed("inbox", it.n) };
@@ -2205,7 +2332,7 @@
     }
     var full = ms.filter(function (m, k) { return !ms.slice(0, k).some(function (o) { return sameMeeting(o, m); }); });
     if (full.length >= SENT_FULL_DAY && ahead.length && p && p.today === day) {
-      var due = (p.rows || []).filter(function (r) {
+      var due = liveOnly(p.rows).filter(function (r) {
         // the owner's own work: never what someone else owes them
         var late = r.counted === true || r.horizon === "overdue" || r.horizon === "past_due";
         return !late && r.lane !== "chase" && r.lane !== "wait" && r.due && String(r.due).slice(0, 10) === day;
@@ -2214,20 +2341,31 @@
     }
     return null;
   }
+  // cr1#1636 item 2: the workspace's day now, on the clock of the zone the
+  // today feed names (its week's `tz`); "" when it names none.
+  function wsDayNow(t) {
+    var tz = t && t.week ? t.week.tz : null; if (!tz) return "";
+    try {
+      var v = {}; new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).forEach(function (x) { v[x.type] = x.value; });
+      return v.year && v.month && v.day ? v.year + "-" + v.month + "-" + v.day : "";
+    } catch (e) { return ""; }
+  }
   function sentModel(S) {
     var t = S.today, p = S.plate, day = hubDay();
     if (!t && !p) return null;
     // the owner's words are for the workspace's day (the plate's `today`),
-    // which can differ from this browser's day
-    var wday = p && p.today ? p.today : day;
-    var about = t && t.about && t.about.for_date === wday && (t.about.items || []).length ? { said: true, items: t.about.items } : null;
+    // which can differ from this browser's day. cr1#1636 item 2: and only on
+    // that day: a "today is about" read into a feed on an earlier day (both
+    // feeds still from then) never carries over, when the feed names its zone.
+    var wday = p && p.today ? p.today : day, wnow = wsDayNow(t);
+    var about = t && t.about && t.about.for_date === wday && (!wnow || t.about.for_date === wnow) && (t.about.items || []).length ? { said: true, items: t.about.items } : null;
     if (!about) {
       // a plate from another day never names today's first thing to move
-      var focus = p && p.focus && p.today === day ? p.focus : [];
+      var focus = p && p.focus && p.today === day ? liveOnly(p.focus) : [];
       var ms = t && t.meetings ? t.meetings.filter(function (m) { return !m.all_day && sentDay(m.start) === day; }) : [];
       var bs = ms.filter(isBlock); ms = ms.filter(function (m) { return !isBlock(m); });
       // cr1#1290: the ranked lead (priority, key person, lead time) first
-      var lead = p && p.lead && p.today === day ? p.lead : [];
+      var lead = p && p.lead && p.today === day ? liveOnly(p.lead) : [];
       if (lead.length) about = { said: false, lead: lead.slice(0, 3) };
       else if (focus.length) about = { said: false, focus: focus.slice(0, 3) };
       else if (ms.length || bs.length) about = { said: false, meetings: ms, blocks: bs };
@@ -2361,12 +2499,17 @@
     // The info icon: the whole sentence, word for word, then each part with
     // its detail. It is drawn again only when what it holds changes, so a
     // redraw never closes an open one (each icon PR 1 draws is numbered).
-    var full = parts.length ? sentFull(s) : "", more = full ? sentDetailText(s) : "", key = full + "\u0000" + more;
+    // cr1#1636 item 7: the headline is Today's heading, so its one icon also
+    // holds the tab's own line, last, after each part's detail; the icon that
+    // sat alone under the top bar is gone.
+    var full = parts.length ? sentFull(s) : "", more = full ? [sentDetailText(s), TODAY_TAB_LINE].filter(Boolean).join("\n\n") : "", key = full + "\u0000" + more;
     if (tip && tip.tipKey !== key) {
       tip.tipKey = key;
       tip.innerHTML = full ? infoTip("the day", '<span class="daytipfull">' + esc(full) + '</span><span class="daytipmore">' + esc(more) + "</span>") : "";
     }
   }
+  // Today's own line (it sat behind an icon of its own at the tab's top until cr1#1636)
+  var TODAY_TAB_LINE = "Your calendar, the few things that need you now, and your to-dos and reminders.";
   // ---- end one sentence on top --------------------------------------------------
   function renderToday() {
     var t = S.today, p = S.plate;
@@ -2405,21 +2548,43 @@
   // only; Today counts them. The Morning Brief chat
   // keeps its settings and its text: nothing here reads or resets them.
   var BRIEF_MAIL = 3, BRIEF_ASK = 3;
+  // cr1#1644: Today's one order. Focus and Everything are two lengths of this
+  // one list, so they never disagree: Needs you first (the feed's ranked
+  // lead, else its first `show` things to move), then the rest of the
+  // owner's own work in the feed's order (`focus`). A row someone else owes
+  // the owner (the Wait and Chase lanes, which Waiting on and Follow up with
+  // list) is never in it, nor a row on a thread that is done (cr1#1636), and
+  // a plate from another day gives nothing.
+  function todayOrder(p, day, show) {
+    var out = { need: [], rest: [] };
+    if (!p || !day || p.today !== day) return out;
+    var lane = {};
+    (p.rows || []).concat(p.late_rows || []).forEach(function (r) { if (r && r.id != null) lane[String(r.id)] = r.lane || ""; });
+    var own = function (r) { var l = r && r.id != null ? r.lane || lane[String(r.id)] || "" : "wait"; return l !== "wait" && l !== "chase"; };
+    var seen = {}, once = function (r) { var k = String(r.id); if (seen[k]) return false; seen[k] = true; return true; };
+    // cr1#1636 item 2: live work only, as the headline reads it (a row on an archived or retired thread never leads)
+    var live = typeof liveOnly === "function" ? liveOnly : function (x) { return x || []; };
+    var lead = live(p.lead).filter(own), focus = live(p.focus).filter(own);
+    out.need = (lead.length ? lead : focus).slice(0, show).filter(once);
+    out.rest = focus.filter(once);
+    return out;
+  }
   function briefModel(t, p, ib, rv) {
-    var rows = p && p.rows ? p.rows : [], focus = p && p.focus ? p.focus : [];
+    var rows = p && p.rows ? p.rows : [];
+    // cr1#1636 item 2: Do this first names live work only, as the headline does (the order reads live work too)
+    if (typeof liveOnly === "function") rows = liveOnly(rows);
     // cr1#1012: "the overdue one" is a row the open list counts overdue (its
     // `counted` verdict); an older feed with no verdict reads the horizon.
-    var overdue = rows.filter(function (r) { return "counted" in r ? r.counted : r.horizon === "overdue"; });
-    var ms = t && t.meetings ? t.meetings : [];
-    var first = null;
-    if (overdue.length) first = { kind: "commitment", id: overdue[0].id, line: "Clear the overdue one: " + showTitle(overdue[0].title) };
-    else if (focus.length) first = { kind: "commitment", id: focus[0].id, line: "Move this first: " + showTitle(focus[0].title) };
-    else {
-      var prepped = null;
-      for (var i = 0; i < ms.length; i++) if (ms[i].prep) { prepped = ms[i]; break; }
-      if (prepped) first = { kind: "meeting", id: prepped.meeting_id, line: "Read the prep for " + showTitle(prepped.title, { kind: "meeting" }) };
-      else if (ms.length) first = { kind: "meeting", id: ms[0].meeting_id, line: "Next up: " + showTitle(ms[0].title, { kind: "meeting" }) };
-    }
+    var isLate = function (r) { return "counted" in r ? !!r.counted : r.horizon === "overdue"; };
+    var overdue = rows.filter(isLate);
+    // cr1#1644: the first action is the first thing that needs the owner in
+    // Today's one order: the row Focus and Everything both put first. Never
+    // something someone else owes the owner, never a meeting (the next
+    // meeting has its own card), and none when nothing needs them. Late by
+    // the open list's verdict on the row, else by the lead's own word.
+    var lead = typeof todayOrder === "function" && typeof hubDay === "function" ? todayOrder(p, hubDay(), 1).need[0] : null;
+    var row = lead ? rows.concat(p.late_rows || []).filter(function (r) { return String(r.id) === String(lead.id); })[0] : null;
+    var first = lead ? { kind: "commitment", id: lead.id, line: ((row ? isLate(row) : !!lead.late) ? "Clear the overdue one: " : "Move this first: ") + showTitle(lead.title) } : null;
     var items = ib && ib.items ? ib.items : [];
     var ask = (rv && rv.rows ? rv.rows : []).filter(function (r) { return r.today; }).slice(0, BRIEF_ASK);
     // cr1#1012: the open list's overdue number (read inline: this section is
@@ -2432,7 +2597,54 @@
   // one-line count of both. Waiting on and Follow up with are the plate's own
   // Wait and Chase lanes, the same rows with the same presses.
   var PEOPLE_N = 5;
-  function laneRows(p, lane) { return (p && p.rows ? p.rows : []).filter(function (r) { return r.lane === lane; }); }
+  // cr1#1636 items 8 and 9: what other people owe the owner is one set, read
+  // once: the plate's Wait and Chase lanes, with the late rows its row cap
+  // left out. Follow up with is the part that has gone quiet (Chase) or that
+  // the open list counts late; Waiting on is the rest, so the two lists never
+  // disagree about who owes what. A row closed from this page leaves both:
+  // its Undo is in Changes (`closeChangesHtml`). The rows seen here are kept
+  // for the page's session, so that line knows the row once the feed drops it.
+  function owedRows(p) {
+    var seen = {}, out = [], kept = S.owedSeen || (S.owedSeen = {});
+    (p && p.rows ? p.rows : []).concat(p && p.late_rows ? p.late_rows : []).forEach(function (r) {
+      var k = String(r.id);
+      if ((r.lane !== "wait" && r.lane !== "chase") || seen[k]) return;
+      seen[k] = true; kept[k] = true;
+      if (closedHere(r.id)) return;
+      out.push(r);
+    });
+    return out;
+  }
+  function owedLate(r) { return r.lane === "chase" || ("counted" in r ? r.counted === true : r.horizon === "overdue"); }
+  function laneRows(p, lane) {
+    if (lane === "wait") return owedRows(p).filter(function (r) { return !owedLate(r); });
+    if (lane === "chase") return owedRows(p).filter(owedLate);
+    return (p && p.rows ? p.rows : []).filter(function (r) { return r.lane === lane; });
+  }
+  // cr1#1636 item 8: a commitment closed from this page in the last day, whose
+  // row Waiting on or Follow up with listed: one short line each in Changes,
+  // with the row's own Undo (or the reopen waiting, with its Undo). At most
+  // five; the rest are on Commitments, under "Closed from this page".
+  var CLOSE_CHANGES_N = 5;
+  function closeChangesHtml() {
+    var kept = S.owedSeen || {}, now = Date.now(), list = [], back = {};
+    // a reopen waiting puts the row back in its list, with that Undo on it
+    owedRows(S.plate).forEach(function (r) { back[String(r.id)] = true; });
+    closedFromPage(function () { return false; }).forEach(function (e) {
+      var at = new Date(e.res.applied_at || e.res.created_at || "").getTime();
+      if (!kept[String(e.res.n)] || isNaN(at) || now - at >= 24 * 60 * 60 * 1000 || (e.waiting && back[String(e.res.n)])) return;
+      list.push(e);
+    });
+    var h = "";
+    list.slice(0, CLOSE_CHANGES_N).forEach(function (e) {
+      var c = e.res;
+      h += '<div class="calch" data-closech="' + esc(c.n) + '"><div class="calline">' + (c.action === "drop" ? "Dropped: " : "Closed: ") + esc(showTitle(c.title || titleOf(c.n), { empty: "an item" })) + "."
+        + (e.waiting ? waitTag(e.waiting, "reopen waiting") + undoBtn(e.waiting, "Take the reopen back before it reaches your book")
+          : ' <button class="act undo" type="button" data-cact="reopen" data-cid="' + esc(c.n) + '" title="Open this commitment again">Undo</button>') + "</div></div>";
+    });
+    if (list.length > CLOSE_CHANGES_N) h += '<div class="calch"><div class="calline"><button class="act" type="button" data-goto="plate">' + (list.length - CLOSE_CHANGES_N) + " more closed, on Commitments</button></div></div>";
+    return h;
+  }
   function renderLane(el, rows, empty) {
     var h = "";
     // cr1#1043: a row past its date the count leaves out says so in its own line.
@@ -2445,7 +2657,7 @@
   // cr1#1285 item 9: Do this first says why, from the row's own record:
   // late when the open list counts it late, then where it came from
   // ("Late. From your Nov 11 meeting."). Nothing is guessed.
-  function shortDay(iso) { if (!iso) return ""; var d = new Date(String(iso).slice(0, 10) + "T12:00:00"); return isNaN(d) ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" }); }
+  function shortDay(iso) { if (!iso) return ""; var s = String(iso).trim(), d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + "T12:00:00") : new Date(s); if (isNaN(d)) d = new Date(s.slice(0, 10) + "T12:00:00"); return isNaN(d) ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" }); }   // cr1#1643: as fmtDate
   function firstWhy(first) {
     if (first.kind !== "commitment") return "";
     var r = plateRowOf(first.id); if (!r) return "";
@@ -2457,16 +2669,15 @@
     return [late ? "Late." : "", from].filter(Boolean).join(" ");
   }
   function renderBrief() {
-    var t = S.today, p = S.plate, ib = S.inbox, rv = S.review, b = briefModel(t, p, ib, rv);
-    var wait = laneRows(p, "wait"), chase = laneRows(p, "chase");
+    var p = S.plate, wait = laneRows(p, "wait"), chase = laneRows(p, "chase");
     // cr1#1285 item 1: the count line under the sentence is gone.
     renderMorning();
     renderSentence();
-    var why = b.first ? firstWhy(b.first) : "";
-    $("brieffirst").innerHTML = b.first ? '<div class="firstcard"><div class="k">Do this first</div><div class="t">' + esc(b.first.line) + "</div>" + (why ? '<div class="why">' + esc(why) + "</div>" : "") + "</div>" : "";
+    // cr1#1644: Do this first is drawn with Focus, from Today's one order (renderEvery)
     var none = p ? "" : (isRunning("refresh") ? "Reading your commitments." : "Shows after the next refresh.");
-    renderLane("waitingon", wait, none || "Nobody owes you a reply.");
-    renderLane("followup", chase, none || "Nobody to follow up with.");
+    // cr1#1636 item 9: each empty line is true of the other list too
+    renderLane("waitingon", wait, none || (chase.length ? "All of it is in Follow up with." : "Nobody owes you a reply."));
+    renderLane("followup", chase, none || (wait.length ? "Nobody to follow up with yet." : "Nobody to follow up with."));
   }
 
   // ---- the Brief tab (cr1#1310) ---------------------------------------------
@@ -2512,7 +2723,11 @@
     return '<div class="addrow"><input class="when" type="date" data-pushday value="' + esc(PUSH.day) + '"><button class="act primary" data-rsave="' + esc(rid) + '">Push</button><button class="act" data-rsave="">Cancel</button></div>';
   }
   function todayIso() { var d = new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
-  function fmtDate(iso) { if (!iso) return ""; var d = new Date(String(iso).slice(0, 10) + "T12:00:00"); if (isNaN(d)) return ""; return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }); }
+  // cr1#1643: a date alone is that calendar day; a full timestamp is a time,
+  // shown on the viewer's own day (its first ten characters are the UTC day, so
+  // a rule added on a Sunday evening read Monday). Each function stands alone:
+  // suites run parts of the page on their own.
+  function fmtDate(iso) { if (!iso) return ""; var s = String(iso).trim(), d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + "T12:00:00") : new Date(s); if (isNaN(d)) d = new Date(s.slice(0, 10) + "T12:00:00"); if (isNaN(d)) return ""; return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }); }
   function pendingAdds(kind) { return S.choices.filter(function (c) { return c.kind === kind && c.action === "add" && !c.applied; }); }
   function landedAdds(kind, ids) {
     // An add Apply wrote that the feed has not caught up with yet.
@@ -2566,17 +2781,38 @@
   }
   // cr1#1591 Part A 6: a reminder is one line, its words and when, and Done;
   // Push and Delete are under its More.
+  // cr1#1636 item 6: the applied Done that cleared this reminder, while the row
+  // still shows the day it cleared. A repeating one moved on to its next day
+  // is a new day to clear; a press that named no day counts as this one.
+  function reminderCleared(r, res) {
+    if (!res || res.action !== "done" || !res.result || res.result.outcome !== "applied") return false;
+    var occ = String((res.input || {}).occurrence || "").slice(0, 10), from = String(r.remind_from || "").slice(0, 10);
+    return !occ || !from || occ === from;
+  }
   function reminderRow(r, i) {
-    var w = choiceFor("reminder", r.id), res = latestResult("reminder", r.id);
+    var w = choiceFor("reminder", r.id), res = latestResult("reminder", r.id), cleared = !w && reminderCleared(r, res);
+    var back = !!(res && res.action === "push" && res.input && res.input.restore === true && res.result && res.result.outcome === "applied");
     var when = r.status === "pinned" ? (r.days_pinned > 1 ? "on your list " + r.days_pinned + " days" : "today") : "from " + fmtDate(r.remind_from);
     if (r.undated) when = "no date" + (r.days_pinned > 1 ? " · on your list " + r.days_pinned + " days" : "");
-    var tag = w ? waitTag(w, w.action === "push" ? "push to " + fmtDate((w.input || {}).when) + " waiting" : w.action === "delete" ? "delete waiting" : "done waiting") : resultTag(res);
+    var tag = w ? waitTag(w, w.action === "push" ? ((w.input || {}).restore === true ? "undo waiting" : "push to " + fmtDate((w.input || {}).when) + " waiting") : w.action === "delete" ? "delete waiting" : "done waiting")
+      : back || (!cleared && res && res.action === "done" && res.result && res.result.outcome === "applied") ? "" : resultTag(res);
     // cr1#1221: Delete is for good (a repeat never comes back); Done clears.
-    var acts = w ? undoBtn(w) : '<button class="act primary" data-ract="done" data-rid="' + esc(r.id) + '" data-rfrom="' + esc(r.remind_from || "") + '">Done</button>';
-    var more = w ? "" : '<details class="rmore"><summary title="Push it to another day, or delete it">More</summary>' + (r.repeat ? '<div class="sub">Repeats.</div>' : "")
+    // cr1#1636 item 6: a cleared one offers only its Undo, which puts it back
+    // on the list (a push to the day it showed, or today if that is past).
+    var acts = w ? undoBtn(w) : cleared ? '<button class="act undo" data-ract="restore" data-rid="' + esc(r.id) + '" data-rfrom="' + esc(r.remind_from || "") + '" title="Put it back on your reminders">Undo</button>'
+      : '<button class="act primary" data-ract="done" data-rid="' + esc(r.id) + '" data-rfrom="' + esc(r.remind_from || "") + '">Done</button>';
+    var more = w || cleared ? "" : '<details class="rmore"><summary title="Push it to another day, or delete it">More</summary>' + (r.repeat ? '<div class="sub">Repeats.</div>' : "")
       + '<div class="acts"><button class="act" data-ract="push" data-rid="' + esc(r.id) + '">Push</button><button class="act" data-ract="delete" data-rid="' + esc(r.id) + '" title="Delete for good; a repeating reminder stops too">Delete</button></div></details>';
-    return '<div class="row one' + riseClass("r" + r.id) + (r.status === "pinned" ? " pinned" : "") + '" style="animation-delay:' + (i * 50) + 'ms"><div class="main"><div class="title" title="' + esc(r.summary + " · " + when) + '"><span class="tt">' + esc(r.summary) + "</span>"
-      + '<span class="when"> · ' + esc(when) + "</span>" + tag + '</div><div class="slot">' + (PUSH.rid === r.id && !w ? pushSlot(r.id) : "") + '</div></div><div class="acts">' + acts + "</div>" + more + "</div>";
+    return '<div class="row one' + riseClass("r" + r.id) + (r.status === "pinned" ? " pinned" : "") + (more ? "" : " nomore") + '" style="animation-delay:' + (i * 50) + 'ms"><div class="main"><div class="title" title="' + esc(r.summary + " · " + when) + '"><span class="tt">' + esc(r.summary) + "</span>"
+      + (cleared ? "" : '<span class="when"><i class="w0"></i><wbr><span class="w1"> · ' + esc(when) + "</span></span>") + tag + '</div><div class="slot">' + (PUSH.rid === r.id && !w ? pushSlot(r.id) : "") + '</div></div><div class="acts">' + acts + "</div>" + more + "</div>";
+  }
+  // cr1#1636 item 6: the day an Undo puts a cleared reminder back on: the day
+  // it showed, or today when that is past. Today is the workspace's own (the
+  // reminders feed's `today`, the day the apply run checks against), and
+  // this browser's only when the feed names none.
+  function reminderBackDay(from) {
+    var ws = String((S.mine || {}).today || "").slice(0, 10), today = /^\d{4}-\d{2}-\d{2}$/.test(ws) ? ws : todayIso(), f = String(from || "").slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(f) && f > today ? f : today;
   }
   // cr1#946: an add is the owner's own list, so it need not wait for an
   // Apply press: it starts the apply run (and the refresh after it) itself.
@@ -2620,6 +2856,9 @@
     // cleared twice clears that one day only (cr1#675).
     if (ra === "done") { saveChoice({ kind: "reminder", src: "hub", n: rid, action: "done", input: { occurrence: b.getAttribute("data-rfrom") || "" }, title: reminderTitle(rid) }); return; }
     if (ra === "delete") { saveChoice({ kind: "reminder", src: "hub", n: rid, action: "delete", input: {}, title: reminderTitle(rid) }); return; }
+    // cr1#1636 item 6: Undo on a cleared reminder is a push marked `restore`,
+    // which puts back one a clear had taken off the list (`apply_hub_choices`).
+    if (ra === "restore") { saveChoice({ kind: "reminder", src: "hub", n: rid, action: "push", input: { when: reminderBackDay(b.getAttribute("data-rfrom")), restore: true }, title: reminderTitle(rid) }); return; }
     if (ra === "push") {
       var tm = new Date(); tm.setDate(tm.getDate() + 1);
       PUSH.rid = rid; PUSH.day = tm.getFullYear() + "-" + ("0" + (tm.getMonth() + 1)).slice(-2) + "-" + ("0" + tm.getDate()).slice(-2);
@@ -2652,6 +2891,10 @@
     // Review of #1611: a note waiting is the row's wait until Apply (it shows
     // with its own Undo, `cCtxShown`), so Done cannot close the item under it.
     var nw = w || typeof noteWait !== "function" ? null : noteWait(cid);
+    // cr1#1644: a Done, Confirm, Drop or Snooze waiting for Apply folds the row to one line, with its Undo
+    var verb = typeof pressVerb === "function" && typeof chosenLine === "function" ? pressVerb(w) : "";
+    if (verb) return '<div class="row chosenrow" data-row="' + esc(cid) + '"><div class="cfold">' + chosenLine(verb, showTitle(r.title), pressTail(w), undoBtn(w, "Take this back before it reaches your book"))
+      + (typeof foldUnder === "function" ? foldUnder(cid, r) : "") + "</div></div>";
     var tag = (w ? waitTag(w, w.action === "context" ? "note waiting" : w.action + " waiting") : resultTag(res)) + (compact ? "" : remindTag(cid));
     var acts = "", more = "";
     if (w) acts += undoBtn(w, "Take this back before it reaches your book");
@@ -2664,7 +2907,10 @@
         + (r.pending ? "" : '<button class="act" data-cact="drop" data-cid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>');
     }
     var fold = compact ? "" : shut || typeof cEdMore !== "function" || /^obs_/.test(String(cid)) ? (more ? moreFoldActs(more) : "") : cEdMore(cid, r.title, more, r.due);
-    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + esc(showTitle(r.title)) + (compact ? "" : originBox(r)) + tag + '</div><div class="sub">' + esc(plainSub([r.project, r.context, (r.horizon === "past_due" || (r.horizon === "overdue" && "counted" in r && !r.counted)) ? "" : r.horizon])) + "</div>" + fold + (compact || typeof cCtxShown !== "function" ? "" : cCtxShown(cid)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+    var subParts = [r.project, r.context, (r.horizon === "past_due" || (r.horizon === "overdue" && "counted" in r && !r.counted)) ? "" : r.horizon];
+    // cr1#1636 item 8: a closed row never says it is late or how long ago it was due
+    if (shut) subParts = [r.project, String(r.context || "").split(" · ").filter(function (b) { return !/^\s*(overdue|late|past due|due\b)|\bago\s*$/i.test(b); }).join(" · ")];
+    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + esc(showTitle(r.title)) + (compact ? "" : originBox(r)) + tag + '</div><div class="sub">' + esc(plainSub(subParts)) + "</div>" + fold + (compact || typeof cCtxShown !== "function" ? "" : cCtxShown(cid)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
   }
   // A row's More: presses that would crowd the row, folded under one word.
   function moreFoldActs(acts) { return acts ? '<details class="more"><summary>More</summary><div class="parts">' + acts + "</div></details>" : ""; }
@@ -2744,6 +2990,7 @@
     renderOverdue();
     renderWaitingOn();
     renderConfirmPlate();
+    if (typeof keyFollow === "function") keyFollow("data-row");   // cr1#1644: the keyboard follows a press on any of these rows
   }
   // ---- Waiting on and To confirm (cr1#1286) ---------------------------------
   // Waiting on: the plate's Wait lane, the rows someone owes you, drawn by the
@@ -2781,7 +3028,14 @@
     // cr1#1540: Triage reads the same plate and the same review rows
     if (typeof renderWork === "function") renderWork();
   }
-  function renderConfirmCount() { var rv = S.review; $("reviewCount").textContent = (rv ? num(rv.n_open) : 0) + confirmRows().length + (typeof ownerQuestions === "function" ? ownerQuestions().length : 0); }
+  function renderConfirmCount() {
+    var rv = S.review, oq = typeof ownerQuestions === "function" ? ownerQuestions() : [];
+    // cr1#1644: an answer or a Confirm waiting for Apply leaves the count at once; its Undo puts it back.
+    // Review: carried by Apply before the next read, it stays out of the count.
+    var answered = (rv && rv.rows ? rv.rows : []).concat(oq).filter(function (q) { return typeof answerOf === "function" ? !!answerOf(q.id) : !!choiceFor("review", q.id); }).length
+      + confirmRows().filter(function (r) { return typeof pressVerb === "function" && (!!pressVerb(choiceFor("commitment", r.id)) || !!closedHere(r.id)); }).length;
+    $("reviewCount").textContent = Math.max(0, (rv ? num(rv.n_open) : 0) + confirmRows().length + oq.length - answered);
+  }
   function plateRowOf(cid) { var p = S.plate, all = p ? (p.rows || []).concat(p.late_rows || []) : []; for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(cid)) return all[i]; return null; }
   // ---- overdue (cr1#877) ---------------------------------------------------
   // The same feed as Commitments, cut to what is past its date, oldest first.
@@ -2843,6 +3097,8 @@
   function titleOf(cid) { var p = S.plate; if (p) { var all = (p.rows || []).concat(p.late_rows || []); for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(cid)) return all[i].title; } return ""; }
   function onPlateAct(btn) {
     var act = btn.getAttribute("data-cact"), cid = btn.getAttribute("data-cid"), row = btn.closest(".row"), slot = row ? row.querySelector(".slot") : null;
+    // cr1#1644: from a Needs you row, the keyboard follows the press (needBackFrom)
+    if ((act === "done" || act === "confirm" || act === "drop" || act === "reopen") && typeof needBackFrom === "function") needBackFrom(btn, act === "reopen" ? "main" : "undo");
     if (act === "done" || act === "confirm" || act === "drop" || act === "reopen") { saveChoice({ kind: "commitment", src: "commitment-triage", n: cid, action: act, title: titleOf(cid) }); return; }
     if (!slot || (act !== "context" && act !== "snooze" && act !== "remind")) return;
     // The open box lives in the page's state, so a redraw keeps it and what
@@ -2876,6 +3132,7 @@
     // cr1#1383: a note on a commitment goes to the note writer that has a
     // Take back (`commitment_edit` `context`), as a thread's or a person's does.
     if (kind === "context") { saveChoice({ kind: "commitment_edit", src: "cockpit", n: cid, action: "context", input: { text: v }, title: v }); return; }
+    if (typeof needBackFrom === "function") needBackFrom(b, "undo");   // cr1#1644: a snooze from a Needs you row
     saveChoice({ kind: "commitment", src: "commitment-triage", n: cid, action: kind, input: v, title: titleOf(cid) });
   }
 
@@ -2937,15 +3194,11 @@
   var inboxTipSaid = null;
   function renderInbox() {
     var ib = S.inbox, head = $("inboxhead"), said = "";
-    if (!ib) { $("inboxCount").textContent = 0; head.textContent = isRunning("inbox") ? "Reading the inbox." : "No inbox read yet. Press Check inbox."; head.hidden = false; }
+    if (!ib) { head.textContent = isRunning("inbox") ? "Reading the inbox." : "No inbox read yet. Press Check inbox."; head.hidden = false; }
     else {
       said = "At the inbox read " + fmtWhen(ib.generated_at) + ": " + String(ib.header || (ib.n_items + " threads")).replace(/[.\s]+$/, "") + ". The list below also shows mail and messages that read did not include.";
       head.textContent = ""; head.hidden = true;
-      // The tab's number is the rows the last Inbox run landed, each one a
-      // thing that needs the owner, less those dropped since. A live arrival
-      // never changes it (cr1#1538 acceptance 7, cr1#1562 item 4): it counts
-      // only under the Needs you filter, so the two numbers can differ.
-      $("inboxCount").textContent = (ib.items || []).filter(function (it) { return !dropDone(it); }).length;
+      // The tab's number is drawn with the list (cr1#1635): its Needs you count.
     }
     // Drawn again only when its words change, so an open popup is not shut by a redraw.
     var tip = $("inboxtip");
@@ -3216,11 +3469,12 @@
     // cr1#936: on Microsoft 365 the same tool would make a draft that answers the sender alone.
     if (act === "draft" && dropsOthers(d, "draft")) { banner(dropsLine(d, "draft"), true, ""); return; }
     if (act === "draft") { base.action = "draft"; if (canDraftDirect(it)) { draftDirect(base, it); return; } saveChoice(base); return; }
-    if (act === "snooze") { base.action = "snooze"; saveChoice(base); return; }
+    // cr1#1644: Snooze and Drop set the line aside; once saved, the next line is picked
+    if (act === "snooze") { base.action = "snooze"; inboxAside(base, "n:" + k); return; }
     // cr1#1020: Reply opens a box on a row with no draft; Drop takes the
     // thread off the inbox; Teach writes a rule from this one email.
     if (act === "reply") { S.replyOpen[k] = true; renderInbox(); var ta = document.querySelector('textarea.draft[data-ikey="' + k.replace(/"/g, '\\"') + '"]'); if (ta && ta.focus) ta.focus(); return; }
-    if (act === "drop") { if (!it.thread_id) return; base.action = "drop"; saveChoice(base); return; }
+    if (act === "drop") { if (!it.thread_id) return; base.action = "drop"; inboxAside(base, "n:" + k); return; }
     if (act === "teach") { if (S.teach[k]) delete S.teach[k]; else S.teach[k] = { note: "", mode: "", match: "" }; renderInbox(); return; }
     var st = teachState(it); if (!st) return;
     if (act === "teachflip") { st.mode = (st.mode || modeFromNote(st.note)) === "show" ? "hide" : "show"; renderInbox(); return; }
@@ -4348,6 +4602,7 @@
     var rest = rows.filter(function (r) { return !placed[r.id]; });
     if (rest.length) { if (h) h += "<h2>" + esc(capW(word("thread", true))) + " (" + rest.length + ")</h2>"; rest.forEach(function (r) { h += threadRow(r, i); i += 1; }); }
     $("projectrows").innerHTML = (h || '<div class="quiet">' + (q || S.pcompany ? "Nothing matches." : "No live " + esc(word("thread", true)) + ".") + "</div>") + noHomeSection(pj, q);
+    if (typeof renderTidy === "function") renderTidy();   // cr1#1584
   }
   // cr1#1591: when a feed was read: the time alone on its own day, else the day too.
   function wkReadAt(iso) {
@@ -4455,7 +4710,8 @@
     return "";
   }
   function explainTarget(key) {
-    if (key === "apply") return document.querySelectorAll('button[data-part="apply"]');
+    // cr1#1643: the one Apply is the top bar's (the tabs have none)
+    if (key === "apply") return document.querySelectorAll("button[data-part=confirm]");
     if (key === "work_stream") return document.querySelectorAll('#workseg button[data-work="projects"]');
     // since cr1#1286 Review is the To confirm filter on Commitments
     if (key === "review") { var c = $("showConfirm"); return c ? [c] : []; }
@@ -4490,11 +4746,66 @@
     if (best && (!S.people || (S.people.generated_at || "") < (best.applied_at || ""))) return best.action === "star";
     return !!p.starred;
   }
+  // cr1#1636 item 5: on a person's own card their name is left out of an
+  // item's words (display only: the book keeps the words as written). A label
+  // ("Rio Sample: send the deck"), the doer at the start ("Rio to send the
+  // deck"), the name after to, with, for, from or by, and a name in brackets
+  // go; a possessive reads "their". The full name anywhere, any case, and
+  // any other mention of it reads "them"; the first name (three letters or
+  // more) only as written and only in those plain shapes, so an item that
+  // merely uses the same word ("Mark the invoice paid", "Submit Grant
+  // application") is left as it is. A title the rule would empty keeps its words.
+  function nameDropped(t, name) {
+    var s = String(t == null ? "" : t), full = String(name || "").replace(/\s+/g, " ").trim();
+    if (!full) return s;
+    var first = full.split(" ")[0], out = s, NB = "(?![A-Za-z])";
+    var lit = function (n) { return n.replace(/[.*+?^${}()|[\]\\]/g, function (c) { return "\\" + c; }); };
+    var keep = function (word) { return function (m, before) { return before + word; }; };
+    // review of cr1#1636: a name joined to another ("to Avery Sample and Rio")
+    // is never cut out of its phrase, and a first name only leaves "to Rio"
+    // where the phrase ends there or another one starts ("on", "by", ...), so
+    // "Apply for Grant funding" is left as it is
+    var JOINED = "(?!\\s*(?:and|or|&|,|\\+)(?![A-Za-z]))";
+    var ENDS = "(?=\\s*$|\\s*[.,;:!?)]|\\s+(?:on|about|re|regarding|by|before|after|at|in|for|to|with|from|this|next|today|tomorrow|tonight|asap|when|once|if|so)(?![A-Za-z]))";
+    var each = function (n, fl, tail) {
+      var q = lit(n);
+      out = out.replace(new RegExp("^\\s*" + q + NB + "\\s*[:|\\u2014\\u2013-]\\s*", fl), "")
+        .replace(new RegExp("^\\s*" + q + "\\s+(?:to|will|should|must|needs to|is to|is going to)\\s+", fl), "")
+        .replace(new RegExp("\\s*[(\\[]\\s*(?:(?:from|with|for|to|by)\\s+)?" + q + "\\s*[)\\]]", fl + "g"), "")
+        .replace(new RegExp("\\s+(?:to|with|for|from|by)\\s+" + q + NB + "(?!['\\u2019])" + JOINED + tail, fl + "g"), "")
+        .replace(new RegExp("(^|[^A-Za-z])" + q + "['\\u2019]s" + NB, fl + "g"), keep("their"));
+    };
+    each(full, "i", "");
+    // the full name, unmistakable, reads "them" wherever else it is
+    out = out.replace(new RegExp("^\\s*" + lit(full) + NB + JOINED + "\\s+", "i"), "")
+      .replace(new RegExp("(^|[^A-Za-z])" + lit(full) + NB, "gi"), keep("them"));
+    // the first name only in the plain shapes above; anywhere else it may be
+    // a word ("Submit Grant application"), so it stays as written
+    if (first !== full && first.length >= 3 && /^[A-Za-z][A-Za-z'’-]*$/.test(first)) each(first, "", ENDS);
+    out = out.replace(/\s{2,}/g, " ").replace(/\s+([,.;:!?])/g, function (m, mark) { return mark; }).trim();
+    return /[A-Za-z]{2}/.test(out) ? out : s;
+  }
+  // An open item's line on a person's card: its words (their name left out),
+  // its direction, its day, and "late" by the row's own `overdue`, the same
+  // test the Next line reads, so every row is marked late by one rule.
+  function openItemLine(o, name) {
+    return esc(showTitle(nameDropped(o.title, name))) + (o.direction_words ? " · " + esc(o.direction_words) : "") + (o.due ? " · " + esc(fmtDate(o.due)) : "")
+      + (o.overdue ? ' · <span class="late">late</span>' : "");
+  }
+  // The open item the Next line names, so the list never repeats it: by its
+  // id when the feed carries one, else by its words, day and direction.
+  function isNextItem(o, nx) {
+    if (!o || !nx) return false;
+    if (nx.id != null && o.id != null) return String(nx.id) === String(o.id);
+    return o.title === nx.title && String(o.due || "") === String(nx.due || "") && (!nx.direction || o.direction === nx.direction);
+  }
   function openLines(p, cap) {
-    var items = p.open || [], h = "";
-    items.slice(0, cap).forEach(function (o) { h += '<div class="sub">' + esc(showTitle(o.title)) + (o.direction_words ? " · " + esc(o.direction_words) : "") + (o.due ? " · " + esc(fmtDate(o.due)) : "") + "</div>"; });
-    var all = p.n_listed == null ? num(p.n_open) : num(p.n_listed);
-    if (all > Math.min(cap, items.length)) h += '<div class="sub">and ' + (all - Math.min(cap, items.length)) + " more</div>";
+    var items = p.open || [], h = "", skip = -1;
+    for (var k = 0; k < items.length && skip < 0; k++) if (isNextItem(items[k], p.next_step)) skip = k;
+    var rest = skip < 0 ? items : items.slice(0, skip).concat(items.slice(skip + 1));
+    rest.slice(0, cap).forEach(function (o) { h += '<div class="sub">' + openItemLine(o, p.name) + "</div>"; });
+    var all = (p.n_listed == null ? num(p.n_open) : num(p.n_listed)) - (skip < 0 ? 0 : 1);
+    if (all > Math.min(cap, rest.length)) h += '<div class="sub">and ' + (all - Math.min(cap, rest.length)) + " more</div>";
     return h;
   }
   function cap1(s) { s = String(s || ""); return s.charAt(0).toUpperCase() + s.slice(1); }
@@ -4549,8 +4860,17 @@
     var known = p.how_known ? '<div class="sub">' + esc(cap1(p.how_known)) + "</div>" : "";
     var seen = '<div class="sub">' + (p.last_contact ? "Last in touch " + esc(touchDay(p.last_contact, (S.people || {}).generated_at)) : "No contact on file") + "</div>";
     var listed = p.n_listed == null ? num(p.n_open) : num(p.n_listed);
-    var list = open && listed ? openLines(p, home ? 3 : 12) : "";
-    var nxt = p.next_step ? '<div class="sub">Next: ' + esc(showTitle(p.next_step.title)) + (p.next_step.due ? " · " + esc(fmtDate(p.next_step.due)) : "") + (p.next_step.overdue ? ' · <span class="late">late</span>' : "") + "</div>" : "";
+    var list = open && listed ? openLines(p, 12) : "";
+    var nxt = p.next_step ? '<div class="sub">Next: ' + esc(showTitle(nameDropped(p.next_step.title, p.name))) + (p.next_step.due ? " · " + esc(fmtDate(p.next_step.due)) : "") + (p.next_step.overdue ? ' · <span class="late">late</span>' : "") + "</div>" : "";
+    // cr1#1636 item 5: Today's card is the next item and the counts ("You owe
+    // 2 · they owe you 1"); the rest of what is open, and who they are, one
+    // press away in its fold, never the Next item twice.
+    var fold = "";
+    if (home) {
+      var nRest = listed - (p.next_step && (p.open || []).some(function (o) { return isNextItem(o, p.next_step); }) ? 1 : 0);
+      var inside = list + (who ? '<div class="sub">' + esc(who) + "</div>" : "") + known + seen;
+      fold = inside ? '<details class="pfold"><summary>' + (nRest > 0 ? nRest + " more" : "More") + "</summary>" + inside + "</details>" : "";
+    }
     // cr1#1012 part 3d: rows that name them without being linked, apart from what is open.
     var nu = num(p.n_unlinked), unl = !home && nu ? '<div class="sub">' + nu + (nu === 1 ? " more item names them" : " more items name them") + " without being linked to them</div>" : "";
     var ed = home ? { card: "", more: "" } : personEdits(p), more = !home && !!(S.personMore || {})[p.id];
@@ -4564,7 +4884,9 @@
     // cr1#1017 part A: "Send them their list" sits with the open items, on the People tab only.
     var sendList = open && !home ? listBox(p) : "";
     // cr1#1591: a card Show all brings in rises with the first, not after the 300th.
-    return '<div class="row' + riseClass((home ? "h" : "p") + p.id) + '" data-person="' + esc(p.id) + '" style="animation-delay:' + (Math.min(i || 0, 12) * 40) + 'ms"><div class="main"><div class="title">' + esc(p.name) + tag + "</div>" + (who ? '<div class="sub">' + esc(who) + "</div>" : "") + known + seen + '<div class="sub">' + esc(owesLine(p)) + "</div>" + nxt + unl + list + sendList + '</div><div class="acts">' + acts + "</div></div>";
+    return '<div class="row' + riseClass((home ? "h" : "p") + p.id) + '" data-person="' + esc(p.id) + '" style="animation-delay:' + (Math.min(i || 0, 12) * 40) + 'ms"><div class="main"><div class="title">' + esc(p.name) + tag + "</div>"
+      + (home ? '<div class="sub">' + esc(owesLine(p)) + "</div>" + nxt + fold
+        : (who ? '<div class="sub">' + esc(who) + "</div>" : "") + known + seen + '<div class="sub">' + esc(owesLine(p)) + "</div>" + nxt + unl + list + sendList) + '</div><div class="acts">' + acts + "</div></div>";
   }
   function personKept(p) {
     // Shown wherever they sit in the list: the starred, a star press waiting,
@@ -4746,8 +5068,17 @@
   // cr1#1563: a proposed close's yes is `confirm` (the feed's REVIEW_CLOSE_VERBS);
   // `confirm proposal` is kept for any other row that carries it.
   function yesVerb(r) { var v = (r.verbs || []).filter(function (x) { return x.action === "confirm proposal" || (r.group === "close" && x.action === "confirm"); })[0]; return v ? v.action : ""; }
+  // cr1#1644: an answered question folds to one line: the answer chosen, on what, and its Undo
+  // An answer Apply carried before the next read is that line still, without an Undo (it is in the book).
+  function answeredRow(w, verbs, title) {
+    var v = (verbs || []).filter(function (x) { return x.action === w.action; })[0], said = v && v.label ? v.label : "Answered";
+    var tail = w.applied ? "in your book" : claimed(w) ? "being applied" : "sent at Apply";
+    return '<div class="row chosenrow" data-answered="' + esc(w.n) + '" data-qrow="' + esc(w.n) + '"><div class="cfold">' + chosenLine(said, showTitle(title), tail, w.applied ? "" : undoBtn(w, "Take this back before it reaches your book")) + "</div></div>";
+  }
+  function answerOf(id) { var w = choiceFor("review", id); return w || (typeof landedSince === "function" ? landedSince(latestResult("review", id), S.review) : null); }
   function reviewRow(r, i) {
-    var w = choiceFor("review", r.id), res = latestResult("review", r.id);
+    var w = choiceFor("review", r.id), res = latestResult("review", r.id), said = typeof answerOf === "function" ? answerOf(r.id) : w;
+    if (said && typeof answeredRow === "function" && typeof chosenLine === "function") return answeredRow(said, r.verbs, r.title);
     var tag = w ? waitTag(w, "answer waiting") : resultTag(res);
     var acts = "";
     if (w) acts += undoBtn(w, "Take this back before it reaches your book");
@@ -4760,7 +5091,7 @@
     // cr1#775: where the question came from, so a project question reads beside the people from the same read.
     var sub = [r.reason, r.group === "close" ? "proposed close" : "", r.board ? "from " + String(r.board).replace(/-/g, " ") : ""].filter(Boolean).join(" · ");
     var ends = r.expires_on ? "If you do nothing by " + fmtDate(r.expires_on) + ", " + r.default_line + "." : "This one waits for your answer.";
-    return '<div class="row' + riseClass("v" + r.id) + '" style="animation-delay:' + ((i || 0) * 50) + 'ms"><div class="main"><div class="title">' + esc(showTitle(r.title)) + tag + "</div>"
+    return '<div class="row' + riseClass("v" + r.id) + '" style="animation-delay:' + ((i || 0) * 50) + 'ms" data-qrow="' + esc(r.id) + '"><div class="main"><div class="title">' + esc(showTitle(r.title)) + tag + "</div>"
       + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + reviewDiff(r) + (lineText ? '<div class="sub">' + esc(lineText) + "</div>" : "") + '<div class="sub">' + esc(ends) + "</div>" + (r.chat_line ? '<div class="sub">' + esc(r.chat_line) + "</div>" : "") + ask + '</div><div class="acts">' + acts + "</div></div>";
   }
   function reviewClosed(shown) {
@@ -4802,18 +5133,20 @@
   }
   function ownerQuestion(id) { var qs = ownerQuestions(); for (var i = 0; i < qs.length; i++) if (String(qs[i].id) === String(id)) return qs[i]; return null; }
   function ownerRow(q, i) {
-    var w = choiceFor("review", q.id), res = latestResult("review", q.id);
+    var w = choiceFor("review", q.id), res = latestResult("review", q.id), said = typeof answerOf === "function" ? answerOf(q.id) : w;
+    if (said && typeof answeredRow === "function" && typeof chosenLine === "function") return answeredRow(said, q.verbs, q.title);
     var tag = w ? waitTag(w, "answer waiting") : resultTag(res), acts = "";
     if (w) acts += undoBtn(w, "Take this back before it reaches your book");
     else if (!res || !res.result || res.result.outcome !== "applied") (q.verbs || []).forEach(function (v) { acts += '<button class="act" data-oq="' + esc(q.id) + '" data-verb="' + esc(v.action) + '">' + esc(v.label) + "</button>"; });
     // No Undo after Apply: said on the card before the press.
     var warn = !w && acts && q.no_undo ? '<div class="sub">' + esc(q.no_undo) + "</div>" : "";
-    return '<div class="row' + riseClass("o" + q.id) + '" style="animation-delay:' + ((i || 0) * 50) + 'ms"><div class="main"><div class="title">' + esc(showTitle(q.title)) + tag + "</div>"
+    return '<div class="row' + riseClass("o" + q.id) + '" style="animation-delay:' + ((i || 0) * 50) + 'ms" data-qrow="' + esc(q.id) + '"><div class="main"><div class="title">' + esc(showTitle(q.title)) + tag + "</div>"
       + '<div class="sub">' + esc(OWNER_Q_SUB) + '</div><div class="sub">' + esc(q.line || "") + "</div>" + warn + '<div class="sub">' + esc(OWNER_Q_WAITS) + '</div></div><div class="acts">' + acts + "</div></div>";
   }
   function onOwnerAct(b) {
     var q = ownerQuestion(b.getAttribute("data-oq")), verb = b.getAttribute("data-verb");
     if (!q || !(q.verbs || []).some(function (v) { return v.action === verb; })) return;
+    if (typeof needBackFrom === "function") needBackFrom(b, "undo");   // cr1#1644: the keyboard follows the answer
     saveChoice({ kind: "review", src: "cr-brain", n: q.id, action: verb, input: { text: "" }, title: q.title, payload: {}, review_kind: "board_owner", group: "question", commitment_id: q.commitment_id || null, seq: q.seq == null ? null : q.seq, thread_id: q.thread_id || null });
   }
   function renderReview() {
@@ -4833,6 +5166,7 @@
     if (done) h += "<h2>Closed from this tab</h2>" + done;
     h += reviewCraft(rv);
     $("reviewrows").innerHTML = h;
+    if (typeof keyFollow === "function") keyFollow("data-qrow");   // cr1#1644: the keyboard follows an answer
   }
   function reviewItem(id) { var rv = S.review; if (rv) for (var i = 0; i < (rv.rows || []).length; i++) if (String(rv.rows[i].id) === String(id)) return rv.rows[i]; return null; }
   function onReviewAct(b) {
@@ -4840,6 +5174,7 @@
     var verb = b.getAttribute("data-verb"), v = (r.verbs || []).filter(function (x) { return x.action === verb; })[0] || {};
     var text = String((S.reviewText || {})[r.id] || "").trim();
     if (v.required && !text) { banner(v.ask + ": type it on the row first.", true); return; }
+    if (typeof needBackFrom === "function") needBackFrom(b, "undo");   // cr1#1644: the keyboard follows the answer
     saveChoice({ kind: "review", src: "cr-brain", n: r.id, action: verb, input: { text: v.ask ? text : "" }, title: r.title, payload: r.data || {}, review_kind: r.kind, group: r.group, commitment_id: r.commitment_id || null, seq: r.seq == null ? null : r.seq, thread_id: r.thread_id || null });
   }
 
@@ -5523,6 +5858,9 @@
     // A move names its day; a snooze typed on the list as days from today
     // keeps the list's own words.
     var isDay = function (x) { return /^\d{4}-\d{2}-\d{2}$/.test(String(x && x.input || "")); };
+    // cr1#1644 (the owner: "row or card"): a waiting press folds the card to one line, what was chosen (a move names its day) and its Undo
+    var bverb = w && typeof pressVerb === "function" && typeof chosenLine === "function" ? (w.action === "snooze" && isDay(w) ? "Moved to " + boardDayName(w.input, days) : pressVerb(w)) : "";
+    if (bverb) return '<div class="card chosencard' + (c.late ? " late" : "") + '" data-card="' + esc(cid) + '">' + chosenLine(bverb, showTitle(c.title), "", undoBtn(w, "Take this back before it reaches your book")) + "</div>";
     if (w) tag = waitTag(w, w.action === "snooze" ? (isDay(w) ? "move to " + boardDayName(w.input, days) + " waiting" : "snooze waiting") : (w.action === "context" ? "note waiting" : w.action + " waiting"));
     else if (res && res.action === "snooze" && res.result && res.result.outcome === "applied" && isDay(res)) tag = '<span class="tag ok">' + esc("Moved to " + boardDayName(res.input, days)) + "</span>";
     else tag = resultTag(res);
@@ -5541,6 +5879,9 @@
         days.forEach(function (d) { if (d.date !== here || c.late) menu += '<button class="act" data-bmove="' + esc(d.date) + '" data-bcid="' + esc(cid) + '">Move to ' + esc(d.name || fmtDate(d.date)) + "</button>"; });
         menu += '<button class="act primary" data-bact="done" data-bcid="' + esc(cid) + '">Done</button>'
           + '<button class="act" data-bact="drop" data-bcid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>'
+          // cr1#1216: Jump in, as on a Plan row: a new chat naming the item and
+          // where it came from. Inside More, so the card itself says no more.
+          + (typeof jumpLink === "function" ? jumpLink(itemText(c.title, plSource(cid)), "Jump in") : "")
           + '<button class="act" data-bact="close" data-bcid="' + esc(cid) + '">Close</button></div>';
       }
     }
@@ -5670,6 +6011,7 @@
       l += "</details>";
     }
     $("boardLanes").innerHTML = l;
+    if (typeof keyFollow === "function") keyFollow("data-card");   // cr1#1644: the keyboard follows an Undo on a card
   }
   // cr1#1591: a fold the owner opened on Week or Record stays open through a
   // redraw (a feed, another device's press); closed is the default.
@@ -5754,7 +6096,8 @@
     var pb = ev.target.closest("button[data-prep]");
     if (pb) { var box = document.getElementById("prep-" + pb.getAttribute("data-prep")); if (box) { var on = box.className.indexOf(" on") < 0; box.className = "prepbox" + (on ? " on" : ""); pb.setAttribute("aria-expanded", on ? "true" : "false"); pb.textContent = on ? "Hide prep" : "Open prep"; var pk = pb.getAttribute("data-prepkey"); if (pk) { if (on) S.prepOpen[pk] = true; else delete S.prepOpen[pk]; } } return; }
     var sv = ev.target.closest("button[data-save]"); if (sv) { onSlotSave(sv); return; }
-    var u = ev.target.closest("button[data-undo]"); if (u) { undoChoice(u.getAttribute("data-undo")); return; }
+    // cr1#1644: after an Undo the keyboard stays on the row it brought back (a Needs you row's main press, the Inbox's picked line)
+    var u = ev.target.closest("button[data-undo]"); if (u) { needBackFrom(u, "main"); inboxBackFrom(u); undoChoice(u.getAttribute("data-undo")); return; }
     var c = ev.target.closest("button[data-cact]"); if (c) { onPlateAct(c); return; }
     var nb = ev.target.closest("button[data-nhact]"); if (nb) { onNoHomePress(nb); return; }
     var bp = ev.target.closest("#board button[data-bmore], #board button[data-bmove], #board button[data-bact]"); if (bp) { onBoardPress(bp); return; }
@@ -5766,7 +6109,8 @@
     var ip = ev.target.closest("button[data-isel]"); if (ip) { onInboxPick(ip); return; }
     var ifb = ev.target.closest("button[data-ifilter]"); if (ifb) { S.ifilter = ifb.getAttribute("data-ifilter") || "all"; S.ishown = INBOX_PAGE; renderInboxList(false); return; }
     var lv = ev.target.closest("button[data-live]"); if (lv) { onLivePress(lv); return; }
-    var la = ev.target.closest("button[data-lact]"); if (la) { onLiveAct(la); return; }
+    // cr1#1644: an Undo on a line set aside keeps the keyboard on that line (inboxBackFrom)
+    var la = ev.target.closest("button[data-lact]"); if (la) { if (la.getAttribute("data-lact") === "unclear") inboxBackFrom(la); onLiveAct(la); return; }
     var mb = ev.target.closest("button[data-mract]"); if (mb) { onMailRuleAct(mb); return; }
     var fb = ev.target.closest("button[data-fact]"); if (fb) { onFilteredAct(fb); return; }
     var pa = ev.target.closest("button[data-pact]"); if (pa) { onPeopleAct(pa); return; }
@@ -5879,7 +6223,11 @@
   // into it through `typeof` guards, so a suite that runs one part of the
   // page on its own still runs it.
   var HUB_WORK_VIEWS = ["triage", "plate", "priorities", "projects", "updates"];   // cr1#1540: Triage first, Updates last
-  var RAIL_H0 = 7, RAIL_H1 = 17, RAIL_PX = 44;   // 7 AM to 5 PM, 44px an hour
+  var RAIL_H0 = 7, RAIL_H1 = 17, RAIL_PX = 44; var WK_H0 = RAIL_H0, WK_H1 = RAIL_H1;   // 7 AM to 5 PM, 44px an hour
+  // cr1#1643: 7 to 5 (RAIL_H0, RAIL_H1) is the working window the planner
+  // places in, and the least the week grid, its drags and the Book and Move
+  // pickers span (WK_H0, WK_H1); railSpan() widens those to the week's
+  // earliest and latest meeting.
   var FOCUS_SHOW = 3, PAST_SHOW = 6;
   S.meetOpen = null; S.focusOpen = {}; S.todayMid = "focus"; S.workView = "triage"; S.drawer = ""; S.drawerOpener = null;
 
@@ -6375,9 +6723,11 @@
     if (p.still_a_priority) stat += " · " + esc(p.still_a_priority);
     var last = lastActionLine(p.last_action);
     var name = ts.length ? '<span class="tlink" role="button" tabindex="0" data-wkthread="' + esc(ts[0].id) + '" title="Open this ' + esc(word("thread")) + '">' + esc(showTitle(p.statement)) + "</span>" : esc(showTitle(p.statement));
+    // cr1#1644: one priority has no order to change, so it shows no Up or Down
+    var moves = n > 1 ? '<button type="button" class="chip" data-wkmove="up" data-wkpid="' + esc(p.id) + '" aria-label="Move up: ' + esc(p.statement) + '"' + (at === 0 ? " disabled" : "") + ">Up</button>"
+      + '<button type="button" class="chip" data-wkmove="down" data-wkpid="' + esc(p.id) + '" aria-label="Move down: ' + esc(p.statement) + '"' + (at === n - 1 ? " disabled" : "") + ">Down</button>" : "";
     return '<div class="fr pr" data-prio="' + esc(p.id) + '"><span class="fnum">' + (at + 1) + '</span><div><div class="frt">' + name + '</div><div class="frw">' + stat + (last ? " · " + esc(last) : "") + '</div></div><div class="fact">'
-      + '<button type="button" class="chip" data-wkmove="up" data-wkpid="' + esc(p.id) + '" aria-label="Move up: ' + esc(p.statement) + '"' + (at === 0 ? " disabled" : "") + ">Up</button>"
-      + '<button type="button" class="chip" data-wkmove="down" data-wkpid="' + esc(p.id) + '" aria-label="Move down: ' + esc(p.statement) + '"' + (at === n - 1 ? " disabled" : "") + ">Down</button>"
+      + moves
       // cr1#1541: Jump in opens a new chat on this priority, through the one link builder
       + (typeof jumpLink === "function" ? jumpLink(jumpText("thread", p.statement), "Jump in") : "") + "</div></div>";
   }
@@ -6521,8 +6871,300 @@
     if (!S.wk) return;
     renderTriage(); renderWorkPriorities(); renderWorkUpdates(); renderWorkThread();
   }
+  // ---- Tidy (cr1#1584) ------------------------------------------------------
+  // The workspace's loose ends as piles at the foot of Work streams, each
+  // cleared with one press and Undo, on the Work tab's pile pattern
+  // (cr1#1540). Which items a pile holds is the feed's answer
+  // (`projects.tidy`, `hub_tidy`), never worked out here; the page only
+  // narrows it to what it can list. A press saves, per item still listed,
+  // the row that item's own answer saves, plus the pile; nothing is written
+  // until Apply, and the Apply run asks the pile's rule again first. A feed
+  // read more than a day ago offers no press. A pile with nothing in it is
+  // not drawn, and with every pile empty the section is not drawn at all.
+  // Nothing here sends anything, and nothing of the owner's moves on a page
+  // press alone.
+  var TD_FRESH_MS = 24 * 60 * 60 * 1000;
+  var TD_STALE_LINE = "Read more than a day ago, so no pile is offered until the next read. Press Go.";
+  var TD_UNREAD_LINE = "Part of this could not be read on the last run; the next refresh tries again.";
+  var TD_PILES = [
+    { k: "stalled", kind: "tidy", verb: "archive", back: "restore", title: "Gone quiet", did: "archived", wait: "archive",
+      short: function () { return "Nothing has moved on these in a long while."; },
+      what: function (t) {
+        var d = (t && t.days) || {}, a = num(d.active), z = num(d.dormant);
+        return "Live ones quiet " + (a ? "over " + a + " days" : "a long while") + ", and dormant ones quiet " + (z ? "over " + z + " days" : "longer") + ": what the weekly check asks you about. Archiving keeps the files and the record."; },
+      undo: "Undo puts each back as it was.",
+      press: function (n) { return n === 1 ? "Archive it" : "Archive all " + n; } },
+    { k: "lone_folder", kind: "tidy", verb: "make project", back: "unmake project", title: "Folders with no project", did: "made projects", wait: "new project",
+      short: function () { return "No project points to these folders."; },
+      what: function () { return "Folders at the top of your workspace that no project points to. Making one a project moves nothing in it."; },
+      undo: "Undo archives the projects it made. The folders stay where they are.",
+      press: function (n) { return n === 1 ? "Make it a project" : "Make all " + n + " projects"; } },
+    { k: "no_home", kind: "commitment", verb: "assign", back: "unassign", title: "No home yet", did: "given a home", wait: "move",
+      short: function () { return "Open items on no " + word("thread") + "."; },
+      what: function () { return "Open items that belong to no " + word("thread") + ". Lines only heard keep their own buttons under No home yet."; },
+      undo: "Undo puts them back under No home yet.",
+      press: function (n) { return n === 1 ? "Move it there" : "Move all " + n + " there"; } },
+    { k: "loose_docs", read: true, title: "Documents with no project", did: "",
+      short: function () { return "No project's folder holds these."; },
+      what: function () { return "Documents no project's folder holds. Filing them from here comes in a later update; to file one now, ask in a chat."; } },
+    // cr1#1584 PR 2
+    { k: "relink", kind: "tidy", verb: "link folder", back: "unlink folder", title: "Projects beside their folder", did: "linked", wait: "link",
+      short: function () { return "Each has a folder of its own name."; },
+      what: function () { return "A project that points to no folder, beside a folder of the same name no project points to. Linking points the project at it: nothing moves and no folder is made."; },
+      undo: "Undo unlinks them. The folders stay where they are.",
+      press: function (n) { return n === 1 ? "Link it" : "Link all " + n; } },
+    { k: "two_notes", kind: "tidy", verb: "merge notes", back: "unmerge notes", title: "Two notes files", did: "merged", wait: "merge",
+      short: function () { return "Folders with more than one notes file."; },
+      what: function () { return "Each folder's session-notes files are merged into one, named for the folder. Every part is kept under a heading naming the file it came from, and the old files go to the archive."; },
+      undo: "Undo puts every file back, while the merged file is unchanged.",
+      press: function (n) { return n === 1 ? "Merge them" : "Merge all " + n; } },
+    { k: "loose_files", kind: "tidy", verb: "file away", back: "put back", title: "Loose files in a project", did: "filed", wait: "move",
+      short: function () { return "Files beside a project's own notes."; },
+      what: function () { return "Files of yours at the top of a project's folder, beside its notes. Each moves into that project's deliverables folder, and a list of what moved is kept."; },
+      undo: "Undo moves each back, while it is unchanged.",
+      press: function (n) { return n === 1 ? "Move it into deliverables" : "Move all " + n + " into deliverables"; } },
+    { k: "clutter", kind: "tidy", verb: "tidy clutter", back: "untidy clutter", line: true, title: "Command Room's own leftovers", did: "tidied", wait: "tidy",
+      short: function () { return ""; }, what: function () { return ""; }, undo: "",
+      press: function () { return "Tidy them"; } }
+  ];
+  var TD_CLUTTER_WORDS = { lease_folder: ["leftover lock folder", "leftover lock folders"], runtime_copy: ["old plugin copy", "old plugin copies"], surplus_backup: ["surplus backup", "surplus backups"] };
+  function tdState() { if (!S.td) S.td = { out: {}, outFor: "", busy: {}, open: {}, stream: "" }; return S.td; }
+  // A row id for one item of one press, collision-free (review of #1623):
+  // every character outside [A-Za-z0-9-] is written as its own code, so
+  // "A B" and "A_B" are two ids; a long one ends in two hashes of the whole.
+  function tdEnc(s) { return String(s).replace(/[^A-Za-z0-9-]/g, function (ch) { return "_" + ch.charCodeAt(0).toString(16) + "_"; }); }
+  function tdHash(s, seed) { var h = seed >>> 0; for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16); }
+  function tdDocId(pre, a, b) {
+    var id = pre + "_" + tdEnc(a) + "__" + tdEnc(b);
+    return id.length <= 140 ? id : id.slice(0, 120) + "_" + tdHash(id, 2166136261) + tdHash(id, 33554467);
+  }
+  function tdPile(k) { for (var i = 0; i < TD_PILES.length; i++) if (TD_PILES[i].k === k) return TD_PILES[i]; return null; }
+  function tdFeed() { var pj = S.projects; return pj && pj.tidy && pj.tidy.piles && typeof pj.tidy.piles === "object" ? pj.tidy : null; }
+  function tdFresh() {
+    var pj = S.projects; if (!tdFeed() || !pj.generated_at) return false;
+    var at = new Date(pj.generated_at).getTime();
+    return !isNaN(at) && Date.now() - at <= TD_FRESH_MS;
+  }
+  // The pile a choice row came from: a Tidy row names it in `pile`, a No home yet row in `tidy`.
+  function tdPileOf(c) { return c.kind === "tidy" ? c.pile : c.kind === "commitment" ? c.tidy : ""; }
+  // An item something on this page changed, or is about to, since the feed was read.
+  function tdTouched(def, id) {
+    var pj = S.projects;
+    return S.choices.some(function (c) {
+      if (String(c.n) !== String(id) || c.kind !== def.kind) return false;
+      return !c.applied || !pj.generated_at || !after(pj.generated_at, c.applied_at || c.created_at);
+    });
+  }
+  function tdItem(def, x) {
+    if (def.k === "no_home") {
+      var r = typeof noHomeRowOf === "function" ? noHomeRowOf(x) : null;
+      return r && r.from !== "heard" ? { id: String(r.id), name: String(r.title || "") } : null;
+    }
+    if (!x || !x.id) return null;
+    var sub = "";
+    if (def.k === "stalled") sub = [x.status === "dormant" ? "dormant" : "", x.quiet_days ? "quiet " + num(x.quiet_days) + " days" : ""].filter(Boolean).join(", ");
+    if (def.k === "loose_docs") sub = x.where ? "in " + x.where : "at the top";
+    if (def.k === "relink") sub = "folder " + String(x.where || "");
+    if (def.k === "two_notes") sub = num(x.n) + " files";
+    if (def.k === "loose_files") sub = "in " + String(x.where || "");
+    return { id: String(x.id), name: String(x.name || x.id), sub: sub };
+  }
+  // The items a pile holds now: the feed's, narrowed to what this page can list.
+  function tdItems(def) {
+    var t = tdFeed();
+    if (def.k === "clutter") {
+      var cl = t && t.clutter;
+      return t && tdFresh() && cl && num(cl.n) && !tdTouched(def, "clutter") ? [{ id: "clutter", name: def.title }] : [];
+    }
+    if (!t || !tdFresh() || !Array.isArray(t.piles[def.k])) return [];
+    var out = [];
+    t.piles[def.k].forEach(function (x) { var it = tdItem(def, x); if (it && (def.read || !tdTouched(def, it.id))) out.push(it); });
+    return out;
+  }
+  function tdChoices(def) { return S.choices.filter(function (c) { var p = tdPileOf(c); return !!p && c.action === def.verb && String(p).split(":")[0] === def.k; }); }
+  // The rows of the pile's newest press.
+  function tdLast(def) {
+    var all = tdChoices(def), newest = null;
+    all.forEach(function (c) { if (!newest || (c.created_at || "") > (newest.created_at || "")) newest = c; });
+    return newest ? all.filter(function (c) { return String(tdPileOf(c)) === String(tdPileOf(newest)); }) : [];
+  }
+  // After Apply each item is taken back with its press's own Undo, a row
+  // naming the write it takes back: a restore for an archive, an unmake for
+  // a project the press made (`back_seq`, the row Apply answered), and the
+  // No home yet row's own Undo for a move (cr1#1341).
+  function tdBackOf(c, def) {
+    var best = null;
+    S.choices.forEach(function (b) {
+      var mine = def.kind === "tidy" ? b.kind === "tidy" && b.action === def.back && b.back_of === c.id
+        : b.kind === "commitment" && b.action === "unassign" && String(b.input) === String(c.id);
+      if (mine && (!best || (b.created_at || "") > (best.created_at || ""))) best = b;
+    });
+    return best;
+  }
+  function tdBackRow(c, def) {
+    var id = tdDocId("tu", "", c.id);
+    if (def.kind !== "tidy") return { id: id, applied: false, created_at: nowIso(), kind: "commitment", src: "commitment-triage", n: c.n, action: "unassign", input: c.id, from: "open", title: c.title || "" };
+    var r = c.result || {};
+    // cr1#1584 PR 2: a merge's or a tidy's Undo names the dated folder that press answered
+    if (def.back === "unmerge notes" || def.back === "untidy clutter" || def.back === "put back") return r.bucket ? { id: id, applied: false, created_at: nowIso(), kind: "tidy", src: "hub", n: String(r.bucket), action: def.back, title: c.title || "", back_of: c.id } : null;
+    var n = def.verb === "make project" ? r.thread_id : c.n;
+    if (!n || typeof r.seq !== "number") return null;
+    return { id: id, applied: false, created_at: nowIso(), kind: "tidy", src: "hub", n: String(n), action: def.back, title: c.title || "", back_of: c.id, back_seq: r.seq };
+  }
+  // A press that landed: applied, or found already written by an earlier run
+  // of Apply, which answers with that write's own row (review of #1623).
+  function tdLanded(c) { return edLanded(c) || (!!c && !!c.applied && !!c.result && c.result.outcome === "already" && typeof c.result.seq === "number"); }
+  function tdBackOk(b) { return !!b && !!b.applied && !!b.result && (b.result.outcome === "applied" || b.result.outcome === "already"); }
+  function tdCanBack(c, def) { var b = tdBackOf(c, def); return tdLanded(c) && !!tdBackRow(c, def) && (!b || (!!b.applied && !tdBackOk(b))); }
+  function tdPress(k) {
+    var def = tdPile(k), st = tdState();
+    if (!def || def.read || st.busy[k]) return null;
+    if (!db) { banner("The page cannot reach its data right now, so nothing was saved.", true); return null; }
+    if (!tdFresh()) { banner(TD_STALE_LINE, true); renderTidy(); return null; }
+    var out = st.out[k] || {}, rows = tdItems(def).filter(function (it) { return !out[it.id]; });
+    if (!rows.length) return null;
+    var streams = typeof noHomeStreams === "function" ? noHomeStreams() : [];
+    if (k === "no_home" && !streams.some(function (w) { return String(w.id) === String(st.stream); })) { banner("Pick a " + word("work_stream") + " first.", true); return null; }
+    var stamp = wkStamp(S.projects), pile = k + ":" + stamp + "-" + rid().slice(0, 8), at = nowIso();
+    st.busy[k] = true; renderTidy();
+    var saves = rows.map(function (it) {
+      var id = tdDocId("tp", k + "_" + stamp, it.id);
+      if (S.choices.some(function (c) { return c.id === id; })) return Promise.resolve(null);
+      var row = def.kind === "tidy" ? { kind: "tidy", src: "hub", n: it.id, action: def.verb, title: it.name, pile: pile }
+        : { kind: "commitment", src: "commitment-triage", n: it.id, action: "assign", input: String(st.stream), from: "open", title: it.name, tidy: pile };
+      row.id = id; row.applied = false; row.created_at = at;
+      return wkPut(row).then(null, wkFail);
+    });
+    return Promise.all(saves).then(function (res) { delete st.busy[k]; wkSaved(res, "saved"); });
+  }
+  // One Undo for the whole press: a row still waiting is removed, so Apply
+  // never sees it; what the book already has is taken back item by item.
+  function tdUndo(k) {
+    var def = tdPile(k), st = tdState();
+    if (!db || !def || def.read || st.busy[k]) return null;
+    var rows = tdLast(def), waiting = rows.filter(function (c) { return !c.applied; }), landed = rows.filter(function (c) { return tdCanBack(c, def); });
+    if (waiting.some(claimed)) { banner("Apply is writing this pile now. Use Undo once it lands.", true); return null; }
+    if (!waiting.length && !landed.length) return null;
+    st.busy[k] = true; renderTidy();
+    var work = waiting.map(function (c) {
+      return db.collection("choices").doc(c.id).delete().then(function () {
+        S.choices = S.choices.filter(function (x) { return x.id !== c.id; });
+        if (typeof unnoteHandled === "function") unnoteHandled(c);
+        return null;
+      }, wkFail);
+    });
+    landed.forEach(function (c) { work.push(wkPut(tdBackRow(c, def)).then(null, wkFail)); });
+    return Promise.all(work).then(function (res) { delete st.busy[k]; wkSaved(res, "taken back"); });
+  }
+  function tdItemBack(id) {
+    var c = S.choices.filter(function (x) { return x.id === id; })[0], def = null;
+    TD_PILES.forEach(function (d) { if (c && !d.read && c.action === d.verb && String(tdPileOf(c) || "").split(":")[0] === d.k) def = d; });
+    if (!db || !c || !def || !tdCanBack(c, def)) return null;
+    return wkPut(tdBackRow(c, def)).then(function () { renderAll(); }, function (e) { banner("Could not save that Undo; try again.", true, errText(e)); });
+  }
+  function tdItemState(c, def) {
+    if (!c.applied) return waitTag(c, def.wait + " waiting") + undoBtn(c, "Take this one back before it reaches your book");
+    if (!tdLanded(c)) return resultTag(c);
+    var b = tdBackOf(c, def), own = tdBackRow(c, def) ? '<button class="act undo" data-tdback="' + esc(c.id) + '" title="Put this one back; it is done when you press Apply">Undo</button>' : "";
+    if (!b) return resultTag(c) + own;
+    if (!b.applied) return resultTag(c) + waitTag(b, "undo waiting") + undoBtn(b, "Keep the change: take the Undo back before it reaches your book");
+    if (!tdBackOk(b)) return resultTag(c) + resultTag(b) + own;
+    return resultTag(b);
+  }
+  function tdStreamPick() {
+    var st = tdState(), list = typeof noHomeStreams === "function" ? noHomeStreams() : [];
+    if (st.stream && !list.some(function (w) { return String(w.id) === String(st.stream); })) st.stream = "";
+    return '<select class="act" data-tdstream aria-label="The ' + esc(word("work_stream")) + ' to move them to"><option value="">Pick a ' + esc(word("work_stream")) + "</option>"
+      + list.map(function (w) { return '<option value="' + esc(w.id) + '"' + (String(w.id) === String(st.stream) ? " selected" : "") + ">" + esc(showTitle(w.name || w.id)) + "</option>"; }).join("") + "</select>";
+  }
+  function tdCard(def) {
+    var st = tdState(), k = def.k, items = tdItems(def), out = st.out[k] || {};
+    var listed = items.filter(function (it) { return !out[it.id]; }), n = listed.length;
+    var last = def.read ? [] : tdLast(def), waiting = last.filter(function (c) { return !c.applied; }), landed = last.filter(tdLanded);
+    var stand = landed.filter(function (c) { return tdCanBack(c, def); });
+    // a pile with nothing in it and no press of its own to show is not drawn
+    if (!items.length && !last.length) return "";
+    var t = tdFeed(), whole = t && t.n ? num(t.n[k]) : 0, beyond = Math.max(0, whole - (t && Array.isArray(t.piles[k]) ? t.piles[k].length : 0));
+    var h = '<div class="pile" data-tdcard="' + k + '"><div class="pn">' + (def.read ? items.length : n) + '</div><div class="t">' + esc(def.title)
+      + '<span class="wktip">' + infoTip(def.title, esc(def.what(t) + (beyond ? " " + wkN(beyond, "more is", "more are") + " past what this page holds." : ""))) + "</span></div>"
+      + '<div class="sub">' + esc(def.short()) + "</div>";
+    if (k === "lone_folder" && items.length) h += '<div class="sub">' + esc(t && t.files_under ? "They go under " + t.files_under + "." : "They go under no company.") + "</div>";
+    // review of #1623: what the wall left out is counted, never named
+    var hid = t && t.left_out ? num(t.left_out[k]) : 0;
+    if (hid && items.length) h += '<div class="sub">' + esc(wkN(hid, "more is", "more are") + " left out: they name people you keep off limits or personal.") + "</div>";
+    if (items.length) {
+      h += '<details class="pitems" data-tdfold="' + k + '"' + (st.open[k] ? " open" : "") + "><summary>" + (def.read || n === items.length ? "See " + wkN(items.length, "item", "items") : n + " of " + items.length + " items stay in") + "</summary>";
+      items.forEach(function (it) {
+        var isOut = !!out[it.id];
+        h += '<div class="pit' + (isOut ? " out" : "") + '"><span>' + esc(showTitle(it.name)) + (it.sub ? ' <i class="quiet">' + esc(it.sub) + "</i>" : "") + "</span>"
+          + (def.read ? "" : '<button class="act" data-tdout="' + k + '" data-tdid="' + esc(it.id) + '" title="' + (isOut ? "Put it back in the pile" : "Leave this one out of the press") + '">' + (isOut ? "Put back in" : "Take out") + "</button>") + "</div>";
+      });
+      h += "</details>";
+      if (!def.read) {
+        var ready = n && !st.busy[k] && (k !== "no_home" || !!st.stream);
+        h += '<div class="sub pundo">' + esc(def.undo) + '</div><div class="parts">' + (k === "no_home" ? tdStreamPick() : "")
+          + '<button class="act primary" data-tdpile="' + k + '"' + (ready ? "" : " disabled") + ">" + esc(n ? def.press(n) : "Nothing left in the pile") + "</button></div>";
+      }
+    }
+    if (last.length) {
+      var bits = [], backDone = landed.filter(function (c) { return tdBackOk(tdBackOf(c, def)); }).length;
+      if (waiting.length) bits.push('<span class="tag wait">' + waiting.length + " waiting for Apply</span>");
+      if (stand.length) bits.push('<span class="tag ok">' + stand.length + " " + esc(def.did) + "</span>");
+      if (backDone) bits.push('<span class="tag">' + backDone + " put back</span>");
+      if (last.length > waiting.length + landed.length) bits.push('<span class="tag">' + (last.length - waiting.length - landed.length) + " left as they were</span>");
+      h += '<div class="sub pstate">' + bits.join(" ") + "</div>";
+      if (waiting.length || stand.length) h += '<div class="parts"><button class="act undo" data-tdundo="' + k + '"' + (st.busy[k] ? " disabled" : "") + ' title="Take the whole press back: every item it changed, and only those">Undo the pile</button></div>';
+      h += '<details class="pitems" data-tdfold="' + k + '_did"' + (st.open[k + "_did"] ? " open" : "") + "><summary>What that press did</summary>";
+      last.forEach(function (c) { h += '<div class="pit"><span>' + esc(showTitle(c.title || c.n)) + "</span>" + tdItemState(c, def) + "</div>"; });
+      h += "</details>";
+    }
+    return h + "</div>";
+  }
+  // Command Room's own leftovers as one status line (cr1#1584 PR 2): what
+  // the folder tidy would archive, one press, and its Undo after Apply.
+  function tdLine(def) {
+    var t = tdFeed(), st = tdState(); if (!def || !t) return "";
+    var items = tdItems(def), last = tdLast(def), c = t.clutter || {};
+    if (!items.length && !last.length) return "";
+    var parts = [];
+    Object.keys(TD_CLUTTER_WORDS).forEach(function (k) { var v = num((c.by_kind || {})[k]); if (v) parts.push(v + " " + TD_CLUTTER_WORDS[k][v === 1 ? 0 : 1]); });
+    var act = items.length ? '<button class="act" data-tdpile="clutter"' + (st.busy.clutter ? " disabled" : "") + ' title="Move them into the archive, with a list of what moved; nothing of yours is touched">' + esc(def.press(1)) + "</button>" : "";
+    last.forEach(function (x) { act += tdItemState(x, def); });
+    // the page's one note row (cr1#1591): its words, its press, its why behind the icon
+    return '<div data-tdline="clutter">' + noteRow({ kind: "info", text: items.length ? def.title + ": " + (parts.join(", ") || num(c.n) + " to tidy") + "." : def.title + ".", act: act,
+      why: "Copies and backups Command Room made for itself. Tidying moves them into the archive with a list, and Undo puts them back; nothing of yours is touched." }) + "</div>";
+  }
+  function renderTidy() {
+    var el = $("tidy"); if (!el) return;
+    var t = tdFeed(), st = tdState(), pj = S.projects;
+    if (!t) { putHtml(el, ""); return; }
+    // what was taken out belongs to one read of the feed
+    if (st.outFor !== wkStamp(pj)) { st.out = {}; st.outFor = wkStamp(pj); }
+    var held = 0; TD_PILES.forEach(function (d) { held += Array.isArray(t.piles[d.k]) ? t.piles[d.k].length : 0; });
+    var cards = TD_PILES.filter(function (d) { return !d.line; }).map(tdCard).join(""), n = 0;
+    TD_PILES.forEach(function (d) { if (!d.line) n += tdItems(d).length; });
+    var line = tdLine(tdPile("clutter"));
+    var unread = (t.errors || []).length ? '<div class="quiet">' + esc(TD_UNREAD_LINE) + "</div>" : "";
+    var head = '<div class="wkhead"><h2>Tidy' + (n ? " (" + n + ")" : "") + '</h2><span class="wktip">' + infoTip("Tidy", esc("Loose ends in your workspace. One press clears a pile; nothing is written until you press Apply, and Undo takes it back.")) + "</span></div>";
+    if (!tdFresh()) { putHtml(el, held ? head + '<div class="quiet">' + esc(TD_STALE_LINE) + "</div>" : ""); return; }
+    if (!cards && !line) { putHtml(el, unread ? head + unread : ""); return; }
+    putHtml(el, head + unread + line + (cards ? '<div class="piles">' + cards + "</div>" : ""));
+  }
+  function onTidyClick(t) {
+    var b;
+    if ((b = t.closest("button[data-tdpile]"))) { tdPress(b.getAttribute("data-tdpile")); return true; }
+    if ((b = t.closest("button[data-tdundo]"))) { tdUndo(b.getAttribute("data-tdundo")); return true; }
+    if ((b = t.closest("button[data-tdback]"))) { tdItemBack(b.getAttribute("data-tdback")); return true; }
+    if ((b = t.closest("button[data-tdout]"))) {
+      var st = tdState(), k = b.getAttribute("data-tdout"), id = b.getAttribute("data-tdid"); st.out[k] = st.out[k] || {};
+      if (st.out[k][id]) delete st.out[k][id]; else st.out[k][id] = true;
+      st.open[k] = true; renderTidy(); return true;
+    }
+    return false;
+  }
   function onWorkClick(ev) {
     var t = ev.target, b;
+    if (typeof onTidyClick === "function" && onTidyClick(t)) return true;   // cr1#1584
     if ((b = t.closest("button[data-wkpile]"))) { wkPilePress(b.getAttribute("data-wkpile")); return true; }
     if ((b = t.closest("button[data-wkundo]"))) { wkPileUndo(b.getAttribute("data-wkundo")); return true; }
     if ((b = t.closest("button[data-wkback]"))) { wkItemBack(b.getAttribute("data-wkback")); return true; }
@@ -6798,11 +7440,9 @@
   // its day sentence (`plate.lead`, else `plate.focus`, for today's plate
   // only). One button each, the item's own main press as its row has it;
   // pressing the line opens the item's own row, with every other action.
-  function focusItems(S) {
-    var p = S.plate;
-    if (!p || p.today !== hubDay()) return [];
-    return (p.lead && p.lead.length ? p.lead : (p.focus || [])).slice(0, FOCUS_SHOW);
-  }
+  // cr1#1644: the Needs you part of Today's one order (todayOrder), which
+  // Everything lists first, in the same order; live work only (cr1#1636).
+  function focusItems(S) { return todayOrder(S.plate, hubDay(), FOCUS_SHOW).need; }
   // Late, as the Late list reads it (`overdueRows`): the open list's verdict
   // on the row, and on a feed from before that verdict a late row not snoozed.
   function focusLate(full) { return !!("counted" in full ? full.counted : full.late && !full.snoozed); }
@@ -6813,25 +7453,117 @@
     if (!line) line = plainSub([full.project, full.context]);
     return cap(line || "On your list");
   }
-  function focusRow(r, i) {
+  // cr1#1644: a row whose press waits for Apply (Done, Confirm, Drop, Snooze,
+  // `pressWords`) or that Apply has closed is handled: it stays where it is,
+  // its words dim, the press is said in words in place of its line, and it
+  // leaves the Needs you count. Its Undo is its one button.
+  function snoozeLanded(cid) { var res = latestResult("commitment", cid); return res && res.action === "snooze" ? landedSince(res, S.plate) : null; }
+  function needGone(cid) { return !!(pressWords(choiceFor("commitment", cid)) || closedHere(cid) || snoozeLanded(cid)); }
+  function focusRow(r, i, why) {
     var cid = r.id, full = plateRowOf(cid) || r, on = !!S.focusOpen[cid];
     var w = choiceFor("commitment", cid) || (typeof noteWait === "function" ? noteWait(cid) : null), res = latestResult("commitment", cid), shut = closedHere(cid);
+    var reopen = '<button class="act undo" data-cact="reopen" data-cid="' + esc(cid) + '" title="Open this commitment again">Undo</button>';
+    // cr1#1644: pressed, or closed by Apply, the row is one line where it stood
+    var fold = function (line) { return '<div class="fr pressed" data-focus="' + esc(cid) + '"><div class="cfold">' + line + foldUnder(cid, full) + "</div></div>"; };
+    if (pressVerb(w)) return fold(chosenLine(pressVerb(w), showTitle(r.title), pressTail(w), undoBtn(w, "Take this back before it reaches your book")));
+    if (shut) return fold(chosenLine(PRESS_WORDS[shut.action] || "Closed", showTitle(r.title), "in your book", reopen));
+    // review round 1: a Snooze Apply carried, before the next read drops the row
+    var slept = snoozeLanded(cid); if (slept) return fold(chosenLine(doneVerb(slept), showTitle(r.title), "in your book", ""));
     var tag = w ? waitTag(w, w.action === "context" ? "note waiting" : w.action + " waiting") : resultTag(res);
     var btn = w ? undoBtn(w, "Take this back before it reaches your book")
-      : shut ? '<button class="act undo" data-cact="reopen" data-cid="' + esc(cid) + '" title="Open this commitment again">Undo</button>'
       : '<button class="act primary" data-cact="' + (full.pending ? "confirm" : "done") + '" data-cid="' + esc(cid) + '">' + (full.pending ? "Confirm" : "Done") + "</button>";
     // cr1#1285 item 7, again in cr1#1591 Part A 7: no row number
     return '<div class="fr" data-focus="' + esc(cid) + '"><div class="frline" role="button" tabindex="0" data-fopen="' + esc(cid) + '" aria-expanded="' + (on ? "true" : "false") + '" title="' + (on ? "Close" : "Open the rest: every other action for this one") + '">'
-      + '<div class="frt">' + titleLine(r.title) + tag + '</div><div class="frw">' + esc(focusWhy(r, full)) + '</div></div><div class="fact">' + (on ? "" : btn) + "</div>"
+      + '<div class="frt">' + titleLine(r.title) + tag + '</div><div class="frw">' + esc(why || focusWhy(r, full)) + '</div></div><div class="fact">' + (on ? "" : btn) + "</div>"
       + (on ? '<div class="fro">' + plateRow(full, false, i, focusLate(full)) + "</div>" : "") + "</div>";
+  }
+  // Both views say the same when nothing is listed.
+  function needQuiet(p) {
+    return '<div class="quiet">' + (!p ? (isRunning("refresh") ? "Reading your commitments." : "Shows after the next refresh.")
+      : (p.today !== hubDay() ? "Shows after today's first refresh." : "Nothing needs you now.")) + "</div>";
+  }
+  // cr1#1644: Do this first says why it is first: late, the lead's own
+  // reasons (due when, on a priority, a starred person), then where it came
+  // from (cr1#1285 item 9's words). Empty when the record says none of it.
+  function firstLine(r) {
+    var full = plateRowOf(r.id) || r, why = [focusLate(full) ? "late" : "", leadWhy(r)].filter(Boolean).join(", ");
+    var from = String(firstWhy({ kind: "commitment", id: r.id }) || "").replace(/^Late\.\s*/, "");
+    return [why ? cap(why) + "." : "", from].filter(Boolean).join(" ");
+  }
+  // cr1#1644: Everything is Focus plus the rest, in the same order: the
+  // Needs you rows exactly as Focus draws them, the first in the Do this
+  // first card (the brief model's first action, the same row), then the rest
+  // of the owner's own work the feed ranks, then the lists under them.
+  function renderEvery(o) {
+    var el = $("brieffirst"); if (!el) return;
+    var p = S.plate, b = briefModel(S.today, p, S.inbox, S.review), firstId = b.first ? String(b.first.id) : null, h = "";
+    o.need.forEach(function (r, i) {
+      var row = focusRow(r, i, String(r.id) === firstId ? firstLine(r) : "");
+      h += String(r.id) === firstId ? '<div class="firstcard" title="' + esc(b.first.line) + '"><div class="k">Do this first</div>' + row + "</div>" : row;
+    });
+    if (o.rest.length) {
+      h += '<div class="frmore">Also on your list</div>';
+      o.rest.forEach(function (r, i) { h += focusRow(r, o.need.length + i); });
+    }
+    putHtml(el, h || needQuiet(p));
+  }
+  // cr1#1644: after a press on one of those rows the keyboard goes to that
+  // row's Undo (after an Undo, to its main press), else to the row's own
+  // line, else to the next row's: never to the page itself (the Hub UX walk,
+  // item 20). Kept for a few seconds, while the keyboard stays where it put it.
+  var BACK_MS = 4000;
+  // review round 1: the same for a Commitments row, a To confirm answer and a
+  // week card: each row by its own key, each with its own main press. The
+  // owner moving the keyboard somewhere else ends it.
+  var BACK_ROWS = [["data-focus", 'button[data-cact="done"], button[data-cact="confirm"]'], ["data-row", 'button[data-cact="done"], button[data-cact="confirm"]'],
+                   ["data-qrow", "button[data-review], button[data-oq]"], ["data-card", "button[data-bmore]"]];
+  // A press from inside an opened Needs you row closes it, so the row shows the press and its Undo
+  // (and opens again if the save does not land, pressLost). Returns whether it closed one.
+  function needBackFrom(btn, to) {
+    S.needBack = null;
+    if (!btn || !btn.closest) return false;
+    var row = null, attr = "";
+    if (btn.closest("#focusrows, #brieffirst")) { row = btn.closest(".fr[data-focus]"); attr = "data-focus"; }
+    else for (var i = 0; i < BACK_ROWS.length && !row; i++) { attr = BACK_ROWS[i][0]; row = btn.closest("[" + attr + "]"); }
+    if (!row) return false;
+    var box = row.parentNode; while (box && box.nodeType === 1 && !box.id) box = box.parentNode;
+    if (!box || !box.id) return false;
+    var key = row.getAttribute(attr), open = attr === "data-focus" && to === "undo" && !!S.focusOpen[key];
+    S.needBack = { box: box.id, attr: attr, key: key, to: to, at: Date.now(), reopen: open };
+    if (open) delete S.focusOpen[key];
+    return open;
+  }
+  function inDoc(el) {
+    for (var n = el; n && n !== document; n = n.parentNode) { var up = n.parentNode; if (!up || Array.prototype.indexOf.call(up.childNodes || [], n) < 0) return false; }
+    return !!el;
+  }
+  // each list's renderer hands the keyboard back once its rows are drawn
+  function keyFollow(attr) { if (S.needBack && S.needBack.attr === attr) needFocusBack(); }
+  function needFocusBack() {
+    var nb = S.needBack; if (!nb) return;
+    if (Date.now() - nb.at > BACK_MS) { S.needBack = null; return; }
+    var box = $(nb.box); if (!box) return;
+    // review round 1: the keyboard already somewhere else on the page (not
+    // where this put it, not the page itself) means the owner moved on
+    var a = document.activeElement;
+    if (a && a !== document.body && a !== nb.fell && inDoc(a)) { S.needBack = null; return; }
+    var main = (BACK_ROWS.filter(function (x) { return x[0] === nb.attr; })[0] || [])[1] || "button";
+    var rows = box.querySelectorAll("[" + nb.attr + "]"), at = -1;
+    for (var i = 0; i < rows.length; i++) if (rows[i].getAttribute(nb.attr) === nb.key) { at = i; break; }
+    var row = at >= 0 ? rows[at] : null, next = rows[at + 1] || (at > 0 ? rows[at - 1] : null);
+    var line = function (r) { return r ? r.querySelector("[data-fopen]") || r.querySelector("button") : null; };
+    var want = row ? row.querySelector(nb.to === "undo" ? "button.undo" : main) : null;
+    var near = want || line(row) || line(next);
+    // kept for the burst of redraws a press brings (a list drawn again takes the
+    // node out): the keyboard is put back only while it is still where this put it
+    nb.fell = near || null;
+    if (near && near.focus && document.activeElement !== near) near.focus();
   }
   function renderFocus() {
     var el = $("focusrows"), q = $("focusquiet"); if (!el || !q) return;
-    var p = S.plate, items = focusItems(S), h = "";
+    var p = S.plate, o = todayOrder(p, hubDay(), FOCUS_SHOW), items = o.need, h = "";
     items.forEach(function (r, i) { h += focusRow(r, i); });
-    if (!h) h = '<div class="quiet">' + (!p ? (isRunning("refresh") ? "Reading your commitments." : "Shows after the next refresh.")
-      : (p.today !== hubDay() ? "Shows after today's first refresh." : "Nothing needs you now.")) + "</div>";
-    el.innerHTML = h;
+    putHtml(el, h || needQuiet(p));
     // every other open item, counted only when the plate is today's: the
     // open count less the open items the Focus lines stand for (cr1#1540),
     // by the rule the Commitments header counts by; a feed without the open
@@ -6840,11 +7572,15 @@
     var shown = 0, olcF = openListCounts(p);
     items.forEach(function (r) { shown += olcF ? openItemsOf(plateRowOf(r.id) || r) : 1; });
     var more = p && p.today === hubDay() ? Math.max(0, plateTotal(p) - shown) : 0;
-    q.innerHTML = more ? '<button type="button" data-tview="all">' + more + " more open</button>" : "";
+    putHtml(q, more ? '<button type="button" data-tview="all">' + more + " more open</button>" : "");
     // cr1#1591 B4, review: the heading's number is the rows listed under it;
-    // the morning's needs-you count keeps its own place (the headline's icon)
-    var nc = $("needN"), nt = items.length && p && p.today === hubDay() ? " " + items.length : "";
+    // the morning's needs-you count keeps its own place (the headline's icon).
+    // cr1#1644: a row pressed here leaves it at once; its Undo brings it back.
+    var left = items.filter(function (r) { return !needGone(r.id); }).length;
+    var nc = $("needN"), nt = left ? " " + left : "";
     if (nc && nc.textContent !== nt) nc.textContent = nt;
+    renderEvery(o);
+    keyFollow("data-focus");
   }
   function waitingLive() {
     var live = $("waitingLive"), w = $("waiting");
@@ -6859,9 +7595,18 @@
     // cr1#1591: trouble shows the needs-a-look mark beside the words that name
     // it (the words are its name for a screen reader); otherwise the dot.
     if (dot.getAttribute("data-mark") !== (bad ? "look" : "dot")) { dot.innerHTML = bad ? NOTE_MARKS.look : ""; dot.setAttribute("data-mark", bad ? "look" : "dot"); }
-    // the line is cut short where the masthead is tight: its hover says all of it
+    // a long line wraps to two where the masthead is tight; its hover says all of it
     var b = $("beatBtn"), line = $("dayline");
     if (b && line && b.setAttribute) b.setAttribute("title", String(line.textContent || "").replace(/\.$/, "") + ". Press for Run details: the lights and any note.");
+    // cr1#1635: what is running, by name, behind the icon beside the line;
+    // drawn again only when it changes, so an open popup stays open.
+    var tipEl = $("beatTip");
+    if (tipEl) {
+      var runs = LEGS.filter(function (l) { return isRunning(l[0]); }).map(function (l) { return l[1]; });
+      var said = runs.length ? "Running now: " + runs.join(", ") + "." : "";
+      if (tipEl.getAttribute("data-said") !== said) { tipEl.setAttribute("data-said", said); tipEl.innerHTML = said ? infoTip("what is running", esc(said)) : ""; }
+      tipEl.hidden = !said;
+    }
     // cr1#1591 (B2): Run details stays closed on every day, a day not started
     // included: Go is in the top bar, so it never has to open to show it.
     // The waiting-choices sentence sits in Run details; a screen reader hears
@@ -6944,6 +7689,9 @@
     if ((ev.key === "Enter" || ev.key === " ") && (t.hasAttribute("data-wkopen") || t.hasAttribute("data-wkthread") || t.hasAttribute("data-cfind"))) { ev.preventDefault(); t.click(); }
   });
   $("tab-work").addEventListener("toggle", function (ev) { var k = ev.target.getAttribute && ev.target.getAttribute("data-wkfold"); if (k) S.wk.pileOpen[k] = !!ev.target.open; }, true);
+  // cr1#1584: a Tidy fold stays as the owner left it, and the work stream he picked stays picked.
+  $("tab-work").addEventListener("toggle", function (ev) { var k = ev.target.getAttribute && ev.target.getAttribute("data-tdfold"); if (k) tdState().open[k] = !!ev.target.open; }, true);
+  $("tab-work").addEventListener("change", function (ev) { var sel = ev.target.closest && ev.target.closest("select[data-tdstream]"); if (sel) { tdState().stream = String(sel.value || ""); renderTidy(); } });
   $("tab-today").addEventListener("toggle", function (ev) { if (ev.target && ev.target.id === "nxmore") S.nxMoreOpen = !!ev.target.open; }, true);
   $("tab-today").addEventListener("click", function (ev) {
     var tv = ev.target.closest("button[data-tview]"); if (tv) { setTodayMid(tv.getAttribute("data-tview")); return; }
@@ -6958,8 +7706,10 @@
   $("tab-today").addEventListener("keydown", function (ev) {
     if (ev.key !== "Enter" && ev.key !== " ") return;
     var fo = ev.target.closest && ev.target.closest("[data-fopen]"); if (!fo || ev.target !== fo) return;
+    // cr1#1644: the line is drawn again in its own list (Focus's, or Everything's)
+    var box = fo.closest("#focusrows, #brieffirst") || $("focusrows");
     ev.preventDefault(); fo.click();
-    var again = document.querySelector('#focusrows [data-fopen="' + cssq(fo.getAttribute("data-fopen")) + '"]'); if (again) again.focus();
+    var again = box.querySelector('[data-fopen="' + cssq(fo.getAttribute("data-fopen")) + '"]'); if (again) again.focus();
   });
   $("beatBtn").addEventListener("click", function () { var on = !$("rundetails").hasAttribute("open"); setRunDetails(on); if (on) bringIntoView($("rundetails")); });
   $("rundetails").addEventListener("toggle", function () { var b = $("beatBtn"); if (b) b.setAttribute("aria-expanded", this.hasAttribute("open") ? "true" : "false"); });
@@ -7471,17 +8221,21 @@
   }
   function calAt(date, hours) { var p = String(date).split("-"); if (p.length !== 3) return null; var t = new Date(+p[0], +p[1] - 1, +p[2], Math.floor(hours), Math.round((hours % 1) * 60), 0, 0).getTime(); return isNaN(t) ? null : t; }
   function calHourLabel(h) { return fmtTime(new Date(2020, 0, 1, Math.floor(h), Math.round((h % 1) * 60)).toISOString()); }
-  // cr1#1562: the picker opens on the first quarter hour still ahead
+  // cr1#1562: the picker opens on the first quarter hour still ahead.
+  // cr1#1643 (coordinator): inside the working window, 7 to 5, as it did, so
+  // after 5 PM it opens on the next morning; the evening times the span adds
+  // stay in the list to pick.
   function calPickFirst(days, last) {
     var now = Date.now();
     for (var i = 0; i < days.length; i++) for (var q = RAIL_H0; q <= last + 1e-9; q += 0.25) { var t = calAt(days[i].date, q); if (t != null && t > now) return { date: days[i].date, q: q }; }
     return { date: days[0].date, q: RAIL_H0 };
   }
   function calPickHtml(minutes, attr) {
-    var days = calDayList(), last = RAIL_H1 - minutes / 60, first = calPickFirst(days, last), h = '<div class="calpick"><select class="prio" ' + attr + '="day" aria-label="Day" data-first="' + esc(first.date) + '">';
+    railSpan();
+    var days = calDayList(), last = WK_H1 - minutes / 60, first = calPickFirst(days, RAIL_H1 - minutes / 60), h = '<div class="calpick"><select class="prio" ' + attr + '="day" aria-label="Day" data-first="' + esc(first.date) + '">';
     days.forEach(function (d) { h += '<option value="' + esc(d.date) + '"' + (d.date === first.date ? " selected" : "") + ">" + esc(d.name) + "</option>"; });
     h += '</select><select class="prio" ' + attr + '="time" aria-label="Start time" data-first="' + first.q + '">';
-    for (var q = RAIL_H0; q <= last + 1e-9; q += 0.25) h += '<option value="' + q + '"' + (q === first.q ? " selected" : "") + ">" + esc(calHourLabel(q)) + "</option>";
+    for (var q = WK_H0; q <= last + 1e-9; q += 0.25) h += '<option value="' + q + '"' + (q === first.q ? " selected" : "") + ">" + esc(calHourLabel(q)) + "</option>";
     return h + "</select></div>";
   }
   function calPicked(root, attr) {
@@ -7624,37 +8378,57 @@
     calRows().forEach(function (c) { if (seen[c.id]) return; seen[c.id] = true; if (mine[c.id]) fresh = true; });
     if (fresh && any && typeof el.scrollIntoView === "function") { try { el.scrollIntoView({ block: "nearest" }); } catch (e) {} }
   }
+  // cr1#1636 item 1: the longer words of one change (the provider's name, why
+  // it cannot be taken back here, who is told) behind the icon beside its
+  // short line. Drawn once per text, so a redraw that changes nothing keeps
+  // an open one open.
+  function calTip(key, text) {
+    if (!text) return "";
+    var t = S.cal.tips || (S.cal.tips = {}), was = t[key];
+    if (!was || was.said !== text) t[key] = was = { said: text, html: infoTip("this change", esc(text)) };
+    return was.html;
+  }
   function renderCalChanges() {
     var el = $("calchanges"); if (!el) return;
     calChangesPlace(el);
-    var h = "", now = Date.now(), feed = S.todayFeed, backs = 0;
+    var h = "", now = Date.now(), feed = S.todayFeed;
     calEvents().forEach(function (id) {
       var st = calState(id), c = st.unsure || st.last; if (!c) return;
       // moved elsewhere since: the calendar's own time shows, and nothing of the old move is offered
       if (st.elsewhere && !st.unsure && c.action === "move") return;
       var fresh = calMs(c.applied_at) != null && now - calMs(c.applied_at) < CAL_KEEP_MS;
       if (!fresh && calNewer(feed, c)) return;
-      var title = esc(showTitle(c.title, { kind: "meeting" })), line = "", acts = "", busy = S.cal.busy[id];
-      if (st.unsure) { line = title + ": " + esc(st.unsure.result.line || ""); if (st.unsure.action === "move" && calCanBackRow(st.unsure)) acts = '<button class="act undo" type="button" data-calact="backrow" data-ev="' + esc(id) + '">Put it back</button>'; }
-      else if (st.cancelled) line = "<s>" + title + "</s> Cancelled. " + esc(CALACT ? CALACT.no_restore_line : "");
+      // cr1#1636 item 1: one short line, never a provider's name in it; the
+      // rest (`more`) behind the icon beside it. A warning before a second
+      // press (`warn`) stays in sight, under the line.
+      var title = esc(showTitle(c.title, { kind: "meeting" })), line = "", more = "", warn = "", acts = "", busy = S.cal.busy[id];
+      if (st.unsure) { line = title + ": check your calendar."; more = st.unsure.result.line || ""; if (st.unsure.action === "move" && calCanBackRow(st.unsure)) acts = '<button class="act undo" type="button" data-calact="backrow" data-ev="' + esc(id) + '">Put it back</button>'; }
+      else if (st.cancelled) { line = "<s>" + title + "</s> Cancelled."; more = CALACT ? CALACT.no_restore_line : ""; }
       else if (st.removed) line = "<s>" + title + "</s> Booking taken back.";
       else if (st.moved) {
-        line = title + ": moved to " + esc(calWhen(calMs(st.moved.start), calMs(st.moved.end))) + "."; backs += 1; if (calCanBack(id)) acts = '<button class="act undo" type="button" data-calact="back" data-ev="' + esc(id) + '" title="Move it back to ' + esc(calBackWhen(id)) + '">Put it back</button>'; }
+        line = title + ": moved to " + esc(calWhen(calMs(st.moved.start), calMs(st.moved.end))) + ".";
+        if (calCanBack(id)) acts = '<button class="act undo" type="button" data-calact="back" data-ev="' + esc(id) + '" title="Move it back to ' + esc(calBackWhen(id)) + '">Put it back</button>';
+        // Put it back is a move too: what the provider sends is said before that
+        // press as well, in sight (review of cr1#1636: the only notice before
+        // the people invited may hear from the provider)
+        if (acts && calDirect() && CALACT.notify_lines.move) warn = "Put it back moves it again. " + CALACT.notify_lines.move;
+      }
       else if (st.booked) { line = "Booked: " + title + ", " + esc(calWhen(calMs(st.booked.start), calMs(st.booked.end))) + ".";
         if (calDirect() && CALACT.cancel && calMs(st.booked.start) > now) {
           var again = calArmed("unbook:" + id);
           acts = '<button class="act undo" type="button" data-calact="unbook" data-ev="' + esc(id) + '" title="Remove it from your calendar">' + (again ? "Press again to remove it" : "Undo") + "</button>";
-          if (num(st.booked.n_people) > 0) line += " " + esc(again ? (CALACT.notify_lines.cancel || "") : "Undo takes a second press, because the people on it are told.");
+          if (num(st.booked.n_people) > 0) { if (again) warn = CALACT.notify_lines.cancel || ""; else more = "Undo takes a second press, because the people on it are told."; }
         }
-        else if (CALACT && !CALACT.cancel) line += " " + esc(CALACT.no_unbook_line); }
+        else if (CALACT && !CALACT.cancel) more = CALACT.no_unbook_line; }
       else if (c.action === "move") line = title + ": back at " + esc(calWhen(calMs(c.start), calMs(c.end))) + ".";
       if (!line) return;
       if (busy) acts = '<span class="tag wait">Changing your calendar.</span>';
-      h += '<div class="calch" data-calev="' + esc(id) + '"><div class="calline">' + line + acts + "</div>" + (S.cal.lines[id] ? '<div class="calnote err">' + esc(S.cal.lines[id]) + "</div>" : "")
+      h += '<div class="calch" data-calev="' + esc(id) + '"><div class="calline">' + line + calTip("cal:" + id, more) + acts + "</div>" + (warn ? '<div class="calnote">' + esc(warn) + "</div>" : "")
+        + (S.cal.lines[id] ? '<div class="calnote err">' + esc(S.cal.lines[id]) + "</div>" : "")
         + (st.unsure || st.removed || busy ? "" : calNoteHtml(id)) + "</div>";
     });
-    // Put it back is a move too: what the provider sends is said before that press as well
-    if (backs && calDirect() && CALACT.notify_lines.move) h += '<div class="calnote">Put it back moves it again. ' + esc(CALACT.notify_lines.move) + "</div>";
+    // cr1#1636 item 8: a commitment closed from this page, one line each with its Undo
+    if (typeof closeChangesHtml === "function") h += closeChangesHtml();
     // a change that did not go through: its line stays here until the owner presses again
     var listed = calEvents();
     Object.keys(S.cal.lines).forEach(function (id) {
@@ -7668,7 +8442,7 @@
     var ae = document.activeElement;
     if (ae && ae.getAttribute && ae.getAttribute("data-calnote") && el.contains && el.contains(ae)) { S.cal.changesStale = true; return; }
     S.cal.changesStale = false;
-    putHtml(el, h ? "<h3>Changed from here</h3>" + h : "");
+    putHtml(el, h ? "<h3>Changes</h3>" + h : "");
     calChangesShow(el, !!h);
     if (typeof plChangesShown === "function") plChangesShown(el, !!h);
   }
@@ -7685,18 +8459,46 @@
   // A meeting drags when it can be moved and sits whole inside the hours drawn.
   function calCanDrag(m) {
     if (!calCanMove(m) || S.cal.busy[m.event_id]) return false;
+    railSpan();
     var s = new Date(m.start), e = new Date(m.end);
     if (sentDay(m.start) !== sentDay(m.end)) return false;
     var sh = s.getHours() + s.getMinutes() / 60, eh = e.getHours() + e.getMinutes() / 60;
-    return sh >= RAIL_H0 && eh <= RAIL_H1 && eh > sh;
+    return sh >= WK_H0 && eh <= WK_H1 && eh > sh;
   }
   // cr1#1591 review: whether the week grid draws an event in a day's column:
   // timed, starting that day, and inside the hours drawn. The grid and the
   // board both ask this, so a block the grid leaves out is listed on the board.
   function wkDrawn(m, d) {
+    railSpan();
     if (!m || m.all_day || calMs(m.start) == null || calMs(m.end) == null || sentDay(m.start) !== d.date) return false;
     var s = new Date(m.start), e = new Date(m.end), sh = s.getHours() + s.getMinutes() / 60, eh = sentDay(m.end) !== d.date ? 24 : e.getHours() + e.getMinutes() / 60;
-    return !(eh <= RAIL_H0 || sh >= RAIL_H1);
+    return !(eh <= WK_H0 || sh >= WK_H1);
+  }
+  // cr1#1643: the hours the grid and the pickers span: 7 AM to 5 PM at the
+  // least, widened to the seat's working hours and to the earliest start and
+  // the latest end of the week's meetings (a meeting running past midnight
+  // reaches the day's end). A block of the owner's own time widens nothing:
+  // one outside the hours is listed on the board, as before; nor does an
+  // event of 20 hours or more (the feed's WEEK_AWAY_TIMED_HOURS: an all-day
+  // passed as timed, midnight to midnight). Read again at every draw, from
+  // the feed the page holds.
+  var RAIL_LONG_MS = 20 * 60 * 60 * 1000;
+  function railSpan() {
+    var t = S.today, wk = t && t.week, days = wk && Array.isArray(wk.days) ? wk.days : [], hrs = wk && wk.hours ? wk.hours : {};
+    var h0 = 7, h1 = 17, ws = Number(hrs.start), we = Number(hrs.end);
+    if (hrs.start != null && ws >= 0 && ws < h0) h0 = Math.floor(ws);
+    if (hrs.end != null && we > h1 && we <= 24) h1 = Math.ceil(we);
+    days.forEach(function (d) {
+      (d.meetings || []).forEach(function (m) {
+        if (!m || m.all_day || m.solo === true || calMs(m.start) == null || calMs(m.end) == null || sentDay(m.start) !== d.date) return;
+        if (calMs(m.end) - calMs(m.start) >= RAIL_LONG_MS) return;
+        var s = new Date(m.start), e = new Date(m.end);
+        h0 = Math.min(h0, s.getHours());
+        h1 = Math.max(h1, sentDay(m.end) !== d.date ? 24 : Math.ceil(e.getHours() + e.getMinutes() / 60));
+      });
+    });
+    WK_H0 = Math.max(0, h0); WK_H1 = Math.min(24, h1);
+    return { h0: WK_H0, h1: WK_H1 };
   }
   function wkCovers(d, m, from, to) {
     return (d.meetings || []).some(function (o) {
@@ -7711,8 +8513,9 @@
     if (S.pl && S.pl.drag && S.pl.drag.on) { S.pl.stale = true; return; }   // cr1#1541: nor under a plan drag
     var t = S.today, days = t && t.week && Array.isArray(t.week.days) ? t.week.days : [], now = Date.now(), h = "";
     if (!days.length) { putHtml(el, ""); putHtml($("weekpick"), ""); return; }
+    railSpan();
     var wkDrag = false; days.forEach(function (d) { (d.meetings || []).forEach(function (m) { if (calCanDrag(m)) wkDrag = true; }); });
-    h += '<div class="wk" style="height:' + ((RAIL_H1 - RAIL_H0) * WK_PX + 34) + 'px">';
+    h += '<div class="wk" style="height:' + ((WK_H1 - WK_H0) * WK_PX + 34) + 'px">';
     // cr1#1591 (Part A 8): how a drag works sits behind the icon in the grid's corner, word for word.
     // Each popup's words are literals and esc(...) only (cr1#1591's markup fence), so each case is its own call.
     // drawn again only when its words change, for the same reason as To place
@@ -7722,7 +8525,7 @@
       : infoTip("moving a meeting", "Drag a meeting you organise to another time or day to move it. " + esc(CALACT.notify_lines.move || "")); }
     if (wkDrag) h += '<div class="wkcorner">' + S.cal.cornerTip + "</div>";
     h += '<div class="wkh">';
-    for (var hr = RAIL_H0; hr <= RAIL_H1; hr++) h += '<span style="top:' + (34 + (hr - RAIL_H0) * WK_PX) + 'px">' + ((hr + 11) % 12 + 1) + "</span>";
+    for (var hr = WK_H0; hr <= WK_H1; hr++) h += '<span style="top:' + (34 + (hr - WK_H0) * WK_PX) + 'px">' + ((hr + 11) % 12 + 1) + "</span>";
     h += "</div>";
     days.forEach(function (d, i) {
       h += '<div class="wkc' + (i === 0 ? " today" : "") + '" data-wkday="' + esc(d.date) + '"><div class="wkd">' + esc(i === 0 ? (d.name || "Today") : fmtDate(d.date)) + "</div>";
@@ -7732,9 +8535,9 @@
       (d.meetings || []).forEach(function (m) {
         if (!wkDrawn(m, d)) return;
         var s = new Date(m.start), e = new Date(m.end), sh = s.getHours() + s.getMinutes() / 60, eh = sentDay(m.end) !== d.date ? 24 : e.getHours() + e.getMinutes() / 60;
-        var a = Math.max(sh, RAIL_H0), b = Math.min(eh, RAIL_H1);
+        var a = Math.max(sh, WK_H0), b = Math.min(eh, WK_H1);
         // cr1#1562: a meeting crossing 5 PM stays in its column, unless moving it up would cover a meeting before it
-        if (a + 17 / WK_PX > RAIL_H1) { var up = Math.max(RAIL_H0, RAIL_H1 - 17 / WK_PX); if (!wkCovers(d, m, up, a)) a = up; }
+        if (a + 17 / WK_PX > WK_H1) { var up = Math.max(WK_H0, WK_H1 - 17 / WK_PX); if (!wkCovers(d, m, up, a)) a = up; }
         placed.push({ m: m, a: a, b: Math.max(b, a + 17 / WK_PX), col: 0, cols: 1 });
       });
       var open = [];
@@ -7747,10 +8550,10 @@
         open.forEach(function (o) { if (n > o.cols) o.cols = n; });
       });
       placed.forEach(function (p) {
-        var m = p.m, a = p.a, b = Math.min(p.b, RAIL_H1), drag = calCanDrag(m), key = m.event_id || meetKey(m);
+        var m = p.m, a = p.a, b = Math.min(p.b, WK_H1), drag = calCanDrag(m), key = m.event_id || meetKey(m);
         var side = p.cols > 1 ? ";left:calc(3px + (100% - 6px) * " + p.col + " / " + p.cols + ");right:auto;width:calc((100% - 6px) / " + p.cols + " - 2px)" : "";
         h += '<button class="wev' + (calMs(m.end) <= now ? " past" : "") + (isBlock(m) ? " block" : "") + (m.hub_moved ? " moved" : "") + '" type="button" data-wmeet="' + esc(key) + '"' + (drag ? ' data-drag="' + esc(m.event_id) + '" data-dragday="' + esc(d.date) + '"' : "")
-          + ' style="top:' + (34 + Math.round((a - RAIL_H0) * WK_PX) + 1) + "px;height:" + Math.max(Math.round((b - a) * WK_PX) - 3, 14) + "px" + side + '" title="' + esc(fmtTime(m.start) + " to " + fmtTime(m.end) + " · " + (m.personal ? "Personal" : showTitle(m.title, { kind: "meeting" }))) + '">'
+          + ' style="top:' + (34 + Math.round((a - WK_H0) * WK_PX) + 1) + "px;height:" + Math.max(Math.round((b - a) * WK_PX) - 3, 14) + "px" + side + '" title="' + esc(fmtTime(m.start) + " to " + fmtTime(m.end) + " · " + (m.personal ? "Personal" : showTitle(m.title, { kind: "meeting" }))) + '">'
           + '<span class="tt">' + esc(fmtTime(m.start)) + " " + esc(showTitle(m.title, { kind: "meeting" })) + "</span></button>";
       });
       // cr1#1541: what the owner planned onto this day, as dashed blocks
@@ -7987,7 +8790,7 @@
     }
     if (ev.preventDefault) ev.preventDefault();
     var start = Math.round((g.start0 + dy / g.px) * 4) / 4;
-    start = Math.min(Math.max(start, RAIL_H0), RAIL_H1 - g.dur);
+    start = Math.min(Math.max(start, WK_H0), WK_H1 - g.dur);
     var day = g.day || g.day0, shift = 0;
     if (g.week) {
       var cols = document.querySelectorAll("#weekgrid .wkc"), from = null, to = null;
@@ -7996,7 +8799,7 @@
       if (from && to) shift = to.left - from.left;
     }
     g.start = start; g.day = day;
-    var top = g.pad + Math.round((start - RAIL_H0) * g.px) + 1;
+    var top = g.pad + Math.round((start - WK_H0) * g.px) + 1;
     g.el.setAttribute("style", g.style0.replace(/top:\s*-?[\d.]+px/, "top:" + top + "px") + (shift ? ";transform:translateX(" + shift + "px)" : ""));
     var at = calAt(day, start), tt = g.el.querySelector(".tt");
     if (tt && at != null) tt.textContent = (day !== g.day0 ? fmtWhen(calIso(at)) : fmtTime(calIso(at))) + " " + showTitle(g.m.title, { kind: "meeting" });
@@ -8187,10 +8990,12 @@
   }
   // cr1#1293 (cr1#1299 on the week's days): a meeting has someone else on it;
   // a block of his own time is busy time for planning, and not a meeting here.
+  // cr1#1641: nor is an all-day event (a stay, someone else's day out): Am I
+  // ready lists meetings at a time, never an all-day row once per day.
   function readyRows() {
     var out = [];
     plWeekDays().forEach(function (d) {
-      (d.meetings || []).forEach(function (m) { if (m && !isBlock(m)) out.push({ m: m, d: d, key: (m.event_id || meetKey(m)) + "@" + d.date }); });
+      (d.meetings || []).forEach(function (m) { if (m && !m.all_day && !isBlock(m)) out.push({ m: m, d: d, key: (m.event_id || meetKey(m)) + "@" + d.date }); });
     });
     return out;
   }
@@ -8344,10 +9149,10 @@
     Object.keys(map).sort(function (x, y) { return map[x].start - map[y].start; }).forEach(function (k) {
       var b = map[k]; if (sentDay(calIso(b.start)) !== d.date) return;
       var s = new Date(b.start), sh = s.getHours() + s.getMinutes() / 60, eh = sh + b.mins / 60;
-      if (eh <= RAIL_H0 || sh >= RAIL_H1) return;
-      var a = Math.max(sh, RAIL_H0), z = Math.min(eh, RAIL_H1);
-      if (a + 17 / WK_PX > RAIL_H1) a = Math.max(RAIL_H0, RAIL_H1 - 17 / WK_PX);
-      h += '<button class="wev plan' + (b.state === "proposed" ? " prop" : "") + '" type="button" data-pblock="' + esc(b.cid) + '" data-pstate="' + esc(b.state) + '" data-pat="' + esc(plAtOf(b.start)) + '" data-pmin="' + b.mins + '" style="top:' + (34 + Math.round((a - RAIL_H0) * WK_PX) + 1) + "px;height:" + Math.max(Math.round((z - a) * WK_PX) - 3, 14) + 'px" title="'
+      if (eh <= WK_H0 || sh >= WK_H1) return;
+      var a = Math.max(sh, WK_H0), z = Math.min(eh, WK_H1);
+      if (a + 17 / WK_PX > WK_H1) a = Math.max(WK_H0, WK_H1 - 17 / WK_PX);
+      h += '<button class="wev plan' + (b.state === "proposed" ? " prop" : "") + '" type="button" data-pblock="' + esc(b.cid) + '" data-pstate="' + esc(b.state) + '" data-pat="' + esc(plAtOf(b.start)) + '" data-pmin="' + b.mins + '" style="top:' + (34 + Math.round((a - WK_H0) * WK_PX) + 1) + "px;height:" + Math.max(Math.round((z - a) * WK_PX) - 3, 14) + 'px" title="'
         + esc((b.state === "proposed" ? "Proposed: " : "Planned: ") + plShowWhen(b.start, b.end) + " · " + showTitle(b.title)) + '"><span class="tt">' + esc(fmtTime(calIso(b.start))) + " " + esc(showTitle(b.title)) + "</span></button>";
     });
     return h;
@@ -8596,8 +9401,10 @@
     var some = function (x) { return Math.round(x * 2) / 2 > 0; };
     var sum = [some(meetH) ? plHrs(meetH) + " of meetings" : "", some(planH) ? plHrs(planH) + " planned" : "", list.length ? list.length + " to place" : ""].filter(Boolean);
     if (sum.length) h += '<div class="plsum">' + esc(sum.join(" · ")) + "</div>";
-    h += '<div class="plbar"><button class="act primary" type="button" data-plact="plan"' + (list.length && fresh && db && !S.pl.busy ? "" : " disabled") + ">Plan it for me</button>"
-      + (days.length && !fresh ? '<span class="calnote">' + esc(PL_STALE_LINE) + "</span>" : "") + "</div>";
+    // cr1#1644: with nothing to place there is nothing to plan, so no Plan it for me
+    var bar = (list.length ? '<button class="act primary" type="button" data-plact="plan"' + (fresh && db && !S.pl.busy ? "" : " disabled") + ">Plan it for me</button>" : "")
+      + (days.length && !fresh ? '<span class="calnote">' + esc(PL_STALE_LINE) + "</span>" : "");
+    if (bar) h += '<div class="plbar">' + bar + "</div>";
     if (S.pl.note) h += '<div class="calnote" role="status">' + esc(S.pl.note) + "</div>";
     // cr1#1591: "To place" with its how-to one press away; with nothing to place, one short line.
     // cr1#1591 review: its icon is drawn once (each icon is numbered as it is
@@ -8649,7 +9456,7 @@
       var r = cols[i].getBoundingClientRect();
       if (r.width && x >= r.left && x < r.right && y >= r.top - 10 && y <= r.bottom + 10) {
         day = cols[i].getAttribute("data-wkday");
-        start = Math.min(Math.max(Math.round((RAIL_H0 + (y - 12 - r.top - 34) / WK_PX) * 4) / 4, RAIL_H0), RAIL_H1 - g.mins / 60);
+        start = Math.min(Math.max(Math.round((WK_H0 + (y - 12 - r.top - 34) / WK_PX) * 4) / 4, WK_H0), WK_H1 - g.mins / 60);
         break;
       }
     }
@@ -9680,26 +10487,58 @@
       if (a.src === "chat" && !chatOn) return;
       if (!liveAllowed(a) || liveCovered(a)) return;
       var hub = hubState(a.n, a.message_ts), read = L.reads[a.n] || null;
-      out.push({ key: a.n, it: a, live: true, src: a.src, who: a.name, subject: showTitle(a.src === "chat" ? a.snippet : a.subject, { kind: "mail", drop: [a.name] }), ts: a.message_ts || "", addr: a.addr,
+      out.push({ key: a.n, it: a, live: true, src: a.src, who: senderName(a.name, a.addr), subject: showTitle(a.src === "chat" ? a.snippet : a.subject, { kind: "mail", drop: [a.name] }), ts: a.message_ts || "", addr: a.addr,
         read: read, hub: hub, cleared: !!hub, needs: !(read && read.state === "ok" && read.needs === false) });
     });
     return out;
   }
+  // cr1#1635: a landed row's read is the `why` the Inbox run wrote, and its
+  // verdict is the run's own `needs` field beside it (false: nothing is
+  // needed from the owner). A row with no verdict is one the run listed for
+  // the owner, as before. Only a row that needs nothing can be cleared here,
+  // with Clear them, under the thread's own key, so the next run's copy of
+  // the same message stays cleared.
+  function landedClearKey(it) { return "T:" + (it.thread_id || ikey(it)); }
+  function landedLine(it, ib) {
+    var calm = it.needs === false, hub = calm ? hubState(landedClearKey(it), it.message_ts) : null, addr = senderOf(it);
+    // cr1#1644: a Drop or Snooze waiting for Apply has set the line aside: it
+    // no longer needs the owner, so it leaves Needs you (and the tab's count)
+    var aside = inboxChoice(it), said = typeof pressWords === "function" ? pressWords(aside) : "";
+    // review round 1: a Snooze Apply carried, before the next Inbox read drops the row
+    if (!said && typeof landedSince === "function") { var slept = inboxResult(it); slept = slept && slept.action === "snooze" ? landedSince(slept, S.inbox) : null; if (slept) { aside = slept; said = doneVerb(slept) + ", applied"; } }
+    return { key: "n:" + ikey(it), it: it, live: false, src: it.kind === "calendar_invite" ? "calendar" : "mail", who: senderName(it.name, addr), subject: showTitle(it.subject, { kind: "mail", drop: [it.name] }),
+      ts: it.message_ts || (ib || {}).generated_at || "", addr: addr, read: null, hub: hub, cleared: !!hub, pressed: said, aside: said ? aside : null, needs: !calm && !said };
+  }
   function landedLines() {
     var ib = S.inbox, out = [];
     if (!ib) return out;
-    (ib.items || []).forEach(function (it) {
-      if (dropDone(it)) return;
-      out.push({ key: "n:" + ikey(it), it: it, live: false, src: it.kind === "calendar_invite" ? "calendar" : "mail", who: it.name || "", subject: showTitle(it.subject, { kind: "mail", drop: [it.name] }),
-        ts: it.message_ts || ib.generated_at || "", addr: senderOf(it), read: null, hub: null, cleared: false, needs: true });
-    });
+    (ib.items || []).forEach(function (it) { if (!dropDone(it)) out.push(landedLine(it, ib)); });
     return out;
+  }
+  // cr1#1635: who a line is from, in a few words: the person's name in the
+  // book (the People feed) for the sender's address, else the message's own
+  // display name, else the address before its @, so it is never cut inside
+  // the domain. The whole address stays in the reader.
+  function bookName(addr) {
+    var a = lowerOf(addr), hit = "";
+    if (!a) return "";
+    (((S.people || {}).people) || []).some(function (p) { if (p && p.name && lowerOf(p.email) === a) { hit = String(p.name).trim(); return true; } return false; });
+    return hit;
+  }
+  function senderName(name, addr) {
+    var n = String(name == null ? "" : name).trim(), a = lowerOf(addr) || (n.indexOf("@") > 0 ? lowerOf(bareAddr(n)) : "");
+    var book = bookName(a);
+    if (book) return book;
+    if (n && n.indexOf("@") < 0) return n;
+    var at = a.indexOf("@");
+    return at > 0 ? a.slice(0, at) : (a || n);
   }
   function lineIn(l, f) {
     if (f === "cleared") return l.cleared;
     if (f === "all") return true;
     if (l.cleared) return false;
-    if (f === "needs") return l.needs;
+    // cr1#1644 review: a line set aside here stays where it was pressed, folded with its Undo (the count reads l.needs only)
+    if (f === "needs") return l.needs || !!l.pressed;
     if (f === "calendar") return l.src === "calendar";
     if (f === "chat") return l.src === "chat";
     if (f === "people") return l.src !== "chat" && onBook(l.addr);
@@ -9711,11 +10550,14 @@
     all.sort(function (a, b) { return (Date.parse(b.ts) || 0) - (Date.parse(a.ts) || 0); });
     return all;
   }
+  // cr1#1635: a read never starts with a dash. The inbox page the run lands
+  // sets its why after one, and a feed built before this fix carries it.
+  function plainWhy(t) { return String(t == null ? "" : t).replace(/^[\s\u2014\u2013\u2012\u00b7-]+/, ""); }
   function readText(l) {
     if (l.hub) return (l.hub.result && l.hub.result.line) || "Cleared.";
-    if (!l.live) return l.it.why ? "Needs you: " + l.it.why : "Needs you.";
+    if (!l.live) { var w = plainWhy(l.it.why); return l.needs ? (w ? "Needs you: " + w : "Needs you.") : (w ? "No action needed: " + w : "No action needed."); }
     var r = l.read;
-    if (r && r.state === "ok") return (r.needs ? "Needs you: " : "No action needed: ") + r.why;
+    if (r && r.state === "ok") return (r.needs ? "Needs you: " : "No action needed: ") + plainWhy(r.why);
     if (r && r.state === "reading") return S.live.readWait ? READ_WAIT_LINE : "Reading it.";
     // cr1#1538 UAT: a read that failed is not a line never asked.
     if (r && r.state === "failed") return READ_FAILED_LINE;
@@ -9737,7 +10579,10 @@
   // it needs you, so the words "Needs you:" and "No action needed:" are not
   // drawn; a screen reader still reads them (.srlive), and the why after
   // them is the read and stays on the page.
-  var SR_NEEDS = '<span class="srlive">Needs you: </span>';
+  // cr1#1635: the alarm colour is for a read that says the owner must act: a
+  // live read that came back "needs", a landed row the run listed for the
+  // owner. Not read yet, reading, a failed read and a cleared line are plain.
+  function mustAct(l) { return !l.cleared && (l.live ? !!(l.read && l.read.state === "ok" && l.read.needs) : !!l.needs); }
   function readHtml(l) {
     var t = String(readText(l)), m = t.match(/^(Needs you|No action needed): /);
     return m ? '<span class="srlive">' + esc(m[0]) + "</span>" + esc(t.slice(m[0].length)) : esc(t);
@@ -9745,6 +10590,12 @@
   // ---- the reader -------------------------------------------------------------
   // A landed row: everything its row held before this layout, in the reader.
   function landedPane(it) {
+    // review round 1: the reader always shows the whole address beside the name
+    var ln = landedLine(it, S.inbox);
+    var head = '<div class="pmeta">' + esc(it.kind === "calendar_invite" ? "Calendar" : "Mail") + (it.message_ts ? " · " + esc(fmtWhen(it.message_ts)) : "") + '</div><h3 class="title">' + esc(showTitle(it.subject, { kind: "mail", drop: [it.name], empty: it.name }));
+    var from = '<div class="pfrom">' + esc(ln.who) + (ln.addr && ln.addr !== lowerOf(ln.who) ? " · " + esc(ln.addr) : "") + '</div><div class="pread ' + (mustAct(ln) ? "need" : "calm") + '">' + readHtml(ln) + "</div>";
+    // cr1#1635: a row cleared with Clear them is put back from here.
+    if (ln.hub) return head + "</h3>" + from + '<div class="acts">' + (ln.hub.keys.length > 1 ? '<button class="act undo" data-lact="unclear" data-n="' + esc(it.n) + '" title="Put this line back">Undo</button>' : undoBtn(ln.hub, "Put this line back")) + "</div>";
     var w = inboxChoice(it), res = inboxResult(it), pend = S.pendingSend[ikey(it)];
     var sending = S.sending[ikey(it)];
     var k = ikey(it), typed = S.drafts[ikey(it)];
@@ -9756,7 +10607,8 @@
     // A reply already in Drafts offers no second Draft (cr1#727).
     var drafted = draftedAlready(res);
     if (!drafted) drafted = done.some(draftedAlready);
-    var tag = sending ? '<span class="tag wait">' + (sending === "draft" ? "Drafting." : "Sending.") + "</span>" : (w ? waitTag(w, w.action + " waiting") : resultTag(res));
+    // cr1#1644: a Drop or Snooze says what it did ("Dropped, sent at Apply"), beside its Undo
+    var tag = sending ? '<span class="tag wait">' + (sending === "draft" ? "Drafting." : "Sending.") + "</span>" : (w ? waitTag(w, (typeof pressWords === "function" && pressWords(w)) || w.action + " waiting") : resultTag(res));
     // cr1#1020: any email row takes a reply. A row with no draft opens an
     // empty box on Reply; Send and Draft come once there is text to send.
     var email = it.kind === "email_reply";
@@ -9782,7 +10634,7 @@
     // the original draft on a redraw.
     var draft = (boxOpen && !w) ? fill + '<div class="sub">To: ' + esc(it.draft && it.draft.to) + (it.draft && it.draft.cc ? " · Cc: " + esc(it.draft.cc) : "") + "</div><textarea class=\"draft\" aria-label=\"Reply draft\" data-n=\"" + esc(it.n) + '" data-ikey="' + esc(k) + '"' + (it.draft && it.draft.body ? "" : ' placeholder="Write your reply"') + ">" + esc(text) + "</textarea>" : "";
     var teach = (!w && !sent) ? teachBox(it) : "";
-    return '<div class="pmeta">' + esc(it.kind === "calendar_invite" ? "Calendar" : "Mail") + (it.message_ts ? " · " + esc(fmtWhen(it.message_ts)) : "") + '</div><h3 class="title">' + esc(showTitle(it.subject, { kind: "mail", drop: [it.name], empty: it.name })) + tag + '</h3><div class="pfrom">' + esc(it.name) + '</div><div class="pread need">' + (it.why ? SR_NEEDS + esc(it.why) : esc("Needs you.")) + "</div>" +
+    return head + tag + "</h3>" + from +
       threadBox(it) + draft + teach + '<div class="acts">' + acts + "</div>";
   }
   // A live arrival: what the page can do itself (a reply as a draft or a
@@ -9790,9 +10642,9 @@
   function livePane(l) {
     var it = l.it, k = ikey(it), chat = it.src === "chat";
     var meta = chat ? ((CHAT && CHAT.server) || "Chat") + (it.group ? " group" : "") : "Mail";
-    var cls = l.hub || (l.read && l.read.state === "ok" && !l.read.needs) || (l.read && l.read.state === "reading") ? "calm" : "need";
+    var cls = mustAct(l) ? "need" : "calm";
     var h = '<div class="pmeta">' + esc(meta) + (it.message_ts ? " · " + esc(fmtWhen(it.message_ts)) : "") + " · new since the last Inbox run</div>" +
-      '<h3 class="title">' + esc(chat ? it.name : showTitle(it.subject, { kind: "mail", drop: [it.name] })) + "</h3>" + (chat ? "" : '<div class="pfrom">' + esc(it.name) + (it.addr && it.addr !== lowerOf(it.name) ? " · " + esc(it.addr) : "") + "</div>") +
+      '<h3 class="title">' + esc(chat ? l.who : showTitle(it.subject, { kind: "mail", drop: [it.name] })) + "</h3>" + (chat ? "" : '<div class="pfrom">' + esc(l.who) + (it.addr && it.addr !== lowerOf(l.who) ? " · " + esc(it.addr) : "") + "</div>") +
       '<div class="pread ' + cls + '">' + readHtml(l) + "</div>" + (it.snippet ? '<div class="pbody">' + esc(it.snippet) + "</div>" : "");
     if (l.hub) return h + '<div class="acts">' + (l.hub.keys.length > 1 ? '<button class="act undo" data-lact="unclear" data-n="' + esc(it.n) + '" title="Put this line back">Undo</button>' : undoBtn(l.hub, "Put this line back")) + "</div>";
     var acts = "", draft = "";
@@ -9843,10 +10695,13 @@
   function renderInboxList(keepPane) {
     var box = $("inboxrows"); if (!box) return;
     var all = inboxLines(), fb = $("inboxfilters"), counts = {};
-    IFILTERS.forEach(function (x) { counts[x[0]] = all.filter(function (l) { return lineIn(l, x[0]); }).length; });
+    IFILTERS.forEach(function (x) { counts[x[0]] = all.filter(function (l) { return x[0] === "needs" ? !l.cleared && l.needs : lineIn(l, x[0]); }).length; });
     // cr1#1591: with nothing listed, the pick goes back to All, so lines that
     // come back are never hidden behind a filter at 0.
     if (!counts.all) S.ifilter = "all";
+    // cr1#1635 (coordinator): one inbox number. The tab says what the list's
+    // Needs you says, live arrivals included, so the two never differ.
+    $("inboxCount").textContent = counts.needs;
     var f = S.ifilter, lines = all.filter(function (l) { return lineIn(l, f); });
     // A filter at 0 is not drawn, unless it is the one picked; with nothing
     // listed at all, the list's own line stands in for the filters.
@@ -9862,9 +10717,22 @@
       var d = dayLabel(l.ts);
       if (d !== day) { day = d; h += '<div class="iday">' + esc(d) + "</div>"; }
       var needs = l.needs && !l.cleared, when = l.ts ? (d === "Today" ? fmtTime(l.ts) : fmtWhen(l.ts)) : "";
-      h += '<button class="ir' + (l.cleared ? " cleared" : "") + '" role="option" aria-selected="' + (l.key === S.isel ? "true" : "false") + '" data-isel="' + esc(l.key) + '">' +
+      var picked = '" role="option" aria-selected="' + (l.key === S.isel ? "true" : "false") + '" data-isel="' + esc(l.key) + '">';
+      // cr1#1644: a line set aside (Drop or Snooze waiting for Apply, Cleared or
+      // Later here) folds to one line, what was done and on what, its Undo beside it
+      var aside = l.pressed ? l.aside : l.cleared ? l.hub : null;
+      if (aside) {
+        // a Snooze Apply already carried has no Undo here; it is in the mailbox's hands
+        var landed = l.pressed && aside.applied;
+        var verb = l.pressed ? (landed ? doneVerb(aside) : pressVerb(aside)) : aside.action === "later" ? "Later" : "Cleared", tail = l.pressed ? (landed ? "applied" : pressTail(aside)) : aside.action === "later" ? "until tomorrow" : "";
+        var back = landed ? "" : !l.pressed && aside.keys && aside.keys.length > 1 ? '<button class="act undo" data-lact="unclear" data-n="' + esc(l.it.n) + '" title="Put this line back">Undo</button>' : undoBtn(aside, "Put this line back");
+        h += '<div class="irc"><button class="ir chosen' + (l.cleared ? " cleared" : "") + picked + '<span class="cw">' + esc(verb) + '</span><span class="ct">' + esc([l.who, l.subject].filter(Boolean).join(" · ")) + "</span>"
+          + (tail ? '<span class="cs">' + esc(tail) + "</span>" : "") + "</button>" + back + "</div>";
+        return;
+      }
+      h += '<button class="ir' + picked +
         '<span class="idot' + (needs ? " need" : "") + '"' + (needs ? ' title="May need you"' : "") + '></span><span class="iwho">' + esc(l.who) + '</span><span class="isub">' + esc(l.subject) + '</span><span class="iwhen">' + esc(when) + "</span>" +
-        '<span class="iread' + (needs && !(l.read && l.read.state === "reading") ? " need" : "") + '">' + readHtml(l) + "</span></button>";
+        '<span class="iread' + (mustAct(l) ? " need" : "") + '">' + readHtml(l) + "</span></button>";
     });
     if (!h) {
       if (!S.inbox && isRunning("inbox") && f === "all") h = skeletons(3);
@@ -9872,8 +10740,10 @@
       else h = '<div class="quiet">' + (f === "all" || f === "needs" ? "Nothing needs you." : "Nothing here.") + "</div>";
     }
     box.innerHTML = h;
-    if (refocus) { var again = null; Array.prototype.forEach.call(box.querySelectorAll("button[data-isel]"), function (b) { if (b.getAttribute("data-isel") === refocus) again = b; }); if (again && again.focus) again.focus(); }
-    var calm = all.filter(function (l) { return l.live && !l.cleared && l.read && l.read.state === "ok" && l.read.needs === false; });
+    // cr1#1644: after an Undo (in the reader or on a folded line) the keyboard goes to the picked line, never the page
+    if (S.ifocus && Date.now() - S.ifocus <= BACK_MS) refocus = S.isel;
+    if (refocus) { S.ifocus = 0; var again = null; Array.prototype.forEach.call(box.querySelectorAll("button[data-isel]"), function (b) { if (b.getAttribute("data-isel") === refocus) again = b; }); if (again && again.focus) again.focus(); }
+    var calm = calmLines(all);
     var cl = $("clearline");
     if (cl) {
       // The batch's own Undo, until the next check or until the owner leaves the tab.
@@ -9896,6 +10766,13 @@
   // A live update: the list and the status line, and the reader only when
   // the owner is not typing in it.
   function renderInboxLive() { renderInboxList(paneBusy()); }
+  // cr1#1635: every line whose read says nothing is needed from the owner and
+  // that is not cleared yet: a live read that came back "needs nothing", and a
+  // landed row the Inbox run marked so. The Clear line counts them and Clear
+  // them sets them all aside here, each under the key its line is read with.
+  function calmLines(all) {
+    return (all || inboxLines()).filter(function (l) { return !l.cleared && (l.live ? !!(l.read && l.read.state === "ok" && l.read.needs === false) : !l.needs); });
+  }
   // The selected line's message: a landed row, or a live mail line, reads
   // its thread from the seat's mail connector when it is picked.
   function showMessage() {
@@ -9906,27 +10783,59 @@
   // Opening the tab reads no mail text by itself: a thread is read when a
   // line is picked.
   function inboxOpened() { renderInboxList(paneBusy()); readLive(false); liveKick(); }
-  function onInboxPick(btn) {
-    S.isel = btn.getAttribute("data-isel") || "";
+  function onInboxPick(btn) { inboxPick(btn.getAttribute("data-isel")); }
+  // A line picked, by a press on it or by the page after a press that set
+  // the line before it aside (cr1#1644): the list, the reader, the keyboard.
+  function inboxPick(key) {
+    S.isel = key || "";
     renderInboxList(false);
     var b = null; Array.prototype.forEach.call(document.querySelectorAll("#inboxrows button[data-isel]"), function (x) { if (x.getAttribute("data-isel") === S.isel) b = x; });
     if (b && b.focus) b.focus();
     showMessage();
     readLive(false);
   }
+  // cr1#1644: the line after `key` in the list as it stands that still waits
+  // on the owner (the one before it at the end of the list), else `key`.
+  function inboxNext(key) {
+    var lines = inboxLines().filter(function (l) { return lineIn(l, S.ifilter); }).slice(0, S.ishown), at = -1;
+    lines.forEach(function (l, i) { if (l.key === key) at = i; });
+    var open = function (l) { return l && l.key !== key && !l.pressed && !l.cleared; };
+    for (var i = at + 1; at >= 0 && i < lines.length; i++) if (open(lines[i])) return lines[i].key;
+    for (var j = at - 1; j >= 0; j--) if (open(lines[j])) return lines[j].key;
+    return key;
+  }
+  // A press that sets a landed line aside (Drop, Snooze 3 days): saved as
+  // before, then the next line is picked, so it is open at once.
+  function inboxAside(base, key) {
+    var next = inboxNext(key), saved = saveChoice(base);
+    if (saved && typeof saved.then === "function") saved.then(function (row) { if (row) inboxPick(next); });
+    return saved;
+  }
+  // An Undo in the reader keeps the keyboard on the picked line; one on a folded
+  // line in the list picks that line, so it opens back in the reader as it was.
+  function inboxBackFrom(btn) {
+    if (!btn || !btn.closest) return;
+    var line = btn.closest(".irc"), b = line ? line.querySelector("button[data-isel]") : null;
+    if (b) S.isel = b.getAttribute("data-isel") || S.isel;
+    if (b || btn.closest("#inboxpane")) S.ifocus = Date.now();
+  }
   function onLivePress(btn) {
     var act = btn.getAttribute("data-live");
     if (act === "check") { liveCheck(true, false); return; }
     if (act === "older") { S.ishown += INBOX_PAGE; if (Object.keys(S.live.cursor).some(function (k) { return !!S.live.cursor[k]; })) liveCheck(true, true); else renderInboxList(paneBusy()); return; }
     if (act === "clearall") {
-      var calm = liveLines().filter(function (l) { return !l.cleared && l.read && l.read.state === "ok" && l.read.needs === false; }).map(function (l) { return { key: l.key, ts: l.ts }; });
+      var calm = calmLines().map(function (l) { return l.live ? { key: l.key, ts: l.ts } : { key: landedClearKey(l.it), ts: l.it.message_ts || null }; });
       hubSet("clear", calm);
     }
   }
   function onLiveAct(btn) {
-    var act = btn.getAttribute("data-lact"), it = inboxItem(btn.getAttribute("data-n")); if (!it || !it.live) return;
+    var act = btn.getAttribute("data-lact"), it = inboxItem(btn.getAttribute("data-n"));
+    // cr1#1635: a landed row cleared with Clear them is put back on its own.
+    if (it && !it.live && act === "unclear") { var lk = landedClearKey(it); hubDropKey(hubState(lk, it.message_ts), lk); return; }
+    if (!it || !it.live) return;
     var k = ikey(it);
-    if (act === "clear" || act === "later") { hubSet(act, [{ key: it.n, ts: it.message_ts }]); return; }
+    // cr1#1644: a line set aside here picks the next one, as Drop does; its Undo keeps the keyboard on it
+    if (act === "clear" || act === "later") { var next = inboxNext(it.n), set = hubSet(act, [{ key: it.n, ts: it.message_ts }]); if (set && typeof set.then === "function") set.then(function (row) { if (row) inboxPick(next); }); return; }
     if (act === "unclear") { hubDropKey(hubState(it.n, it.message_ts), it.n); return; }
     if (it.src !== "mail" || !canDirect(it)) return;
     if (act === "reply") { S.replyOpen[k] = true; renderInbox(); var ta = document.querySelector('textarea.draft[data-ikey="' + k.replace(/"/g, '\\"') + '"]'); if (ta && ta.focus) ta.focus(); return; }
@@ -9966,7 +10875,7 @@
       db.doc("feed/settings").onSnapshot(function (snap) { S.settings = snap.exists ? snap.data() : null; renderSettings(); renderUpdate(); }, onErr);
       db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? snap.data() : null; renderToday(); }, onErr);
       db.doc("feed/mail_rules").onSnapshot(function (snap) { S.mailrules = snap.exists ? snap.data() : null; liveWallMoved(); renderInbox(); liveKick(); }, onErr);
-      db.doc("feed/people").onSnapshot(function (snap) { S.people = snap.exists ? snap.data() : null; renderPeople(); }, onErr);
+      db.doc("feed/people").onSnapshot(function (snap) { S.people = snap.exists ? snap.data() : null; renderPeople(); renderInboxLive(); }, onErr);
       db.doc("feed/board").onSnapshot(function (snap) { S.board = snap.exists ? snap.data() : null; renderBoard(); if (typeof renderCalParts === "function") renderCalParts(); }, onErr);
       db.doc("config/refresh_arm").onSnapshot(function (snap) { setArm(snap.exists ? snap.data() : null); maybeFireRefresh(); }, onErr);
       // cr1#1017: the page's own measure, the last seven days of it; this load is one open.

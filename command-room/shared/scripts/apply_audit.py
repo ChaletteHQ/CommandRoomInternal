@@ -473,7 +473,8 @@ _REASON_CAP = 120
 def build_apply_choices_applied_event(*, source: str, actions: List[dict]) -> dict:
     """Build the ONE `apply_choices_applied` audit event for a batch. Each
     entry in `actions` is {n, action, handler_result} (+ optional
-    `note`, + optional `said`). Outcomes derive from handler_result via
+    `note`, + optional `said`, + optional `id`, `seq` and `thread_id`, kept
+    on the row as given, cr1#1584). Outcomes derive from handler_result via
     derive_outcome — the caller cannot pass an outcome directly (that's the
     FS-18a hole). `said` (cr1#1378) is the surface's own answer for the row
     and only ever downgrades: an `error` or `refused` row is never "ok".
@@ -513,6 +514,15 @@ def build_apply_choices_applied_event(*, source: str, actions: List[dict]) -> di
             row["reason"] = _error_reason(a.get("handler_result"), present, said)
         if a.get("note"):
             row["note"] = str(a["note"])[:200]
+        # cr1#1584: the press a row answers and the row its write made, when
+        # the caller names them, so a run that is handed the same press again
+        # answers from this row instead of writing twice.
+        if a.get("id"):
+            row["id"] = str(a["id"])[:160]
+        if isinstance(a.get("seq"), int) and not isinstance(a.get("seq"), bool):
+            row["seq"] = a["seq"]
+        if a.get("thread_id"):
+            row["thread_id"] = str(a["thread_id"])[:80]
         rows.append(row)
     return {
         "type": "apply_choices_applied",

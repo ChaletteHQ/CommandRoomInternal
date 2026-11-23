@@ -24,7 +24,7 @@ Lifted from `migration-v2` Path B (Phases B2–B5) and adapted to emit into work
     ALIASES.md                   ← backward-compat view copy
     ...narrative files           ← preserved
   [Project Folder]/
-    SESSION_NOTES_*.md           ← NOT re-parsed (events already structured)
+    SESSION_NOTES*.md            ← NOT re-parsed (events already structured)
     ...narrative files           ← preserved
 ```
 

@@ -43,6 +43,11 @@ try:
 except ImportError:  # when imported as a package member
     from .event_types import THREAD_BOUND_TYPES  # type: ignore
 
+try:  # cr1#1580: the one notes-name rule (standard library only)
+    import session_notes_file as _snf
+except ImportError:  # when imported as a package member
+    from . import session_notes_file as _snf  # type: ignore
+
 # Folders that are never client/project threads, so "folder with no thread
 # record" is expected for them, not an orphan.
 _NON_PROJECT_FOLDERS = {
@@ -208,14 +213,14 @@ def _project_folders(root: Path) -> list[str]:
 
 
 def _has_session_notes(folder: Path) -> bool:
-    """True if the folder carries any SESSION_NOTES file (live, archive, or index).
+    """True if the folder carries any session-notes file (live, archive, or
+    index, any spelling).
 
-    Session notes live at the folder root as `SESSION_NOTES[_NAME].md` (per the
-    cleanup gotcha — not a subfolder). An archive/index alone still proves notes
-    existed, so it counts as present (we never re-scaffold over real history)."""
-    for _ in folder.glob("SESSION_NOTES*.md"):
-        return True
-    return False
+    Session notes live at the folder root as `SESSION_NOTES_<folder name>.md`
+    (cr1#1580; per the cleanup gotcha — not a subfolder), and an older
+    spelling still counts. An archive/index alone still proves notes existed,
+    so it counts as present (we never re-scaffold over real history)."""
+    return _snf.has_any_notes(folder)
 
 
 def _folder_structure_findings(root: Path, threads: list[dict]) -> list[Finding]:

@@ -12,7 +12,7 @@ Dispatches to `workspace-ingest` with the full pipeline active (both CONTEXT and
 
 1. Resolve the source path from the user's invocation.
 2. Invoke `workspace-ingest` Phases 1 through 9 in full — accept source, off-limits wall check, backup, route parser, parse completeness check, leave out who is off limits or personal, write JSON sources, file discovery, file classification, migration preview-and-confirm, execute migration, write INGEST_REPORT. The two off-limits steps, Phase 1.5 and Phase 3.8 (cr1#1577), are never skipped: nothing about a person the owner keeps off limits or on the personal lane is written, and the run says how many items it left out, naming no one. The filing layer screens too: Phase 6.5 the names the buckets, the preview, the queue and the report would show, and Phase 7.5 every document before it is merged into a live file; a file or document left out stays at its source.
-3. The preview-and-confirm in Phase 7 is the safety gate. User sees the full list of `<source file> → <destination project folder>` mappings + any items routed to the unrouted bucket; user explicitly says go before any copies happen.
+3. The preview-and-confirm in Phase 7 is the safety gate. User sees the full list of `<source file> → <destination project folder>` mappings + any files that match no project, which stay where they are at the source and are never copied in; user explicitly says go before any copies happen.
 
 ## Why this skill exists separately from workspace-ingest
 

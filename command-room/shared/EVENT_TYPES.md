@@ -269,7 +269,8 @@ Hard rules:
   codebase.
 - **Swept narrative is quarantined until confirmed (SPEC SESSQUAR1,
   2026-08-28).** A swept compose lands in a SIDECAR next to the notes file
-  (`SESSION_NOTES[_NAME].swept.md`, created only when the notes file itself
+  (the notes file's own name with `.swept.md`, e.g.
+  `SESSION_NOTES_<folder name>.swept.md`, created only when the notes file itself
   exists), never inline — composing surfaces that load `SESSION_NOTES` at
   fire time therefore never see unconfirmed narrative. The "end session"
   ritual is the confirming touch: `mark_composed(origin="ritual", ...)`
@@ -1736,3 +1737,17 @@ on the page itself.
 | `morning_message_claimed` | `morning_message.plan_send` ONLY, under its lock, before anything is sent (cr1#1017 behaviour 1). `data: {day, digest}`: the seal on the exact plan | `morning_message.check_self_send` (the seam sends only the claimed plan), `morning_message.record` (a send is recorded only for it), `morning_message.sent_on` (a claimed day is not planned again) |
 | `morning_message_sent` | `morning_message.record` ONLY, after the morning run sent the morning message through `inbox_helpers.mail_seams(self_send=...)` (cr1#1017 behaviour 1, the one named exception to IDENT1 I-12). `data: {day, to, via, subject?, n_need?}`; `to` is always the owner's own business-primary address | `morning_message.sent_on` (one send a workspace day: `plan_send` and `check_self_send` refuse a second) |
 | `morning_message_skipped` | `morning_message.record` ONLY: a morning that sent nothing. `data: {day, reason}`, `reason` one of `already_sent`, `no_hub`, `no_owner_address`, `unverified_binding`, `walled`, `read_only`, `no_send_tool`, `send_failed`, `unreadable`; never an address | history only (the health check and the weekly report read why a morning was quiet) |
+
+## Project folder lane (cr1#1582, ruling 3 of cr1#1579, 2026-11-22)
+
+A project the owner makes (chat "new project", the Hub's New work stream,
+onboarding's project build) gets its folder in the same act; a project a
+background job makes stays folderless until the owner's "Make its folder".
+`project_folder` is the one place a project folder is made, and only an
+owner's act reaches it. These rows say which folder was made (not matched),
+so an Undo takes back only a folder it made.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `project_folder_made` | `project_folder.make_project_folder` (through `create_project`, `make_project_folders` and both Hub adds of a work stream, `cockpit_helpers._create_stream`), after the folder is recorded on the project; and `project_folder.create_project` once more when the project was started but its folder could not be made (`folder_name: null`, `made: false`, `with_project: true`, so its Undo can still take the record back). `data: {primary_thread_id, folder_name, made, with_project, also}`: `folder_name` is the project's folder, workspace-relative as on its record;: `made` true when this act made the folder, false when one already there was matched; `with_project` true when the project was started in the same act; `also` the threads recorded with the same folder (a work stream's own first thread) | `project_folder.take_back_folder` and `project_folder.undo_create_project` (only a folder made here is taken back; only a project started here is undone), `cockpit_helpers._made_stream_free` (the Hub's own row, never other work on the stream), `hub_edit._record` (the Work tab add's own row, in its `wrote_seqs`) |
+| `project_folder_taken_back` | `project_folder.take_back_folder` ONLY (an Undo: `undo_create_project`, or the Hub's two Undos of a new work stream, `cockpit_helpers._undo_home` and `hub_edit._put_back`). Nothing is written when the folder stays: one already there, or one another live project records. Additive: `data: {primary_thread_id, folder_name, outcome, kept_as, reversal_of: <seq of the made row>}` (both workspace-relative); `outcome` is `removed` (it was empty), `archived` (moved whole to `kept_as` under `_archive/project-undo-<date>/`) or `gone`; the made row stays in history | `project_folder.take_back_folder` (a folder already taken back is not taken back twice), `cockpit_helpers._made_stream_free` |

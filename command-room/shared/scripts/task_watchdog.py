@@ -2077,9 +2077,13 @@ def _maintenance_job_problems(workspace_root, reports, *, now=None):
         _quiet = frozenset()
     _quiet = frozenset(_quiet) | nothing_stamped_jobs()
     _left_due = honestly_due_jobs(workspace_root)
+    # cr1#1489 (owner ruling 2026-11-22, "Yes, hide it"): a pass that cannot
+    # read for want of a reader the app does not have is a fault the seat
+    # cannot fix by itself, so it is never a line here; its receipts keep it.
+    _hidden = operator_only_jobs(workspace_root)
     problems, lines = [], []
     for f in findings:
-        if f["job"] in _quiet or f["job"] in _left_due:
+        if f["job"] in _quiet or f["job"] in _left_due or f["job"] in _hidden:
             continue
         flag = False
         if f["status"] == "stale":
@@ -2124,7 +2128,10 @@ def _maintenance_job_problems(workspace_root, reports, *, now=None):
                                 workspace_path=workspace_root)
         runs = "its last run" if n == 1 else f"its last {n} runs"
         since_phrase = f", since {since}" if since and n > 1 else ""
-        reason = job_receipt_reason(workspace_root, job)
+        # cr1#1489: a missing-reader skip is scored due, never failed, so a
+        # pass filed as failed is a real failure and is named. While its own
+        # newest record is that skip, the record is not quoted.
+        reason = None if job in _hidden else job_receipt_reason(workspace_root, job)
         lines.append(
             f"Your Maintenance task is running, but its {name} pass failed on "
             f"{runs}{since_phrase} — "
@@ -2517,6 +2524,28 @@ def honestly_due_jobs(workspace_root) -> frozenset:
 
     left = _ids("jobs_due") - _ids("jobs_completed") - _ids("jobs_failed")
     return frozenset(left & set(_ruled))
+
+
+#: cr1#1489: the pass whose cannot-read state is operator-only. The chat
+#: capture (`session-sweep`) reads past chats through a session-transcript
+#: tool the current Claude app does not have, typed or scheduled.
+CHAT_CAPTURE_JOB = "session-sweep"
+
+
+def operator_only_jobs(workspace_root) -> frozenset:
+    """cr1#1489 (owner ruling 2026-11-22, "Yes, hide it"): the passes the
+    health check never names to the owner right now: the chat capture while
+    its newest record is a skip for want of a chat reader
+    (`session_sweep.reader_missing`). Nothing the seat can do fixes that, so
+    it reaches Chalette through the receipts instead. Any other state of the
+    pass (a read that errored, a run that read) is said as before. Never
+    raises: an unreadable answer hides nothing."""
+    try:
+        from session_sweep import reader_missing
+
+        return frozenset({CHAT_CAPTURE_JOB}) if reader_missing(workspace_root) else frozenset()
+    except Exception:  # noqa: BLE001 - a health read never breaks a surface
+        return frozenset()
 
 
 def honestly_due_line(workspace_root) -> str:
@@ -3382,6 +3411,17 @@ def _foreign_writers(workspace_root) -> dict:
                 "declared": None, "since": None, "line": ""}
 
 
+def report_is_problem(r: dict) -> bool:
+    """One report row is a problem: late, never authorized, missing, declined
+    by the platform, switched off, or a receipt gap. The verdict's own
+    partition reads this, and so does `everything_ok` (cr1#1585) over the
+    health report's rows, so the two can never disagree. A later-add task
+    that is not registered is skipped before this is asked."""
+    return (r.get("status") in ("late", "never_authorized", "not_registered",
+                                "platform_declined", "switched_off")
+            or bool(r.get("receipt_gap")))
+
+
 def health_verdict(workspace_root, *, task_records=None, now=None,
                    backend=None, tools=None, device_path=None,
                    include_shelved: bool = False) -> dict:
@@ -3491,8 +3531,7 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
         if (r["status"] == "not_registered" and not r["first_install"]
                 and not r.get("hub")):
             continue  # later-add: expected, uncounted; change-schedule renders it
-        if r["status"] in ("late", "never_authorized", "not_registered",
-                           "platform_declined", "switched_off") or r["receipt_gap"]:
+        if report_is_problem(r):
             problems.append(r)
         elif r["caught_up"]:
             caught_up.append(r)
@@ -3984,6 +4023,8 @@ __all__ = [
     "app_last_run",
     "foreign_switched_off_line",
     "nothing_stamped_jobs",
+    "CHAT_CAPTURE_JOB",
+    "operator_only_jobs",
     "registered_after_slot",
     "schedule_created_times",
     "pick_task_records",

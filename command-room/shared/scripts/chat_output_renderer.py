@@ -1533,7 +1533,13 @@ except ImportError:  # pragma: no cover — direct-path fallback
 _MEETINGS_LINK_ROW = (_leak_re.compile(
     _SUBSTRATE_SRC["substrate_path_hq_meetings"], _leak_re.IGNORECASE),
     "internal _hq path")
-_LINK_TARGET_EXEMPT_PATTERNS = frozenset({_MEETINGS_LINK_ROW[0]})
+#: cr1#1581 review round 1: `_hq/notes/`, the home of a document with no
+#: project, takes the same narrowed carve-out (a link target, never text).
+_NOTES_LINK_ROW = (_leak_re.compile(
+    _SUBSTRATE_SRC["substrate_path_hq_notes"], _leak_re.IGNORECASE),
+    "internal _hq path")
+_LINK_TARGET_EXEMPT_PATTERNS = frozenset({_MEETINGS_LINK_ROW[0],
+                                          _NOTES_LINK_ROW[0]})
 
 # A LINK TARGET MAY CONTAIN A SPACE, and the workspaces that matter most do.
 # `_URL_SPAN_RE` (the LEAK2 family's carve-out) stops a markdown target at
@@ -1683,6 +1689,7 @@ _LEAK_PATTERNS = [
     # `_LINK_TARGET_EXEMPT_PATTERNS` below, because the label is shared
     # and the label is what every other haystack rule keys on.
     _MEETINGS_LINK_ROW,
+    _NOTES_LINK_ROW,
     # v2.14.14+ — agent-freelancing patterns observed in real fires.
     # Catches "Saved the full standalone HTML at...", "Files saved to _hq/...",
     # "saved to disk", and similar narrations of disk writes the orchestrator
@@ -1733,7 +1740,16 @@ _LEAK_PATTERNS = [
     (_leak_re.compile(_SUBSTRATE_SRC["substrate_data_file_jsonl"],
                       _leak_re.IGNORECASE),
      "internal data file"),
-    (_leak_re.compile(r"\bSESSION_NOTES(?:_[A-Z_]+)?\.md\b"), "internal session-notes file"),
+    # cr1#1616: any spelling of a notes file name, the ruled
+    # `SESSION_NOTES_<folder name>.md` (#1580: the folder's own name, mixed
+    # case, spaces and digits kept) and every older one, in any case. The name
+    # part stops at a line end or at a character no file name carries. No
+    # separator is required after the prefix: the sweep's own sidecars
+    # (`SESSION_NOTES.swept.md`, `.swept.rejected.md`), sync copies of a bare
+    # file (`SESSION_NOTES-OFFICE.md`, `SESSION_NOTES (1).md`) and older hyphen
+    # spellings are names the product writes too.
+    (_leak_re.compile(r"\bSESSION_NOTES(?:[^\r\n/\\:*?\"<>|]{0,120}?)?\.md\b", _leak_re.IGNORECASE),
+     "internal session-notes file"),
     (_leak_re.compile(r"\bevents\.schema\.json\b", _leak_re.IGNORECASE), "internal schema file"),
     # Internal event-type names (v2.12.4+ — surfaced in apply-time outputs;
     # v2.14.6+ — added commitment_updated, commitment_review_proposed for CRU layer;

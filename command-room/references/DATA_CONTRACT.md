@@ -315,7 +315,7 @@ Some files stay markdown-native in v2.0 because their content is narrative, not 
 | `CLAUDE.md` | Generated hot cache; markdown per Claude's CLAUDE.md convention |
 | `briefings/*.md`, `summaries/*.md`, `audit-reports/*.md` | Point-in-time reports |
 | `intel/KNOWLEDGE_BASE.md`, `intel/*.md` | Narrative research |
-| `SESSION_NOTES_[NAME].md` (per project) | Append log; human-readable by design |
+| `SESSION_NOTES_<folder name>.md` (per project) | Append log; human-readable by design |
 
 These files all carry the v1.8 version headers (three HTML comments) where applicable and follow the same Append Format.
 

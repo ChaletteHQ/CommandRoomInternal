@@ -14,7 +14,7 @@ Lifted from `migration-v2` Path C spec (see `Command Room/data/CommandRoom_PathC
     MASTER_TRACKER.md              ← required
     PEOPLE.md                      ← required, SECTION-NESTED (not single table)
     PROJECT_BRAIN.md               ← HQ-level brain; has Decisions Log, Glossary, Commitments
-    SESSION_NOTES_HQ.md            ← HQ-level sessions
+    SESSION_NOTES*.md              ← HQ-level sessions (any spelling)
     BUSINESS_CONTEXT.md            ← narrative only (preserved)
     HOLDCO.md                      ← org-tree seed (time-allocation signal)
     CLIENT_ROSTER.md               ← supplementary project signal
@@ -25,13 +25,13 @@ Lifted from `migration-v2` Path C spec (see `Command Room/data/CommandRoom_PathC
     audit-reports/**, intel/**     ← NOT PARSED (preserved in place)
     _archive/**                    ← NOT PARSED (preserved in place)
   [Project Folder]/                ← sibling of _hq/, NOT child
-    SESSION_NOTES_[NAME].md
+    SESSION_NOTES*.md              ← any spelling (read as it is, never renamed)
     PROJECT_CONTEXT.md             ← narrative
     PROJECT_BRAIN.md               ← has Decisions Log + Commitments + Gotchas + Aliases
     SUBPROJECTS.md                 ← sub-thread records (optional)
     deliverables/**, data/**, ref/**  ← NOT PARSED
   CLAUDE.md                        ← preserved; pointer added
-  SESSION_NOTES.md                 ← top-level (rare); treated as HQ supplementary
+  SESSION_NOTES*.md                ← top-level (rare); treated as HQ supplementary
 ```
 
 ## Detection entry point
@@ -201,7 +201,7 @@ Same extraction rules as P4, but with:
 
 Dedup decisions against P4 (HQ scope) and P6 (session notes) by (date, fuzzy-title-hash at 0.9 similarity).
 
-### P6. Parse `SESSION_NOTES_*.md` (HQ + per-project) → events
+### P6. Parse `SESSION_NOTES*.md` (HQ + per-project) → events
 
 HQ and per-project SESSION_NOTES get identical treatment:
 

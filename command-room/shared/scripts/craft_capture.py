@@ -90,6 +90,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import craft_contract as cc  # noqa: E402
+import session_notes_file as _snf  # noqa: E402  (cr1#1580: the one notes name)
 
 # ---------------------------------------------------------------------------
 # Vocabulary
@@ -136,7 +137,6 @@ WRITER = "craft-capture"
 
 _DOC_SUFFIXES = (".md", ".txt", ".docx", ".doc", ".pdf", ".xlsx", ".xls",
                  ".csv", ".pptx", ".html", ".htm", ".rtf")
-_NOTES_RE = re.compile(r"^SESSION_NOTES.*\.md$", re.IGNORECASE)
 _TRANSCRIPT_FILE_RE = re.compile(r"_transcript\.md$", re.IGNORECASE)
 _SKIP_DIRS = frozenset({cc.CRAFT_DIR, "_archive", "node_modules",
                         "__pycache__"})
@@ -398,7 +398,7 @@ def _walk_folder(root: Path, folder: Path) -> tuple[list, list]:
             if name.startswith(".") or not p.is_file() \
                     or not cc.is_safe_path(root, p):
                 continue
-            if _NOTES_RE.match(name):
+            if _snf.is_notes_name(name):
                 notes.append(p)
             elif _TRANSCRIPT_FILE_RE.search(name):
                 continue

@@ -15,7 +15,8 @@ hand (`python3 sync_conflict_copies.py --workspace <ws> --apply`):
 
   1. DETECT every conflict copy beside a live substrate file (`events.jsonl`,
      `entities.json`, `aliases.json`, their `.seqhw` / `.rev` sidecars), the
-     brain file `CLAUDE.md` and the per-project `SESSION_NOTES_*.md` files.
+     brain file `CLAUDE.md` and the per-project session-notes files (any
+     spelling, `SESSION_NOTES*.md`, cr1#1580).
   2. The activity log: find the entries only the copy holds (by CONTENT, never
      by number: both sides kept numbering after the fork) and append them
      through the one append path with fresh numbers, their original time,
@@ -59,6 +60,8 @@ from typing import Any, Dict, List, Optional, Tuple
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
+
+import session_notes_file as _snf  # noqa: E402  (cr1#1580: the one notes name)
 
 JOB_ID = "sync-conflicts"
 RECEIPT_TYPE = "sync_conflicts_run"
@@ -152,17 +155,25 @@ def conflict_copies_of(live_path) -> List[Path]:
 
 
 def _session_notes(workspace_root: Path) -> List[Path]:
-    """The LIVE per-project session-notes files (`<project>/SESSION_NOTES_*.md`):
-    a notes file that is a conflict copy of a sibling is not one of them."""
+    """The LIVE per-project session-notes files, every spelling the one
+    notes-name rule reads (`session_notes_file`, cr1#1580; a bare file with no
+    name part used to be missed here): a notes file that is a conflict copy
+    of a sibling is not one of them, and the folder's own
+    `SESSION_NOTES_<folder name>.md` is never taken for a copy."""
     out = []
+    root = Path(workspace_root)
     try:
-        for child in workspace_root.iterdir():
-            if not child.is_dir() or child.name.startswith((".", "_")):
+        # cr1#1624: every project folder the notes rule looks at, nested
+        # thread folders included, never only the top level; a folder this
+        # product keeps as an archive or backup is left alone.
+        for child in _snf.project_folders(root):
+            if not child.is_dir() or not _snf.in_live_folder(child.relative_to(root).parts):
                 continue
-            names = sorted(p.name for p in child.glob("SESSION_NOTES_*.md") if p.is_file())
+            names = [p.name for p in _snf.notes_family(child)]
             for name in names:
-                is_copy = any(copy_tag(other, name) is not None
-                              for other in names if other != name)
+                is_copy = not _snf.is_ruled(child / name) and any(
+                    copy_tag(other, name) is not None
+                    for other in names if other != name)
                 if not is_copy:
                     out.append(child / name)
     except OSError:
@@ -186,6 +197,10 @@ def scan(workspace_root) -> Dict[str, Any]:
     text_lives = [root / "CLAUDE.md"] + _session_notes(root)
     for live in text_lives:
         for c in conflict_copies_of(live):
+            # A folder's ruled-name notes file is its own live file, never a
+            # copy of an older spelling it happens to extend (cr1#1580).
+            if _snf.is_ruled(c):
+                continue
             found.append({"live": str(live), "copy": str(c), "kind": "text",
                           "tag": copy_tag(live.name, c.name)})
     return {"copies": found, "n": len(found)}

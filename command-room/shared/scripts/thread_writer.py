@@ -1013,7 +1013,8 @@ def create_thread(workspace_root: str | Path, *,
                   objective: dict | None = None,
                   cohort: dict | None = None,
                   source_skill: str = "unknown",
-                  skip_dedup: bool = False) -> dict:
+                  skip_dedup: bool = False,
+                  guess_folder: bool = True) -> dict:
     """Create a new thread record. Dedups by folder_name → canonical_name,
     validates against the schema, writes through the wrapper-aware collection
     (so it lands where readers look), and emits a `thread_created` event.
@@ -1023,6 +1024,11 @@ def create_thread(workspace_root: str | Path, *,
     unaffiliated thread; omitting the field is refused so "never set" cannot
     masquerade as a choice. `affiliation_id` is accepted as a legacy alias and
     normalised to `org_id` on write.
+
+    `guess_folder=False` (cr1#1582 review): with no `folder_name`, record no
+    folder rather than matching one from the name. `project_folder` passes
+    it, because it decides the folder itself (the one the owner named, never
+    a same-named older folder, never one another project holds).
     """
     workspace_root = Path(workspace_root)
 
@@ -1072,7 +1078,8 @@ def create_thread(workspace_root: str | Path, *,
         "canonical_name": canonical_name.strip(),
         # FOLDERGUARD: resolved against real directories, never guessed. `None`
         # when nothing matches — an honest gap the integrity checker can see.
-        "folder_name": resolve_folder_name(workspace_root, canonical_name, folder_name),
+        "folder_name": (resolve_folder_name(workspace_root, canonical_name, folder_name)
+                        if (folder_name or guess_folder) else None),
         "status": status,
         "first_seen": first_seen or _today(),
     }

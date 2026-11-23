@@ -153,6 +153,15 @@ RESERVED_DIRECTORIES = (
 )
 R_RESERVED_LOCATION = "refused_location"
 
+#: Where a document Command Room writes lands when it belongs to no project
+#: (cr1#1581, ruling 2 of cr1#1579): one home, the same one the export door's
+#: `notes` kind uses. A project's documents go to its own `deliverables/`.
+#: There is no other no-project home and no "Unfiled" folder; the older
+#: no-project folder under `_hq` is not a place to save (its files are still
+#: found by the document shelf, and listed by
+#: `doc_shelf.documents_with_no_project`).
+NO_PROJECT_HOME = "_hq/notes"
+
 #: The environment variable carrying the workspace folder's absolute path on
 #: the CUSTOMER'S OWN COMPUTER — what the desktop app knows the folder by, what
 #: the scheduled-chat bootloader bakes in as `<WORKSPACE_ABSOLUTE_PATH>`, and
@@ -225,16 +234,27 @@ _LINE_BY_REASON = {
 #: Rule-4-allowed (R-GW-1: a plain folder name in an honest sentence is
 #: cosmetic, not the leak class); a session mount path, a `computer://` link or
 #: anything under `/sessions/` is not, and none of them opens anything.
-#: `{filename}` is the document's own name and nothing else.
+#: `{filename}` is the document's own name and nothing else; `{folder}` is
+#: one of `SAVED_LINE_FOLDERS`.
 PC_PATH_UNKNOWN_LINE = (
-    "Saved under _hq/meetings/{filename} in your Command Room folder."
+    "Saved under {folder}/{filename} in your Command Room folder."
 )
+#: The folders the words form names as they are (cr1#1581): `_hq/meetings`,
+#: where briefs save, and `NO_PROJECT_HOME`, where a document with no project
+#: lands, so the owner is told the folder the file is really in. Any other
+#: location keeps the sentence's old fixed folder until cr1#1520 gives a
+#: project folder words the leak gate accepts.
+SAVED_LINE_FOLDERS = ("_hq/meetings", NO_PROJECT_HOME)
 
 
 def saved_line(rel: str) -> str:
     """The one sentence a caller prints when the PC path is unknown."""
-    name = Path(str(rel)).name
-    line = PC_PATH_UNKNOWN_LINE.format(filename=name)
+    path = Path(str(rel))
+    name = path.name
+    folder = path.parent.as_posix()
+    if folder not in SAVED_LINE_FOLDERS:
+        folder = SAVED_LINE_FOLDERS[0]
+    line = PC_PATH_UNKNOWN_LINE.format(folder=folder, filename=name)
     try:
         from chat_output_validator import validate_chat_output  # type: ignore
     except ImportError:
@@ -362,7 +382,10 @@ def card_call(path) -> Dict[str, Any]:
 #: wants to read them all in one place.
 ALL_LINES = (REFUSED_LINE, NOT_ATTACHED_LINE, MISSING_PARENT_LINE,
              REFUSED_TARGET_LINE, DEPENDENCY_LINE, CARD_ABSENT_LINE,
-             PC_PATH_UNKNOWN_LINE.format(filename="Call_Prep.docx"),
+             PC_PATH_UNKNOWN_LINE.format(folder="_hq/meetings",
+                                         filename="Call_Prep.docx"),
+             PC_PATH_UNKNOWN_LINE.format(folder=NO_PROJECT_HOME,
+                                         filename="Sample_OnePager.docx"),
              SAVED_TO_LINE.format(path="C:\\Users\\sample\\Sample Brain"
                                        "\\_hq\\meetings\\Call_Prep.docx"))
 
@@ -1095,9 +1118,11 @@ EXPORT_SOURCE = "claude_doc"
 
 #: Where each kind lands (R-DOCS1-1 defaults): meeting-shaped documents go
 #: where the prep and the past-meeting brief go; a project deliverable goes
-#: to that project's `deliverables/`; the rest to `_hq/notes/`. `{project}`
-#: is the caller's project folder name and is REQUIRED for those kinds — a
-#: deliverable with no project has no folder, and the door does not invent one.
+#: to that project's `deliverables/`; the rest to `NO_PROJECT_HOME`
+#: (`_hq/notes/`). `{project}` is the caller's project folder name and is
+#: REQUIRED for those kinds — a deliverable with no project has no folder, and
+#: the door does not invent one: a document that belongs to no project is
+#: exported as `notes` and lands in `NO_PROJECT_HOME` (cr1#1581).
 DOC_EXPORT_KINDS: Dict[str, tuple] = {
     "call_prep": ("_hq/meetings", "Call_Prep"),
     "past_meeting": ("_hq/meetings", "Past_Meeting"),
@@ -1106,7 +1131,7 @@ DOC_EXPORT_KINDS: Dict[str, tuple] = {
     "memo": ("{project}/deliverables", "Memo"),
     "one_pager": ("{project}/deliverables", "OnePager"),
     "decision_memo": ("{project}/deliverables", "DecisionMemo"),
-    "notes": ("_hq/notes", "Notes"),
+    "notes": (NO_PROJECT_HOME, "Notes"),
 }
 #: The export formats the docs seam offers that are deliverables here. Markdown
 #: is deliberately NOT one (CONTRACT Rule 27: a customer-facing document is

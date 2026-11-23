@@ -698,7 +698,7 @@ Acknowledge the addition in a single short sentence (don't expand it into a side
 - **Underlying skill:** `workspace-manager` end-session flow.
 - **What to say after end-session runs:** one-line confirmation closing the loop:
 
-  > *"Saved your note ('[user's actual addition, ≤60 chars]') to SESSION_NOTES_[Project].md. Next session starts with everything you just put in place — including this. That's how the system compounds: you say what you're thinking, end session locks it in, you come back and it's all there."*
+  > *"Saved your note ('[user's actual addition, ≤60 chars]') to your [Project] notes. Next session starts with everything you just put in place — including this. That's how the system compounds: you say what you're thinking, end session locks it in, you come back and it's all there."*
 
 **Why this loop matters:** the entire system depends on the user understanding that `go` loads and `end session` saves. Reading about it doesn't stick; doing it once does. This is the single highest-leverage muscle-memory moment in onboarding. Do not skip it. Do not let the CEO talk past it. If they try, gently re-anchor: *"Quick — type `end session` first so we lock in what you just added. Then we wrap."*
 

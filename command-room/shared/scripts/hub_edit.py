@@ -403,15 +403,25 @@ def _stream_add(root: Path, inp: dict, choice_id: str, evs: List[dict], before: 
         line = (ch.NEW_STREAM_TAKEN_LINE if how == "taken" else ch.NEW_STREAM_ARCHIVED_LINE
                 if how == "archived" else ch.NEW_STREAM_CLOSED_LINE).format(name=held, what="a thread")
         return _no(line)
+    if how == "new":
+        # cr1#1582: the stream's folder is made with it, so a folder that
+        # cannot be made as asked refuses before anything is written
+        refused = ch._stream_folder_refusal(root, name)
+        if refused:
+            return _no(refused)
+    folder: Dict[str, Any] = {}
     try:
-        sid = ch._create_stream(root, name, found if how == "resume" else None)
+        sid = ch._create_stream(root, name, found if how == "resume" else None, folder_out=folder)
     except ValueError:
         return _no(ch.NEW_STREAM_FAILED_LINE, "error")
     except ch._HalfMadeStream:
         return _no(ch.NEW_STREAM_HALF_LINE.format(name=name), "error")
     except ch._StreamUnsure:
         return _no(ch.NEW_STREAM_UNSURE_LINE.format(name=name), "error")
-    line = f"Started the work stream {name}." + REFRESH
+    # cr1#1582 review round 2: a folder that could not be made is said, as the
+    # No home yet press says it (the stream stands; "make its folder" finishes it)
+    line = (f"Started the work stream {name}."
+            + (ch.NEW_STREAM_NO_FOLDER_LINE if folder and not folder.get("ok") else "") + REFRESH)
     kids = {str(t.get("id")) for t in _thread_recs(root) if str(t.get("parent_thread_id") or "") == sid}
     rec = _record(root, before, {"hub_choice": choice_id, "kind": "stream_edit", "action": "add",
                                  "target_id": sid, "new": name, "line": line}, ids={sid} | kids)
@@ -798,7 +808,22 @@ def _put_back(root: Path, kind: str, pd: dict, tid: str, rec: dict, actor: str) 
         for k in kids:
             ta.archive_thread(str(root), k, reason=ARCHIVE_REASON, source_skill=SOURCE_SKILL,
                               regenerate_view=False)
-        return f"Took back the work stream {pd.get('new')}; it is archived."
+        line = f"Took back the work stream {pd.get('new')}; it is archived."
+        # cr1#1582: the folder the add made goes with it: removed when
+        # empty, moved whole to the archive when anything is in it; one that
+        # was already there, or another live project's, stays.
+        import cockpit_helpers as ch
+        import project_folder
+
+        try:
+            back = project_folder.take_back_folder(root, tid, source_skill=SOURCE_SKILL)
+        except Exception:  # noqa: BLE001 - the stream is archived; the folder stays
+            back = {"ok": False}
+        if back.get("outcome") == "archived":
+            line += ch.UNASSIGN_FOLDER_ARCHIVED_LINE
+        elif not back.get("ok"):
+            line += ch.UNASSIGN_FOLDER_STAYS_LINE
+        return line
     if kind == "person_edit" and pd.get("action") == "set":
         import brain_undo as bu
 

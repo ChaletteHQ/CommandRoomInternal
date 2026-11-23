@@ -329,7 +329,7 @@ to both `check_lateness(fired_via=...)` and the closing `log_receipt`:
   scheduled fabricates lateness history (F-47 P1a wrote three false
   late_fire receipts in one afternoon).
 - **On a merged seat, a press of the Maintenance task's Run button, or
-  the Hub's Start, cannot be told from its scheduled fire (cr1#977, owner
+  the Hub's Go, cannot be told from its scheduled fire (cr1#977, owner
   ruling 2026-11-19).** The press sends no message (a fire that carries
   text starts without the device tools, cr1#651), so the session is the
   same either way. That task's merged branch does not guess: with no

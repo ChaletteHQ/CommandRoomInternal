@@ -44,4 +44,4 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"c
 
 The writer composes the run's ONE `pack_run` receipt under this task's id, with `receipts`' own vocabularies, machine and model fields and slot provenance, and appends it through the one append path. Never a second receipt call, never a hand-rolled receipt JSON. The one exception is `cockpit-inbox`: its Phase 5 call composes the Inbox chain's receipt under that task's id, so it skips this call and does the final response only.
 
-The final response is the light's own sentence, one line, and nothing else: no summary, no file names, no note about tools.
+The final response is the light's own sentence, one line, and nothing else: no summary, no file names, no note about tools. Nothing a status document says (Maintenance's line or its notes included) is repeated in chat; the page shows those (cr1#1489).

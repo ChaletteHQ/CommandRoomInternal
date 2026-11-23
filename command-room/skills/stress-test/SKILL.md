@@ -15,7 +15,7 @@ description: "Systematically map every path a plan, decision, or launch could fa
 - **Read-only over the data layer** — with ONE narrow exception (below). No writes to `entities.json`, `events.jsonl` (beyond the writer helper's own config events), `aliases.json`, or `classifier_feedback.jsonl`.
 - **Reads from:** the CEO's plan input, relevant project context (if the plan references a project — loads PROJECT_BRAIN.md and session notes), and `_hq/data/skill_config/stress-test.json` via `skill_config_writer.get_config` (SPEC OUT2 §5 — see First-Run Personalization below).
 - **Writes (the one exception, SPEC OUT2 §5):** `_hq/data/skill_config/stress-test.json` on first fire, tune, and reset — always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`; the helper emits the config events), never a raw file write.
-- **Produces (file output, not data-layer writes):** a failure-mode-to-safeguard `.docx` saved to `[project]/deliverables/StressTest_[Topic]_[YYYY-MM-DD].docx` (or `_hq/deliverables/` if no project scope).
+- **Produces (file output, not data-layer writes):** a failure-mode-to-safeguard `.docx` saved to `[project]/deliverables/StressTest_[Topic]_[YYYY-MM-DD].docx` (or `_hq/notes/` if no project scope — the one home for documents with no project).
 - **No conflict boundary** — produces a deliverable file plus its own config. Cannot collide with any other skill's data-layer writes.
 
 ---

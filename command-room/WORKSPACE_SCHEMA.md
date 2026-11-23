@@ -113,7 +113,7 @@ Container for completed or inactive projects. Structure mirrors active project f
 _archive/
 └── [Project Name]/                # Same structure as active projects
     ├── PROJECT_CONTEXT.md
-    ├── SESSION_NOTES_[NAME].md
+    ├── SESSION_NOTES_<folder name>.md
     └── ref/, meetings/ (as applicable)
 ```
 
@@ -125,7 +125,7 @@ One folder per active project listed in MASTER_TRACKER.md. Folder name must matc
 [Project Name]/
 ├── PROJECT_CONTEXT.md             # Project brief: background, scope, success criteria, stakeholders
 ├── PROJECT_BRAIN.md               # Institutional memory: people, gotchas, threads, workflows, aliases
-├── SESSION_NOTES_[NAME].md        # One per project, always at project root. [NAME] = user's first name
+├── SESSION_NOTES_<folder name>.md # One per project, always at project root, named for the folder exactly as spelled
 ├── ref/                           # Created as needed
 │   ├── contacts.md                # Project-specific contacts
 │   ├── scope.md                   # Detailed scope, constraints, exclusions
@@ -137,7 +137,7 @@ One folder per active project listed in MASTER_TRACKER.md. Folder name must matc
 ```
 
 **File creation rules:**
-- Onboarding creates: PROJECT_CONTEXT.md, PROJECT_BRAIN.md (starter), SESSION_NOTES_[NAME].md
+- Onboarding creates: PROJECT_CONTEXT.md, PROJECT_BRAIN.md (starter), SESSION_NOTES_<folder name>.md
 - workspace-manager creates PROJECT_BRAIN.md on "new project" (seeded from scans) and auto-updates it on "end session"
 - If PROJECT_BRAIN.md is missing on "go [project]", proceed without it — it gets created on the next "end session"
 - Skills create ref/ files on-demand when needed (graceful degradation if missing)
@@ -150,7 +150,7 @@ One folder per active project listed in MASTER_TRACKER.md. Folder name must matc
 |---------|--------|---------|-------|
 | Workspace root | `[WORKSPACE_ROOT]` | Resolved at skill runtime | User's mounted folder |
 | User first name | `[NAME]` | `Aria` | Set during onboarding; used identically everywhere |
-| Session notes file | `SESSION_NOTES_[NAME].md` | `SESSION_NOTES_Aria.md` | Exactly one per project |
+| Session notes file | `SESSION_NOTES_<folder name>.md` | `Northstar/SESSION_NOTES_Northstar.md` | Exactly one per project; a folder holding notes under an older spelling keeps that file (never renamed) |
 | Date format | `YYYY-MM-DD` | `2026-04-09` | ISO 8601; used in filenames + content |
 | Call prep file | `Call_Prep_[DATE].md` | `Call_Prep_2026-04-09.md` | Title case "Call_Prep" |
 | Project folders | Exact match to MASTER_TRACKER.md | If tracker says "Acme Corp", folder = `Acme Corp/` | Case-sensitive |
@@ -171,7 +171,7 @@ One folder per active project listed in MASTER_TRACKER.md. Folder name must matc
 - `_hq/intel/KNOWLEDGE_BASE.md`
 - `[Project Name]/PROJECT_CONTEXT.md` (for each initial project)
 - `[Project Name]/PROJECT_BRAIN.md` (for each initial project — seeded from scans/answers)
-- `[Project Name]/SESSION_NOTES_[NAME].md` (for each initial project)
+- `[Project Name]/SESSION_NOTES_<folder name>.md` (for each initial project)
 
 ### Created On-Demand by Skills (Optional)
 
@@ -183,7 +183,7 @@ One folder per active project listed in MASTER_TRACKER.md. Folder name must matc
 | audit-command | `_hq/audit-reports/` + audit files | On demand when user runs audit |
 | call-prep | `[Project]/meetings/Call_Prep_[DATE].md` | When preparing for a meeting |
 | intel-intake | Populates `_hq/intel/KNOWLEDGE_BASE.md` | When processing new intel/research |
-| meeting-notes | Updates `[Project]/SESSION_NOTES_[NAME].md` | When processing meeting transcript |
+| meeting-notes | Updates `[Project]/SESSION_NOTES_<folder name>.md` | When processing meeting transcript |
 | team-intelligence | `_people/[name].md`, `_people/prep/Prep_*.md` | On team queries, 1:1 prep |
 
 ### Auto-Created Folders
@@ -204,7 +204,7 @@ These folders are created automatically when a skill needs them (no user action 
 
 | File | Skill | Behavior |
 |------|-------|----------|
-| `SESSION_NOTES_[NAME].md` | meeting-notes | Create it at project root with standard header |
+| `SESSION_NOTES_<folder name>.md` | meeting-notes | Create it at project root with standard header |
 | `PROJECT_BRAIN.md` | workspace-manager | Graceful skip on "go [project]"; auto-created on next "end session" |
 | `PROJECT_CONTEXT.md` | Any skill | Use fallback context from MASTER_TRACKER.md |
 | `MASTER_TRACKER.md` | Any skill | Warn user; halt non-critical operations |
@@ -249,7 +249,7 @@ Recommended maximum file sizes (for usability):
 | File | Target | Notes |
 |------|--------|-------|
 | `MASTER_TRACKER.md` | <2 KB | Keep concise; link to PROJECT_CONTEXT for details |
-| `SESSION_NOTES_[NAME].md` | <10 KB/year | Annual rollover recommended |
+| `SESSION_NOTES_<folder name>.md` | <10 KB/year | Annual rollover recommended |
 | `PROJECT_CONTEXT.md` | <3 KB | Executive summary; detailed plans in ref/ |
 | `PROJECT_BRAIN.md` | <4 KB | Grows over time; prune resolved threads periodically |
 | `DECISION_LOG.md` | <5 KB | Keep recent entries; archive old ones annually |

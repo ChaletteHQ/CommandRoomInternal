@@ -311,7 +311,7 @@ The answer is `{session_scoped, opener_url}` (MIGRATE3-MB): `brief_path.is_sessi
 
 If the meeting has `related_thread_ids[]`, add a cross-ref line at the top of each related project's session notes pointing to the brief's `_hq/meetings/` path (matches the cross-ref convention from `meeting-notes` Step 4).
 
-**Session Notes convention:** Session notes live at `[WORKSPACE_ROOT]/[Project Name]/SESSION_NOTES_[NAME].md` where `[NAME]` is the user's first name (set during onboarding). For example, if the user is Pat and the project is Northstar, session notes are at `Northstar/SESSION_NOTES_Pat.md`. Briefs do NOT save next to session notes — briefs live in `_hq/meetings/` per the canonical path above.
+**Session Notes convention:** Session notes live at `[WORKSPACE_ROOT]/[Project Folder]/SESSION_NOTES_<folder name>.md`, named for the project folder exactly as spelled (`shared/WORKSPACE_API.md` § Session notes file). For example, the project folder Northstar holds `Northstar/SESSION_NOTES_Northstar.md`; a folder that already holds notes under an older spelling keeps that file. Briefs do NOT save next to session notes — briefs live in `_hq/meetings/` per the canonical path above.
 
 ## How to Use
 

@@ -50,7 +50,7 @@ These ALL save as `.docx` (or `.pptx` for slide decks, `.xlsx` for tabular data)
 
 A file is **context** if any of these are true:
 
-- Claude reads it on future sessions to inform work (`PROJECT_CONTEXT.md`, `PROJECT_BRAIN.md`, `SESSION_NOTES_*.md`, `CLAUDE.md`, `BUSINESS_CONTEXT.md`, `BRAND_VOICE.md`).
+- Claude reads it on future sessions to inform work (`PROJECT_CONTEXT.md`, `PROJECT_BRAIN.md`, `SESSION_NOTES*.md`, `CLAUDE.md`, the company context file under `_hq/`, `BRAND_VOICE.md`).
 - It's an auto-regenerated view of substrate state (`_hq/views/TIMELINE.md`, `DECISION_LOG.md`, `MASTER_TRACKER.md`, `PEOPLE.md`, `RELATIONSHIPS.md`).
 - It's an ephemeral snapshot consumed by next-session delta detection (`_hq/briefings/<date>.md`, `_hq/briefings/morning-<date>.md`).
 - It's part of the knowledge base (`_hq/intel/INDEX.md`, `_hq/intel/KNOWLEDGE_BASE.md`, `_hq/intel/<date>-<slug>.md`).

@@ -4,10 +4,14 @@
 After the pull (Phase 1) and the Mirror (Phase 2), the owner sees what the
 system worked out about them, each answer with its evidence, and confirms or
 edits it in one go. Only what the data cannot tell is asked: words or habits
-never to use, how cautious closing should be, whose mail is off-limits, and
-how drafted email should reach the drafts folder (part 2b, moved here from the
-setup widget).
+never to use, how cautious closing should be, and how drafted email should
+reach the drafts folder (part 2b, moved here from the setup widget).
 Where the data is too thin, an item is a plain question instead.
+
+Who is off limits is NEVER asked (owner ruling 2026-11-21, cr1#1587): it is
+not an item, so no card, no question and no what's-new setup offers it. An
+off-limits answer the owner gives on his own is still saved, through the same
+writer (`VOLUNTEERED`), and the wall it sets is unchanged.
 
 EVERY ANSWER SETS A REAL SETTING, through the writer that owns it, and a
 reader uses it (owner ruling 2026-11-12: nothing is stored that no reader
@@ -28,12 +32,15 @@ uses). The map is `ITEMS` below:
   avoid            the chat persona's `never_line`, rendered into CLAUDE.md
   close_caution    `close_mode` on every declared connector, read by every
                    closing job (`ask` -> `propose`, `when_sure` -> `close`)
-  off_limits       inbox "hide" rules per sender (`mail_rules.add_rule`,
-                   `off_limits=True`), read by the inbox, and by the scope gate,
-                   which keeps their mail out of the record (cr1#1181)
   draft_posture    email-writer's `draft_posture` (`save_skill_config`), read
                    by email-writer before every draft; once saved, its own
                    first-draft question is not asked again
+
+and, never asked, only taken when the owner says it himself (`VOLUNTEERED`):
+
+  off_limits       inbox "hide" rules per sender (`mail_rules.add_rule`,
+                   `off_limits=True`), read by the inbox, and by the scope gate,
+                   which keeps their mail out of the record (cr1#1181)
 
 The advisor's sheet (`advisor_sheet.write_sheet`, cr1#1162) keeps every
 answer in the owner's words as the record (ruling (a) of 2026-11-12); its
@@ -99,12 +106,19 @@ ITEMS: Dict[str, Dict[str, str]] = {
               "sets": "This sets a word or habit I never use with you."},
     "close_caution": {"how": "asked",
                       "sets": "This sets whether I close a finished item myself or always ask you first."},
-    "off_limits": {"how": "asked",
-                   "sets": "This hides these people's mail from your inbox and keeps it out of your records."},
     "draft_posture": {"how": "asked",
                       "sets": "This sets whether a drafted email waits for you to "
                               "look first, or goes into your drafts with one tap."},
 }
+
+#: cr1#1587: answers taken only when the owner gives them on his own, never
+#: an item: no card, no question, no `set` flag, never offered by the
+#: what's-new setup. The writer below saves them as it always has.
+VOLUNTEERED: Dict[str, Dict[str, str]] = {
+    "off_limits": {"how": "volunteered",
+                   "sets": "This hides these people's mail from your inbox and keeps it out of your records."},
+}
+_SETS: Dict[str, str] = {k: v["sets"] for k, v in list(ITEMS.items()) + list(VOLUNTEERED.items())}
 
 #: the sheet question each answer is recorded under (advisor_sheet.QUESTIONS)
 _SHEET_ID = {"name": "name", "business": "business", "thread_word": "thread_word",
@@ -299,13 +313,6 @@ def settings_present(root: Path, current: Dict[str, Any]) -> Dict[str, bool]:
             for row in cc.declared_backends(root).values())
     except Exception:  # noqa: BLE001
         pass
-    try:
-        import mail_rules
-        out["off_limits"] = any(isinstance(r, dict) and r.get("mode") == "hide"
-                                and r.get("off_limits")
-                                for r in mail_rules.active_rules(mail_rules.load(root)) or [])
-    except Exception:  # noqa: BLE001
-        pass
     return out
 
 
@@ -355,7 +362,7 @@ def _check(root: Path, answers: Dict[str, Any]) -> tuple:
     clean: Dict[str, Any] = {}
     inner = _entities(root)
     for key, raw in answers.items():
-        if key not in ITEMS:
+        if key not in ITEMS and key not in VOLUNTEERED:
             return None, _refuse(key, f"There is no step-5 item called {key!r}.")
         if key in ("name", "business", "thread_word", "work_stream_word"):
             t = _tidy(raw)
@@ -535,7 +542,7 @@ def apply_confirm(workspace_root, answers: Dict[str, Any], *,
     def run(key, fn):
         try:
             line = fn()
-            applied.append({"id": key, "line": line or ITEMS[key]["sets"]})
+            applied.append({"id": key, "line": line or _SETS[key]})
         except Exception as exc:  # noqa: BLE001 - name it, keep going
             failed.append({"id": key, "line": _repair_line(exc) or
                            f"{key.replace('_', ' ')} was not saved: "
@@ -677,5 +684,5 @@ class _Already(Exception):
     """Every priority given was already one: nothing to say as applied."""
 
 
-__all__ = ["settings_present", "ITEMS", "SIGN_OFFS", "CLOSE_CAUTION", "DRAFT_POSTURES", "plan_confirm", "apply_confirm",
+__all__ = ["settings_present", "ITEMS", "VOLUNTEERED", "SIGN_OFFS", "CLOSE_CAUTION", "DRAFT_POSTURES", "plan_confirm", "apply_confirm",
            "objective_name"]

@@ -10,7 +10,8 @@ refused on a seat with data), so two onboarding steps never reached it:
   step 5  the confirm cards (cr1#1163 part 2): name, sign-off, the business
           line, the people never to keep waiting, the two words, the
           priorities, the morning time, the never line, closing caution,
-          off-limits senders, draft posture.
+          draft posture. Who is off limits is never asked (cr1#1587): it
+          is not a card.
 
 The update bridge offers both once; "set up what's new", "walk my
 connectors" or "confirm my settings" runs them on demand. Nothing already

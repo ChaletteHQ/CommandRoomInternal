@@ -693,7 +693,7 @@ A scheduled chat on the "Require this computer" shape has no live widget, so its
 
 The document-routing rule (Session Rules, `claude_md_docs_rule_v1`) says a document is produced by the Command Room skill that owns it and lands in the folder. When the host's built-in docs skill won the routing question anyway — the customer is looking at a claude.ai page and nothing is in the folder — these words bring the page home. Nothing here creates a doc, and nothing here deletes one.
 
-1. **Find the doc and its kind.** The doc is the page the customer is pointing at (the link in this chat, or the doc the previous turn made). The kind is what the page is: a prep → `call_prep`; a processed call or meeting notes → `past_meeting`; a recap → `weekly_recap`; a memo → `memo`, a one-pager → `one_pager`, a decision memo → `decision_memo` (these three also need the project folder name — resolve it per Name resolution rules; when it cannot be resolved, ask which project, once); anything else → `notes`.
+1. **Find the doc and its kind.** The doc is the page the customer is pointing at (the link in this chat, or the doc the previous turn made). The kind is what the page is: a prep → `call_prep`; a processed call or meeting notes → `past_meeting`; a recap → `weekly_recap`; a memo → `memo`, a one-pager → `one_pager`, a decision memo → `decision_memo` (these three also need the project folder name — resolve it per Name resolution rules; when it cannot be resolved, ask which project, once); anything else → `notes`. A document that belongs to no project is exported as `notes`: it lands in `_hq/notes/`, the one home for documents with no project (cr1#1581).
 2. **Read it back through the discovered seam.** `tool_discovery.discover_docs_tool(<the tool ids visible in THIS session>, "export")` — never a remembered tool id. `None` → say "There are no Claude Docs tools in this chat, so I can't read that page from here." and stop. Otherwise call the discovered tool for that doc's ONE tab with `format: "docx"` (a doc with several tabs: `read` the doc first and take the tab that holds the document).
 3. **Land it through the write door.** The payload — `{"doc_ref": "<the doc's link>", "kind": "<kind>", "title": "<the doc's title>", "content_base64": "<what the export returned>", "format": "docx", "project": "<the project folder name, for memo / one_pager / decision_memo only>", "workspace_root": "<WS>"}` — is written as JSON into THIS SESSION'S OWN scratch on the host that runs the door (never under the workspace) and named by `args_file`, because a document does not survive a pasted command line (the same carrier the prep's payload uses). Render with `workspace_access.py plan run_writer --json '…'` and paste what it prints:
 
@@ -1248,7 +1248,7 @@ You are the **primary writer** for:
 - `_hq/BUSINESS_CONTEXT.md` — surgical updates.
 - `[Project]/PROJECT_CONTEXT.md` — create on "new project"; surgical updates.
 - `[Project]/PROJECT_BRAIN.md` — auto-update on "end session".
-- `[Project]/SESSION_NOTES_[NAME].md` — append entries (paired with events.jsonl append).
+- `[Project]/SESSION_NOTES_<folder name>.md` — append entries (paired with events.jsonl append).
 - `_hq/briefings/*.md` — on-demand briefing outputs.
 
 **You do not write** to `_hq/views/*.md`, `_hq/MASTER_TRACKER.md`, `_hq/PEOPLE.md`, `_hq/DECISION_LOG.md`, or `_hq/ALIASES.md` — those are regenerated views. Write to the JSON/JSONL source, and the view will refresh.
@@ -1315,13 +1315,13 @@ The user has context in their head that won't make it into the system unless you
 ├── [Project 1]/                   # One folder per project
 │   ├── PROJECT_CONTEXT.md
 │   ├── PROJECT_BRAIN.md           # Institutional memory: people, gotchas, threads, workflows
-│   ├── SESSION_NOTES_[NAME].md
+│   ├── SESSION_NOTES_<folder name>.md
 │   ├── ref/                       # Reference files (contacts, financials, scope)
 │   └── meetings/                  # Call prep briefs
 └── [Project 2]/
     ├── PROJECT_CONTEXT.md
     ├── PROJECT_BRAIN.md
-    └── SESSION_NOTES_[NAME].md
+    └── SESSION_NOTES_<folder name>.md
 ```
 
 ### Path Resolution
@@ -1330,9 +1330,8 @@ The user has context in their head that won't make it into the system unless you
 - On first activation, resolve `[WORKSPACE_ROOT]` and use it consistently
 
 ### Session Notes Naming
-- `SESSION_NOTES_[NAME].md` — `[NAME]` is the user's **first name** (e.g., `SESSION_NOTES_Pat.md`)
-- Set once during onboarding, used identically across every project and every skill
-- Never change the name mid-use — consistency is critical for all skills to find the right file
+- `SESSION_NOTES_<folder name>.md`: the project folder's own name, exactly as spelled (e.g., `Northstar/SESSION_NOTES_Northstar.md`). Never the owner's name or a project label.
+- Before reading or appending, render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "session_notes_file:notes_file", "args": {"workspace_root": "<WS>", "folder": "<the project folder>"}}'`, paste what it prints and run that; use the `path` it returns. A folder that already holds notes under an older spelling keeps that file: append to it as it is. Never rename or merge a notes file (`shared/WORKSPACE_API.md` § Session notes file). On `no_folder`, tell the owner the project has no folder yet and never create one.
 
 ---
 
@@ -2263,10 +2262,13 @@ Only proceed with creation if no match is found.
 1. **Scan connectors** — silently check Gmail (60 days), Calendar, Slack, Granola, Drive for anything related to `[Name]`. Skip unavailable connectors. See references/workspace-detail.md → "Source Check Procedures."
 2. **Present findings** — if context found: "Here's what I already know about [Name]: [summary]. What's right, wrong, missing?" If nothing found: standard discovery questions (What is this? Who? Stage? First action?). Ask only for gaps.
 3. **Create pre-loaded project:**
-   - **Create the thread record via the typed writer — do NOT hand-edit entities.json.** Call `shared/scripts/thread_writer.py::create_thread(workspace_root, canonical_name="[Name]", status="active", org_id=<org id per fuzzy-router — primary-focus org by default, CEO confirms if ambiguous>, owner_person_id=<if known>, kind=<if known>, source_skill="workspace-manager")`. It reserves a non-colliding `project_*` id, validates against the schema, writes through the wrapper-aware collection so the record lands where every reader looks, dedups, and emits a `thread_created` event. (Replaces the old hand-rolled id reservation; note the org link is `org_id` — the canonical thread→org field per ENTITY1, superseding the legacy `affiliation_id` spelling — and NOT `parent_org_id`, which is an org→org field. `org_id` is REQUIRED: for a genuinely unaffiliated thread pass the sentinel `org_id="personal"` explicitly rather than omitting it. See deep-audit #6 / references/BRAIN_FILE_CONTRACT.md.)
-   - Folder: `[WORKSPACE_ROOT]/[Name]/`
+   - **Create the project and its folder in one act, through the door — do NOT hand-edit entities.json and do NOT make the folder by hand** (cr1#1582: a project the owner makes gets its folder in the same act). First, when the name might not suit a folder, read `project_folder:plan_folder` through the read door (`plan run_helper` with `{"args": {"name": "[Name]", "workspace_root": "<WS>"}, "name": "project_folder:plan_folder"}`): a `bad_name` answer is said as its `line`, and the owner is asked for another name (or another folder name); never guess one. Then one call:
+     `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"canonical_name": "[Name]", "org_id": "<org id>", "source_skill": "workspace-manager", "workspace_root": "<WS>"}, "name": "project_folder:create_project"}'`
+     `org_id` is the org per fuzzy-router (primary-focus org by default, CEO confirms if ambiguous); add `"kind"`, `"owner_person_id"` or `"folder"` (the folder the owner named instead of the project's own name: one already there, at any depth, or a new one's name) only when known. It creates the record through `thread_writer.create_thread` (a non-colliding `project_*` id, schema checks, dedup, the `thread_created` event), then makes the folder `[WORKSPACE_ROOT]/[Name]/`, or uses one already there whatever its case, and records it on the project. Say its `line`. A refusal (`ok: false`) wrote nothing: say its `line` and ask again. An `ambiguous` refusal lists the folders (`folders`): ask which one, and pass it as `"folder"`; a `taken` refusal names the project that folder belongs to: ask for this one's own folder name. Never pick for the owner. An answer with `folder_name: null` started the project without a folder: say its `line`; "make its folder" later runs `project_folder:make_project_folders` with `{"thread_ids": ["<id>"], "workspace_root": "<WS>"}`. The org link is `org_id` — the canonical thread→org field per ENTITY1, superseding the legacy `affiliation_id` spelling — and NOT `parent_org_id`, which is an org→org field. `org_id` is REQUIRED: for a genuinely unaffiliated project pass the sentinel `"personal"` explicitly rather than omitting it. See deep-audit #6 / references/BRAIN_FILE_CONTRACT.md.
+   - **`undo` right after it** takes the project back: `plan run_writer` naming `project_folder:undo_create_project` with `{"thread_id": "<id>", "workspace_root": "<WS>"}`. It archives the project and takes back the folder it made (removed when empty, moved whole to the archive when anything is in it; a folder that was already there stays). Say its `line`.
+   - The files below are written into that folder through the door's `write` verb (it exists now, so nothing has to make it).
    - PROJECT_CONTEXT.md — seeded with real context, not placeholders
-   - SESSION_NOTES_[NAME].md — initial status
+   - `SESSION_NOTES_<folder name>.md` — initial status (the path `session_notes_file:notes_file` returns for the new folder)
    - PROJECT_BRAIN.md — fill DURABLE sections only (Key Context, Active Threads narrative, Trigger Aliases) from scans; leave Gotchas + Custom Workflows empty. **People + Status are GENERATED, not hand-filled** — after the thread exists, run `shared/scripts/render_thread_live_state.py "<workspace_root>" "<thread_id>"` to render the `<!-- LIVE-STATE:people -->` block (see references/BRAIN_FILE_CONTRACT.md).
    - ref/contacts.md if people were found
    - Add to MASTER_TRACKER.md (view auto-regenerates)
@@ -2571,7 +2573,7 @@ Capture and update everything. This is the save button — nothing persists with
                                           origin="ritual", source_skill="workspace-manager",
                                           thread_id="<this project's thread id, or None>")
      ```
-   - Append session log to SESSION_NOTES (most recent first)
+   - Append session log to the project's notes file (most recent first): the `path` `session_notes_file:notes_file` returns (`SESSION_NOTES_<folder name>.md`, or the older spelling the folder already holds); see Session Notes Naming
    - Carry forward ALL open items from previous entries — nothing gets dropped
    - Update "Current Status" section at the top of the file
    - Update PROJECT_CONTEXT.md if anything material changed

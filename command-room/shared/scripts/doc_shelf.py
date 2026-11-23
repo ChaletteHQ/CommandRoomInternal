@@ -28,6 +28,10 @@ WHAT IT READS AND WRITES
     door's list. A reader with no stored shelf builds one in memory and says
     so (`source: "computed"`).
   * Never moves, renames, edits or deletes a document.
+  * `documents_with_no_project` (cr1#1581) lists the rows of the
+    "Documents with no project" tidy pile: imports left at their source and
+    the files older runs parked in the old holding folders. It writes
+    nothing; the pile is cr1#1584's.
 
 WHAT IS ON THE SHELF
   Every file with a document extension (`DOC_EXTS`) under the workspace,
@@ -921,6 +925,154 @@ def quote_section(workspace_root, doc: str, query: Optional[str] = None,
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Documents with no project: the rows of the tidy pile (cr1#1581)
+# ---------------------------------------------------------------------------
+
+#: The bring-in's own run log (workspace-ingest Phase 8). An imported file
+#: that matched no project is not copied anywhere: the run records it here as
+#: left at its source, and this reader lists it from there.
+INGEST_LOG_REL = "_hq/_ingest-undo.jsonl"
+#: "undo migration" undoes the LATEST run and renames the WHOLE log to
+#: `_hq/_ingest-undo-reverted-<ts>.jsonl` (workspace-ingest, Undo step 7), so
+#: the runs before it live on in that file. Their rows still count; the undone
+#: run's (from the file's last `run_start` on) do not (cr1#1581 review round 1).
+INGEST_REVERTED_GLOB = "_ingest-undo-reverted-*.jsonl"
+RUN_START = "run_start"
+LEFT_AT_SOURCE = "left_at_source"
+#: Holding folders that older runs and older skill text wrote to. Nothing
+#: writes to them now; what is in them is listed, never moved (ruling 4 of
+#: cr1#1579: the owner's material is a pile, cleared by a press).
+OLD_HOLDING = (
+    ("_hq/deliverables", "old_home"),
+    ("_hq/_ingest-queue", "ingest_queue"),
+    ("_hq/_unrouted", "set_aside"),
+)
+
+
+def _no_project_home() -> str:
+    try:
+        from deliverables import NO_PROJECT_HOME
+    except Exception:  # noqa: BLE001 - a reader never fails on a borrowed name
+        return "_hq/notes"
+    return NO_PROJECT_HOME
+
+
+def _log_rows(path: Path) -> List[Dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    rows = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _effective_ingest_rows(root: Path) -> List[Dict[str, Any]]:
+    """Every bring-in row that still stands, oldest first: each reverted log
+    up to its last `run_start` (the run "undo migration" took back starts
+    there), in the order the reverted logs were made, then the live log. A
+    reverted log with no run header is taken as undone whole."""
+    rows: List[Dict[str, Any]] = []
+    for path in sorted((root / "_hq").glob(INGEST_REVERTED_GLOB)):
+        file_rows = _log_rows(path)
+        starts = [i for i, r in enumerate(file_rows) if r.get("action") == RUN_START]
+        rows.extend(file_rows[:starts[-1]] if starts else [])
+    rows.extend(_log_rows(root / INGEST_LOG_REL))
+    return rows
+
+
+def _left_at_source(root: Path) -> List[Dict[str, Any]]:
+    """The imports recorded as left at their source, the newest word on each
+    source winning: a later run that filed the same file takes it off, and a
+    run that was undone says nothing."""
+    latest: Dict[str, Dict[str, Any]] = {}
+    for row in _effective_ingest_rows(root):
+        src = str(row.get("source") or "").strip()
+        if src:
+            latest[src] = row
+    out = []
+    for src, row in latest.items():
+        if row.get("action") != LEFT_AT_SOURCE:
+            continue
+        out.append({
+            "where": "at_source",
+            "source": src,
+            "name": Path(src).name,
+            "present": Path(src).is_file(),
+            "type": row.get("type"),
+            "reason": row.get("reason"),
+            "since": row.get("ts"),
+        })
+    return sorted(out, key=lambda r: r["source"])
+
+
+def _queue_source(path: Path) -> Optional[str]:
+    meta = path.with_name(path.name + ".meta.json")
+    if not meta.is_file():
+        meta = path.with_suffix(".meta.json")
+    try:
+        data = json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    src = data.get("source_path") or data.get("source")
+    return str(src) if src else None
+
+
+def _held_files(folder: Path) -> List[Path]:
+    """Every file under a holding folder, whatever its kind (an import can be
+    a picture or a sheet), minus a parked file's own note, hidden files and
+    office lock files."""
+    out: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(folder, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for name in sorted(filenames):
+            if name.startswith((".", "~$")) or name.lower().endswith(".meta.json"):
+                continue
+            out.append(Path(dirpath) / name)
+    return out
+
+
+def documents_with_no_project(workspace_root) -> List[Dict[str, Any]]:
+    """The "Documents with no project" pile's rows. Read only: nothing is
+    moved, copied or created, and no folder is made (there is no Unfiled
+    folder anywhere). The pile itself, its presses and its Undo are
+    cr1#1584's.
+
+    Rows, each with `where`:
+      at_source     an imported file that matched no project, left where it
+                    is (`source`, and `present` when it is still there)
+      old_home      a document in the old no-project folder; `home` is where
+                    one with no project lands now (`_hq/notes/`)
+      ingest_queue  an import an older run parked (`source` from its note)
+      set_aside     an import an older run set aside at the preview
+    Documents already in `_hq/notes/` are home and are not listed."""
+    root = Path(workspace_root)
+    rows: List[Dict[str, Any]] = list(_left_at_source(root))
+    home = _no_project_home()
+    for folder_rel, where in OLD_HOLDING:
+        folder = root / folder_rel
+        if not folder.is_dir():
+            continue
+        for path in _held_files(folder):
+            rel = _rel(path, root)
+            row: Dict[str, Any] = {"where": where, "path": rel, "name": path.name}
+            if where == "old_home":
+                row["home"] = f"{home}/{path.name}"
+            elif where == "ingest_queue":
+                row["source"] = _queue_source(path)
+            rows.append(row)
+    return rows
+
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Rebuild the document shelf.")

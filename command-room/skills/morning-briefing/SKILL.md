@@ -343,7 +343,7 @@ travels in it, only the settings.
 - Business context: `[WORKSPACE_ROOT]/_hq/BUSINESS_CONTEXT.md`
 - People: `[WORKSPACE_ROOT]/_hq/PEOPLE.md`
 - Team: `[WORKSPACE_ROOT]/_people/` (if exists)
-- Projects: `[WORKSPACE_ROOT]/[Project Name]/SESSION_NOTES_[NAME].md`
+- Projects: `[WORKSPACE_ROOT]/[Project Folder]/SESSION_NOTES_<folder name>.md`
 
 ## Step 0: Catch the upkeep up first (HEAL1 — on demand only, and silently)
 

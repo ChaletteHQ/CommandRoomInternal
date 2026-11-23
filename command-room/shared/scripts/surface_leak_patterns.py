@@ -464,10 +464,12 @@ SUBSTRATE_PATH_PATTERNS: list[tuple[str, str, str]] = [
     ("substrate_data_file_jsonl",
      r"\b[A-Za-z0-9_][A-Za-z0-9_.\-]*\.jsonl\b",
      "internal data file"),
-    # Every `_hq/…` path except the one deliberate carve-out,
-    # `_hq/meetings/`, where briefs save and the reader opens them.
+    # Every `_hq/…` path except the two deliberate carve-outs: `_hq/meetings/`,
+    # where briefs save and the reader opens them, and `_hq/notes/`, where a
+    # document with no project lands (cr1#1581; CONTRACT lists it beside
+    # meetings as a folder the owner may be told).
     ("substrate_path_hq",
-     r"\b_hq/(?!meetings/)[A-Za-z0-9_][A-Za-z0-9_.\-]*"
+     r"\b_hq/(?!meetings/|notes/)[A-Za-z0-9_][A-Za-z0-9_.\-]*"
      r"(?:/[A-Za-z0-9_.\-]+)*",
      "internal _hq path"),
     # THE CARVE-OUT, NARROWED TO WHAT IT WAS CARVED OUT FOR (SPEC FIXTRAIN
@@ -500,6 +502,14 @@ SUBSTRATE_PATH_PATTERNS: list[tuple[str, str, str]] = [
      r"\b_hq/meetings/[A-Za-z0-9_][A-Za-z0-9_.\-]*"
      r"(?:/[A-Za-z0-9_.\-]+)*",
      "internal _hq path"),
+    # cr1#1581 review round 1: the SAME carve-out for `_hq/notes/`, the one
+    # home of a document with no project. A link INTO it passes, the path in
+    # visible text refuses, exactly as for `_hq/meetings/`; the document
+    # scanner registers it plainly, so a body that spells it out refuses.
+    ("substrate_path_hq_notes",
+     r"\b_hq/notes/[A-Za-z0-9_][A-Za-z0-9_.\-]*"
+     r"(?:/[A-Za-z0-9_.\-]+)*",
+     "internal _hq path"),
 ]
 
 # The rows a CHAT surface reads against the link-blanked copy of the text —
@@ -508,7 +518,8 @@ SUBSTRATE_PATH_PATTERNS: list[tuple[str, str, str]] = [
 # purpose: the reader of a refusal should see one finding name for one kind
 # of path, not two. `chat_output_renderer` is the consumer; the document
 # scanner deliberately ignores this set (it has no link spans to blank).
-LINK_TARGET_EXEMPT_NAMES = frozenset({"substrate_path_hq_meetings"})
+LINK_TARGET_EXEMPT_NAMES = frozenset({"substrate_path_hq_meetings",
+                                      "substrate_path_hq_notes"})
 
 # name -> regex source, for a consumer that keeps the row in place in its
 # own ordered list rather than appending the family at the end.

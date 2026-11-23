@@ -167,6 +167,8 @@
         "thread_created",
         "thread_updated",
         "thread_repaired",
+        "project_folder_made",
+        "project_folder_taken_back",
         "weekly_audit_run",
         "bug_reported",
         "levelup_session",

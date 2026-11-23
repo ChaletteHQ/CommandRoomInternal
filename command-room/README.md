@@ -65,7 +65,7 @@ Your Workspace/
 ├── _archive/                  # Completed/paused work
 └── [Your Projects]/           # One folder per project
     ├── PROJECT_CONTEXT.md
-    ├── SESSION_NOTES_[Name].md
+    ├── SESSION_NOTES_<folder name>.md
     ├── ref/                   # Reference files
     └── meetings/              # Call prep briefs
 ```

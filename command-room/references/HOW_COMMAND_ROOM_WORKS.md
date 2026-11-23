@@ -530,7 +530,7 @@ command-room/
 │   │   └── RELATIONSHIPS.md
 │   └── PICKUP_RITUAL_command_room.md   # Session-pickup guide for next chat
 └── <per-project folders>/              # Auto-created when projects pass the threshold
-    ├── SESSION_NOTES_<project>.md
+    ├── SESSION_NOTES_<folder name>.md
     ├── deliverables/
     └── (more)
 ```

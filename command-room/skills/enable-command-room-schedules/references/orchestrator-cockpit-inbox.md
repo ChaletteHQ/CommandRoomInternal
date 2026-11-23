@@ -194,7 +194,7 @@ One dict per fetched thread — the connector's own values, never reformatted:
 - `score` — the hard-coded priority score below. The learned sender rules are applied INSIDE the call, after your score, exactly where they always ran; do not apply them yourself.
 - `suppressed: "counterparty_reply_in_sibling_thread"` — only when the sibling check below found the CEO's reply on another thread.
 - `financial: true` when the financial-signal override (below) applied; `age` — a plain-English age (`2 days old`).
-- `draft` — for an `email_reply` you drafted, the reply's lines, TEXT only (Phase 4c); `why` — one plain line on why it matters; `group` — optional, one of `urgent`, `this_week`, `fyi`, `skip`.
+- `draft` — for an `email_reply` you drafted, the reply's lines, TEXT only (Phase 4c); `why` — one plain line on why it matters, with no dashes; `needs` — `true` when the message asks the owner to do something (reply, decide, act), `false` when it needs nothing from them (the Hub lists it outside Needs you); say the same in the `why`; `group` — optional, one of `urgent`, `this_week`, `fyi`, `skip`.
 - `captures` — the trackable commitments this thread's inbound message carries (Phase 4b), each `{direction, title, kind, due | no_due, evidence, classification_confidence, below_bar, below_bar_reason}`; the call anchors each to the thread's own ids and timestamp.
 
 **Priority score (the hard-coded rules, applied by you, per thread):**

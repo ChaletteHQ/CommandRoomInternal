@@ -143,6 +143,7 @@ import event_refs
 import events_io
 import render_decision_log as _rdl
 import render_thread_live_state as _rtls
+import session_notes_file as _snf
 import substance_events
 from entities_io import entities_collection, unwrap_entities
 
@@ -644,10 +645,14 @@ def _decision_rows(bound: list[dict], floor_iso: str | None,
 
 
 def _find_session_notes(root: Path, thread: dict) -> list[Path]:
+    """The thread folder's notes files in reading order (cr1#1580): the live
+    file first (`SESSION_NOTES_<folder name>.md` when it exists, else the one
+    older spelling), then the rest of the family by name. The blocks are
+    taken in this order, so the ruled file leads the narrative."""
     folder = thread.get("folder_name")
     if not folder or not (root / folder).is_dir():
         return []
-    return sorted((root / folder).glob("SESSION_NOTES*.md"))
+    return _snf.reading_order(root / folder)
 
 
 def _session_notes_blocks(paths: list[Path]) -> list[dict]:

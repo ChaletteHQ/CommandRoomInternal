@@ -119,7 +119,7 @@ If `_hq/data/entities.json` doesn't exist:
 
 1. Scan `[WORKSPACE_ROOT]/` for top-level folders.
 2. Skip: `_hq`, `_archive`, `_people`, anything starting with `.` or `_`.
-3. For each folder, look for `SESSION_NOTES_*.md`. Use its mod time as the activity date.
+3. For each folder, look for `SESSION_NOTES*.md`. Use its mod time as the activity date.
 4. Render flat list (no org hierarchy available):
 
 ```

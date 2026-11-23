@@ -67,6 +67,19 @@ def _thread(workspace_root: Path, thread_id: str) -> dict:
     return next((t for t in threads if t.get("id") == thread_id), {})
 
 
+def _parent_owns_folder(workspace_root: Path, thread_id: str) -> bool:
+    """True when the thread records the same folder as its parent thread
+    (whatever its case): the brain in that folder is the parent's."""
+    thread = _thread(workspace_root, thread_id)
+    parent_id = thread.get("parent_thread_id")
+    folder = str(thread.get("folder_name") or "").strip().replace("\\", "/").strip("/").lower()
+    if not parent_id or not folder:
+        return False
+    parent = _thread(workspace_root, parent_id)
+    pf = str(parent.get("folder_name") or "").strip().replace("\\", "/").strip("/").lower()
+    return pf == folder
+
+
 def _org_associated_pids(ent: dict, org_id: str) -> set[str]:
     """Person ids affiliated with `org_id` via primary_org_id, affiliation_ids,
     or the deprecated org_id field (v3.13.0+ shapes, defensively)."""
@@ -115,6 +128,20 @@ def resolve_brain_path(workspace_root: str | Path, thread_id: str) -> tuple[Path
     if not (workspace_root / folder).is_dir():
         return None, "no_project_folder"
     return workspace_root / folder / "PROJECT_BRAIN.md", "ok"
+
+
+def resolve_brain_path_to_write(workspace_root: str | Path, thread_id: str) -> tuple[Path | None, str]:
+    """`resolve_brain_path` for a WRITER of the thread's brain. Adds one
+    status, `"parent_owns_folder"`: the thread records the same folder as its
+    parent thread (a Hub work stream's own first thread, cr1#1582), so the
+    brain in that folder is the parent's and this thread never writes it.
+    Every brain writer resolves through here (the live-state block below,
+    `render_brain_anchors.render_thread_anchors`); readers keep
+    `resolve_brain_path`."""
+    workspace_root = Path(workspace_root)
+    if _parent_owns_folder(workspace_root, thread_id):
+        return None, "parent_owns_folder"
+    return resolve_brain_path(workspace_root, thread_id)
 
 
 def default_brain_path(workspace_root: str | Path, thread_id: str) -> Path | None:
@@ -224,7 +251,10 @@ def render_live_state(workspace_root: str | Path, thread_id: str, *,
     if brain_path:
         path, reason = Path(brain_path), "ok"
     else:
-        path, reason = resolve_brain_path(workspace_root, thread_id)
+        # cr1#1582 review: a work stream's own first thread shares the
+        # stream's folder; the stream renders that folder's brain, and the
+        # thread under it never overwrites it (`parent_owns_folder`).
+        path, reason = resolve_brain_path_to_write(workspace_root, thread_id)
     if path is None:
         # `reason` distinguishes an empty folder_name from one naming a directory
         # that is not on disk — different repair cases, and the empty case has no

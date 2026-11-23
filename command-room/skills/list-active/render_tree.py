@@ -460,6 +460,30 @@ def _count_orgs(orgs: list[OrgNode]) -> int:
 SKIP_FOLDERS = {"_hq", "_archive", "_people", "_hq", ".claude"}
 
 
+def _notes_files(folder: Path) -> list[Path]:
+    """A project folder's session-notes files, any spelling (cr1#1580: a bare
+    file with no name part used to be missed here). Which files those are is
+    the one notes-name rule's, `session_notes_file.notes_family`."""
+    try:
+        shared = Path(__file__).resolve().parents[2] / "shared" / "scripts"
+        if str(shared) not in sys.path:
+            sys.path.insert(0, str(shared))
+        import session_notes_file
+
+        return session_notes_file.notes_family(folder)
+    except Exception:
+        pass
+    # Standalone posture (no shared scripts beside this file), as for the
+    # alias reader: the same test as `session_notes_file.is_notes_name`, so
+    # the roster still renders when the shared rule is absent.
+    try:
+        return sorted(p for p in folder.iterdir() if p.is_file()
+                      and p.name.upper().startswith("SESSION_NOTES")
+                      and p.name.lower().endswith(".md"))
+    except OSError:
+        return []
+
+
 def folder_fallback(workspace_root: Path) -> str:
     """Render a flat project list from folder structure when entities.json is missing."""
     projects: list[tuple[str, str | None]] = []
@@ -468,7 +492,7 @@ def folder_fallback(workspace_root: Path) -> str:
             continue
         if entry.name.startswith(".") or entry.name in SKIP_FOLDERS:
             continue
-        notes = list(entry.glob("SESSION_NOTES_*.md"))
+        notes = _notes_files(entry)
         if not notes:
             continue
         mod_ts = max(n.stat().st_mtime for n in notes)

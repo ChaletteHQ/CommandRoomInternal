@@ -62,7 +62,7 @@
 
 ## Workspace
 - Tracker: _hq/MASTER_TRACKER.md · Context: _hq/BUSINESS_CONTEXT.md · People: _hq/PEOPLE.md
-- Project notes: [Project Name]/SESSION_NOTES_{{USER_NAME}}.md
+- Project notes: [Project folder]/SESSION_NOTES_<folder name>.md
 - Email holds: structured sender-scope overrides on your accounts — ask to add or remove a held sender/domain any time. Never stored in this file.
 ```
 

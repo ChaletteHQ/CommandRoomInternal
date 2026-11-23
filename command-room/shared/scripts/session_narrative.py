@@ -80,6 +80,7 @@ if str(_HERE) not in sys.path:
 from entities_io import entities_collection  # noqa: E402
 from event_gate import append_event  # noqa: E402
 import source_ref_index  # noqa: E402
+import session_notes_file as snf  # noqa: E402  (cr1#1580: the one notes name)
 
 # The origin values EVENT_TYPES.md's Session chapter lane documents. A reader
 # tells ritual-written from sweep-written by this string alone — both in the
@@ -180,10 +181,19 @@ def mark_composed(
         # promote — a nightly job confirming its own output would defeat the
         # quarantine. Best-effort: a promote failure never voids the marker
         # append that already landed.
+        #
+        # Every live notes file in the folder, each sidecar into its own
+        # file (cr1#1580 review round 1): a sidecar written beside an older
+        # spelling before readers preferred the ruled name would otherwise be
+        # stranded, since the resolved file is now the ruled one.
         try:
             notes = resolve_notes_path(workspace_root, thread_id)
             if notes is not None:
-                promote_swept(notes)
+                for live in snf.live_notes(notes.parent):
+                    try:
+                        promote_swept(live)
+                    except Exception:
+                        pass
         except Exception:
             pass
     return receipts
@@ -246,20 +256,14 @@ def resolve_notes_path(workspace_root, thread_id: Optional[str]) -> Optional[Pat
     folder = Path(workspace_root) / folder_rel
     if not folder.is_dir():
         return None
-    candidates = []
-    for p in sorted(folder.glob("SESSION_NOTES*.md")):
-        name = p.name.upper()
-        if "_ARCHIVE" in name or name.endswith("_INDEX.MD") or "TEMPLATE" in name:
-            continue
-        # SESSQUAR1: the swept sidecar matches the SESSION_NOTES*.md glob but
-        # is never THE notes file — resolving it as one would let the sweep
-        # append inline to its own quarantine. Infix check (not endswith) so
-        # the SWEEPSTALE1 `.swept.rejected.md` preserve file is fenced too.
-        if ".SWEPT." in name:
-            continue
-        if p.is_file():
-            candidates.append(p)
-    return candidates[0] if candidates else None
+    # cr1#1580: the one notes-name rule decides which file this is. The
+    # folder's `SESSION_NOTES_<folder name>.md` wins; an older spelling is
+    # read when it is the only live one. An archive, an index, the template
+    # and SESSQUAR1's swept sidecar (`.swept.md`, SWEEPSTALE1's
+    # `.swept.rejected.md`) are never THE notes file: resolving the sidecar
+    # as one would let the sweep append inline to its own quarantine. A sync
+    # conflict copy is left to the sync sweep.
+    return snf.find_notes(folder)
 
 
 def _clean_line(text: str) -> str:
@@ -369,11 +373,10 @@ def _confirm_heading(block: str) -> str:
 _H2_DATE_RE = re.compile(r"^##[ \t]+(\d{4}-\d{2}-\d{2})")
 
 # SWEEPSTALE1 — directory fence for the workspace-wide sidecar walk, matching
-# cleanup_actions._iter_session_notes' posture exactly (dot-directories,
-# the `_archive/` root, any folder whose name says archive/backup): a sidecar
-# that was archived is history, not pending work.
-_SKIP_DIR_RE = re.compile(r"archive|backup", re.I)
-_ARCHIVE_ROOT = "_archive"
+# cleanup_actions._iter_session_notes' posture exactly
+# (`session_notes_file.in_live_folder`, cr1#1624: dot-directories and the
+# folders this product keeps as archives, backups or quarantine, by exact
+# name): a sidecar that was archived is history, not pending work.
 
 
 def pending_swept(workspace_root) -> List[Dict[str, Any]]:
@@ -389,8 +392,9 @@ def pending_swept(workspace_root) -> List[Dict[str, Any]]:
 
     Discovery runs the SAME fencing posture this module (resolve_notes_path)
     and cleanup_actions._iter_session_notes already apply: skip anything
-    under a dot-directory, the `_archive/` root, or an archive/backup-named
-    folder; skip archived/index/template-named files. A sidecar whose main
+    under a dot-directory or a folder this product keeps as an archive,
+    backup or quarantine (cr1#1624: by exact name, so a client's "Archive
+    Migration 2026" counts); skip archived/index/template-named files. A sidecar whose main
     notes file has since vanished is still counted — an orphaned quarantine
     is the WORST silent-accumulation case (promote's §0.4 fence can never
     reach it).
@@ -406,17 +410,18 @@ def pending_swept(workspace_root) -> List[Dict[str, Any]]:
     only when there is something to disclose)."""
     root = Path(workspace_root)
     out: List[Dict[str, Any]] = []
-    for p in sorted(root.rglob(f"SESSION_NOTES*{_SWEPT_SUFFIX}")):
+    for p in sorted(root.rglob(f"{snf.PREFIX}*{_SWEPT_SUFFIX}")):
         try:
             rel = p.relative_to(root)
         except ValueError:
             continue
-        parts = rel.parts[:-1]
-        if any(part.startswith(".") or part == _ARCHIVE_ROOT
-               or _SKIP_DIR_RE.search(part) for part in parts):
+        if not snf.in_live_folder(rel.parts[:-1]):
             continue
-        name = p.name.upper()
-        if "_ARCHIVE" in name or name.endswith("_INDEX.MD") or "TEMPLATE" in name:
+        # The fence is on the notes file this sidecar belongs to, by the one
+        # notes-name rule (cr1#1580 review round 1): an archive's, an index's
+        # or the template's sidecar is not pending; a sidecar beside an older
+        # spelling whose name merely contains such a word is.
+        if not snf.is_live_name(p.with_name(p.name[: -len(_SWEPT_SUFFIX)] + ".md")):
             continue
         if not p.is_file():
             continue

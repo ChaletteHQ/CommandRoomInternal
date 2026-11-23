@@ -45,8 +45,8 @@ What the function does, per file over threshold — the semantics this rule has 
 1. Keeps the `## Current Status` and `## Active Work Items` sections intact (these are the live state), along with every other non-entry section, exactly where they sit
 2. Keeps the 5 most recent session log entries
 3. Writes a `## Session History` summary section in the active file — one line per archived entry, `- [DATE]: [~8-word summary]`, derived deterministically from the entry's own first content line. This stays in the active file permanently so the CEO can see at a glance what happened on any date and ask for detail if needed. (You may rewrite those lines afterwards to read better; execution never waits on it.)
-4. Moves older full entries into `SESSION_NOTES_[NAME]_archive_[YYYY].md` in the same project folder — appended, never overwritten
-5. Adds the reference line at the bottom of the active file: `> Full entries archived to SESSION_NOTES_[NAME]_archive_2026.md`
+4. Moves older full entries into `SESSION_NOTES_<folder name>_archive_<YYYY>.md` in the same project folder (named after the notes file it came from, whatever its spelling) — appended, never overwritten
+5. Adds the reference line at the bottom of the active file: `> Full entries archived to SESSION_NOTES_<folder name>_archive_2026.md`
 6. Returns one record per file it considered. Log the `rolled_over` ones in session: "Rolled over session notes for [Project] — [X] older entries archived," and fold every record into `actions_taken[]`.
 
 **When it refuses, that is the answer.** Before writing anything the function re-derives that every original line survives into kept-or-archived output; if a line would be lost, or the file's structure is one it will not guess at (entries nested under H3, an undated section sitting between dated ones, an out-of-order append), it returns an **aborted** record naming the reason, and leaves the file **byte-identical**. Do not hand-reshape an aborted file to finish the job — a partial reshape of the CEO's memory is worse than no reshape.
@@ -282,7 +282,7 @@ tracker_backup_count: 5    # default: 3
 
 **Action — `cleanup_actions.rollover_session_notes` writes this index itself, as part of the same call.** There is no separate step to run and nothing to hand-write; the rule below documents what that call produces.
 
-1. `SESSION_NOTES_[NAME]_index.md` is created in the project folder if it doesn't exist.
+1. `SESSION_NOTES_<folder name>_index.md` is created in the project folder if it doesn't exist.
 2. One row is appended per archived entry:
    Format: `| [Date] | [Topics/Keywords — ~8 words] | [Key People mentioned] | [Archive File] |`
 3. The index is append-only. Existing rows are never rewritten.
@@ -295,8 +295,8 @@ tracker_backup_count: 5    # default: 3
 # Session Notes Index — [Project Name]
 | Date | Topics | People | Archive File |
 |------|--------|--------|-------------|
-| 2026-01-15 | Vendor selection, budget approval | Skyler, Skyler | SESSION_NOTES_Pat_archive_2026.md |
-| 2026-01-22 | Timeline revised, scope reduced | Bowie | SESSION_NOTES_Pat_archive_2026.md |
+| 2026-01-15 | Vendor selection, budget approval | Skyler, Skyler | SESSION_NOTES_<folder name>_archive_2026.md |
+| 2026-01-22 | Timeline revised, scope reduced | Bowie | SESSION_NOTES_<folder name>_archive_2026.md |
 ```
 
 **Cost:** ~1KB per year per project. Negligible.
@@ -316,7 +316,7 @@ archive_index_enabled: true    # default: true (set false to disable)
 
 **Action (during Rule 1 rollover, after index generation):**
 1. Check if embedding generation is available (Python environment with sentence-transformers, or an embedding API key in CUSTOM_CONFIG.md).
-2. **If available:** For each archived entry, generate an embedding vector from the entry's content. Store as a JSON sidecar: `SESSION_NOTES_[NAME]_embeddings.json` alongside the archive file. Each entry maps a session date to its embedding vector + a 1-line summary.
+2. **If available:** For each archived entry, generate an embedding vector from the entry's content. Store as a JSON sidecar: `SESSION_NOTES_<folder name>_embeddings.json` alongside the archive file. Each entry maps a session date to its embedding vector + a 1-line summary.
 3. **If not available:** Skip silently. Rule 12's keyword index is the fallback. Log: "Semantic search unavailable — using keyword index only."
 4. At query time: if embeddings exist, embed the user's question, cosine-similarity match against the index, read only the top-3 matching archive entries. If no embeddings, fall back to Rule 12's keyword index.
 
@@ -328,7 +328,7 @@ archive_index_enabled: true    # default: true (set false to disable)
     {
       "date": "2026-01-15",
       "summary": "Vendor selection and budget approval for Phase 2",
-      "archive_file": "SESSION_NOTES_Pat_archive_2026.md",
+      "archive_file": "SESSION_NOTES_<folder name>_archive_2026.md",
       "embedding": [0.123, -0.456, ...]
     }
   ]
@@ -448,8 +448,8 @@ All thresholds can be overridden (override list at the bottom of this section). 
 
 **Action:**
 1. For each flagged project folder, call `cleanup_actions.backfill_session_notes(workspace_root, folder_name)`.
-2. The helper scaffolds `SESSION_NOTES_[NAME].md` from `references/session-notes-template.md`: a minimal header, the provenance line *"Backfilled by cleanup on [date] — no prior session notes existed,"* and empty `## Current Status` / `## Active Work Items` sections.
-3. **Never overwrite.** The helper refuses (returns None, writes nothing) if ANY `SESSION_NOTES*.md` — live, archive, or index — already exists in the folder. This rule only *creates* missing files; ongoing maintenance of existing notes is Rule 1. On the 5 live client workspaces this is the guarantee that hand-written notes are never clobbered.
+2. The helper scaffolds `SESSION_NOTES_<folder name>.md` (the folder's own name exactly as spelled; for a nested folder, its last segment) from `references/session-notes-template.md`: a minimal header, the provenance line *"Backfilled by cleanup on [date] — no prior session notes existed,"* and empty `## Current Status` / `## Active Work Items` sections.
+3. **Never overwrite.** The helper refuses (returns None, writes nothing) if ANY `SESSION_NOTES*.md` — live, archive, or index, any spelling — already exists in the folder. This rule only *creates* missing files; ongoing maintenance of existing notes is Rule 1. On the 5 live client workspaces this is the guarantee that hand-written notes are never clobbered.
 
 **Why scaffold-not-skip:** mirrors Rule 15 — a backfilled notes file converts the project to the same model as every other, so the next "end session" rolls into it normally.
 

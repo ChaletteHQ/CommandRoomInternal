@@ -725,7 +725,7 @@ Don't put the link inline in the recap body. It MUST be at the bottom or it gets
 
 ### 5.D — Demo closing line (first-call use only)
 
-If invoked during the first-call demo arc (heuristic: `_hq/data/events.jsonl` is <48h old by mtime, AND `<workspace>/SESSION_NOTES_*` files have <5 entries each), end with:
+If invoked during the first-call demo arc (heuristic: `_hq/data/events.jsonl` is <48h old by mtime, AND `<workspace>/SESSION_NOTES*.md` files have <5 entries each), end with:
 
 > *"Here's everything Command Room saw from your week. Going forward, this is automatic — Past Meetings catches every call as it happens, Morning Brief surfaces what needs attention before you start your day."*
 

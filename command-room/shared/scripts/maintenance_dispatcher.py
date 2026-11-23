@@ -3064,9 +3064,9 @@ def maintenance_staleness(workspace_root,
     last = _newest_maintenance_receipt_dt(workspace_root)
     weekdays = _weekdays_between(last, now)
     # cr1#666: how long ago the newest receipt landed, in hours (two
-    # decimals, never negative), None with no receipt. The Hub's Start runs
-    # Maintenance when this passes six; the slot rule below is the one the
-    # typed surfaces use and is unchanged.
+    # decimals, never negative), None with no receipt. The Hub's Go runs
+    # Maintenance on every press (cr1#682); the slot rule below is the one
+    # the typed surfaces use and is unchanged.
     hours_behind = (round(max(0.0, (now - last).total_seconds()) / 3600.0, 2)
                     if last is not None else None)
     if slot is None:
@@ -5057,7 +5057,7 @@ FIRE_RUN_VARS = "CR_FIRED_VIA=" + FIRE_RUN_MODE
 
 
 #: cr1#977 (owner ruling 2026-11-19, fork C): the words M0 uses for a press.
-#: A press of the task's Run button or the Hub's Start reaches the session as
+#: A press of the task's Run button or the Hub's Go reaches the session as
 #: the same prompt with no message (cr1#651 took the only text away: a fire
 #: that carries text starts without the device tools), so no run can tell a
 #: press from the scheduler's fire. The label is not claimed: a run with no
@@ -5067,7 +5067,7 @@ FIRE_RUN_VARS = "CR_FIRED_VIA=" + FIRE_RUN_MODE
 #: press then runs; inside the window it stands down behind the served slot,
 #: and behind a fire still in flight, until the in-flight ruling on cr1#1464.
 PRESS_UNTOLD = (
-    "A press of this task's Run button or the Hub's Start sends no message, "
+    "A press of this task's Run button or the Hub's Go sends no message, "
     "so this run cannot tell it from the scheduler's fire and never guesses "
     "one: it is `scheduled`, this task's own fire, and the receipt's "
     "`fired_at_slot` and `slot_delta_minutes` (measured when the receipt "
@@ -5104,7 +5104,7 @@ def _baked_branch_text(pair: str) -> str:
     cr1#977: the run mode is decided first (M0) and rides every line - in
     front of python3, in M1's args and on M3's receipt - instead of a fixed
     `scheduled`. A run with a person's own message in it is `manual`; a
-    press of the Run button or the Hub's Start sends none and is this task's
+    press of the Run button or the Hub's Go sends none and is this task's
     own fire (`PRESS_UNTOLD`, owner ruling 2026-11-19). A manual run lands no
     start marker, so its scorer reads the plan's now.
     """
@@ -5453,7 +5453,7 @@ def catch_up_plan(workspace_root, surface,
     A PERSON'S PRESS OF THE REGISTERED TASK (cr1#977). The registered task's
     merged branch names its run mode in the args: `fired_via` `manual` when a
     person's own message is in the run (a press of the Run button or the
-    Hub's Start sends none and records `scheduled`, `PRESS_UNTOLD`). That
+    Hub's Go sends none and records `scheduled`, `PRESS_UNTOLD`). That
     fire gets the same one-verdict plan under
     the manual rules: no gap guard and no served gate (a person who asks gets
     a fire, as on the typed run), no fire-start marker (FIREGAP2 ruling 2),

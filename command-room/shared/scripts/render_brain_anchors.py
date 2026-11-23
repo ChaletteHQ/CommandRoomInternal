@@ -586,7 +586,10 @@ def render_thread_anchors(
                                     "file (SPEC_READER1 §5b.3)"}
         return result
 
-    brain_path, reason = _rtls.resolve_brain_path(root, thread_id)
+    # A writer resolves through the write side: a thread sharing its parent's
+    # folder (a Hub work stream's own first thread) never writes the parent's
+    # brain (`parent_owns_folder`, cr1#1582 review round 2).
+    brain_path, reason = _rtls.resolve_brain_path_to_write(root, thread_id)
     if reason != "ok":
         result["gate"] = {"state": state, "rendered": False, "reason": reason}
         return result

@@ -370,6 +370,14 @@ WORKSPACE_MIGRATIONS = [
     apply_once: true                                           // a deliberate deletion is respected, never re-added
   },
   {
+    id: "claude_md_notes_line_v1",                             // cr1#1580 (owner ruling 1 of cr1#1579: one session-notes name; coordinator decision in review round 1). Read the id from `release_actions.claude_md_notes_line_v1.MIGRATION_ID`
+    target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
+    marker: "SESSION_NOTES_<folder name>.md",                  // the ruled "Project notes" line (`release_actions.claude_md_notes_line_v1.RULED_LINE`) is the idempotency check
+    type: "silent_rewrite",                                    // no calibration question; ONE line's text rewritten, APPLIED BY THE MODULE through `plan run_writer`, never by a hand edit
+    blocking: false,
+    apply_once: true                                           // an owner who puts the old line back is respected, never rewritten again
+  },
+  {
     id: "claude_md_diet_v1",                                   // SPEC STYLE1 step 3b (D9 ruling 2026-08-25 — the hot-cache diet)
     target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
     marker: "IMPORTANT: Every email",                          // the compressed-form sentinel — present means the diet already applied (fresh installs get it from the template)
@@ -1093,7 +1101,7 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 
 ### Migration: `set_up_whats_new_v1` (cr1#1235 — the connector walk and the confirm step, once, on an existing seat)
 
-**Why this migration exists:** an existing seat never re-runs onboarding (`restart onboarding` is refused on a seat with data). Two onboarding steps that came later never reached it: step 1, what each connector and mail account is for, kept as its role (a source marked personal is never read, cr1#1163 part 1), and step 5, the confirm cards (cr1#1163 part 2). Without them the personal wall, off-limits senders, the two words, draft posture and the morning time stay unset. Onboarding is not redone: the cards are built from what this workspace already holds, never from a fresh pull.
+**Why this migration exists:** an existing seat never re-runs onboarding (`restart onboarding` is refused on a seat with data). Two onboarding steps that came later never reached it: step 1, what each connector and mail account is for, kept as its role (a source marked personal is never read, cr1#1163 part 1), and step 5, the confirm cards (cr1#1163 part 2). Without them the personal wall, the two words, draft posture and the morning time stay unset. Onboarding is not redone: the cards are built from what this workspace already holds, never from a fresh pull.
 
 **Trigger gate (apply-once):** pending ONLY when the Phase 1 adjudication gate reports this id `unadjudicated` AND the plan (through the read door: `plan run_helper` with `{"name": "whats_new_setup:plan_whats_new", "args": {"workspace_root": "<WS>"}}`) answers `pending: true`. A plan with nothing to ask is not offered and nothing is logged.
 
@@ -1110,7 +1118,7 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 1. **Part 1, the walk** (skip it when the plan has no `connectors` and no `accounts`). Ask about each one, one at a time, in plain words, the way onboarding's step 1 does (`command-room-onboarding` 0b-bis.ii): what the owner uses it for, business or personal or both. Turn each answer into a role in the account role words: `personal`, `mixed`, `business-primary`, `business-secondary` (or `shared-support` / `billing` / `cold-outreach` when that is what it is). No connector is read here; the questions are the owner's. Then save once: `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"accounts": {"<address>": "<role>"}, "connectors": {"<category>": "<role>"}, "workspace_root": "<WS>"}, "name": "whats_new_setup:apply_walk"}'`. It sets only what has no role yet; changing a role that is already set is one sentence to workspace-manager. A refusal (`ok: false`) saved nothing: say its `line` and ask that one again. Otherwise say each `applied` line, and name each `failed` one plainly. Say in one line what will and will not be read ("Your personal mail stays out."). A source set `personal` is never read afterwards.
 2. **Part 2, the cards** (skip it when the plan has no `cards`). Follow onboarding's step 5 (`command-room-onboarding` 2a.i-ter), for the plan's `cards` only:
    - Propose each `proposed` card from what this workspace already holds: the people and companies on file, `_hq/BUSINESS_CONTEXT.md`, the open pieces of work, the events already logged, and the card's own `current` and `evidence`. Each card shows its evidence and its `sets` line verbatim. No connector is read for this, so a source marked personal in part 1 is never touched. When the record is too thin to propose one, ask it as a plain question.
-   - Then ask the `asked` cards, one at a time.
+   - Then ask the `asked` cards, one at a time. Never ask who is off limits (cr1#1587): it is not a card, as in step 5.
    - Save once, with every confirmed or edited answer, in step 5's answer shapes: `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"answers": {"<id>": "<answer>"}, "by": "owner", "workspace_root": "<WS>"}, "name": "onboarding_confirm:apply_confirm"}'`. Say its lines the way step 5 does; a refusal saved nothing. When `avoid` was saved, re-render the persona block as step 5 says.
 3. **Log it once**, after the part or parts that ran: `workspace_migration_applied` with `migration_id: "set_up_whats_new_v1"` and `"target_file": "_hq/data/entities.json"`. A setup the owner stops half way is not logged, so the next update offers what is still unset.
 
@@ -1217,6 +1225,20 @@ What the ONE call does, and which the prose must not restate loosely:
 **Surface ONE plain-English line in the update summary (no question, no confirm), only when `ran` is true:**
 
 > *"New: a document about your work is always a Word, PDF, spreadsheet or deck file in your Command Room folder, never a Markdown text file."*
+
+### Migration: `claude_md_notes_line_v1` (cr1#1580, owner ruling 1 of cr1#1579: a project's session notes are `SESSION_NOTES_<folder name>.md`; silent one-line rewrite through the write door)
+
+**Trigger gate (apply-once):** the module's own `plan` answers `pending` only when the workspace CLAUDE.md carries exactly one `- Project notes:` line naming a session-notes file other than the ruled one (onboarding wrote the owner's first name into that file name from the old template) AND the ledger carries no applied or skipped row for this id. An owner who puts the old line back is respected.
+
+**Approach (silent, no calibration question): the module does the edit, through the WRITE door,** under the customer's writer id, never as a hand edit in this chat. Render with `workspace_access.py plan run_writer --json '…'` and paste what it prints:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"detector_context": {"from_version": "<from_version>", "to_version": "<to_version>"}, "events_jsonl_path": "<WS>/_hq/data/events.jsonl", "workspace_root": "<WS>"}, "name": "release_actions.claude_md_notes_line_v1:claude_md_notes_line_v1"}'
+```
+
+It replaces that one line's text with the module's `RULED_LINE`, byte-identical to the template's (`- Project notes: [Project folder]/SESSION_NOTES_<folder name>.md`), keeps the line's own ending and every other byte of the file, re-reads the file, and logs one `workspace_migration_applied` row with `migration_id: "claude_md_notes_line_v1"`. A `ran: false` answer (`already_present`, `no_notes_line`, `several_notes_lines`, `adjudicated`) means nothing was written and nothing is said. Do not edit CLAUDE.md by hand beside it and do not compose the row yourself.
+
+**Say nothing in the update summary:** the owner's notes files are not renamed or moved; the line only stops naming the old spelling.
 
 ### Migration: `discuss_list_retired_v1` (cr1#552, the owner's ruling 2026-11-06, option A1: the retired discuss-later list is emptied on update, each open item becoming a note on its person or project, or a My Plate task)
 

@@ -62,7 +62,7 @@ Per M's Apr 30 standing rule: *"no technical language post widget."* After the w
 
 - Internal IDs: `person_NNN`, `org_NNN`, `project_NNN`, `event_NNN` — and the name substituted for a resolved ID MUST be the record's `canonical_name`, never a transcript/ASR/email-header spelling (F-50 P2b rendered "Myra Samples" for a correctly-resolved Mira Sample; full rule + the unresolved-name carve-outs in `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names)
 - Internal data files: `events.jsonl`, `entities.json`, `aliases.json`, `staging_emissions.jsonl`, `known-newsletters.txt`, `events.schema.json`
-- Internal `_hq/` paths: `_hq/staging/`, `_hq/data/`, `_hq/views/`, `_hq/deliverables/`, `_hq/tmp/` (note: `_hq/meetings/` is allowed because it's a user-facing file location for clickable artifacts)
+- Internal `_hq/` paths: `_hq/staging/`, `_hq/data/`, `_hq/views/`, `_hq/deliverables/`, `_hq/tmp/` (note: `_hq/meetings/` is allowed because it's a user-facing file location for clickable artifacts, and so is `_hq/notes/`, where a document with no project lands; the old no-project folder in this list is one nothing saves to any more, cr1#1581)
 - Internal event-type names in narration: `chat_dismissal event written`, `pack_run complete`, `commitment_resolved logged`, `commitment_updated logged` (v2.14.6+), `commitment_review_proposed logged` (v2.14.6+), `outreach_sent appended`, `pattern_break_detected × N`, etc.
 - Plugin-version protocol references: `per v2.12.0+ protocol`, `v2.10.9 spec`, `post-widget chat-links section per v...`
 - Schema field names: `last_interaction proposed:`, `primary_thread_id`, `classification_confidence`, `source_event_seq`
@@ -256,7 +256,7 @@ Ship a working v1 fast, iterate. Plain English. Translate plain instructions to 
 
 ## Rule 18 — Session close writes to workspace
 
-End of every meaningful session: append to project `SESSION_NOTES_<PROJECT>.md` and write a `HANDOFF_*.md` doc to the project's folder. Do not wait to be asked.
+End of every meaningful session: append to the project's `SESSION_NOTES_<folder name>.md` (the file `session_notes_file:notes_file` names, `shared/WORKSPACE_API.md` § Session notes file) and write a `HANDOFF_*.md` doc to the project's folder. Do not wait to be asked.
 
 ## Rule 19 — Data-shape consistency per item type (v2.14.1+)
 
@@ -443,7 +443,7 @@ The failure mode this rule closes: pre-v3.7.0, six skills wrote polished reports
 - Deliverable directories that MUST NOT contain `.md` files in their write paths: `deliverables/`, `audit-reports/`, `operator-reports/`, `dormant/`, `one-pagers/`, `memos/`, `board-packs/`, `email_drafts/`, `speeches/`, `summaries/`.
 - Filename prefixes that mark a deliverable regardless of directory: `FollowUp_*`, `OnePager_*`, `Memo_*`, `StressTest_*`, `Call_Prep_*`, `Past_Meeting_*`, `BoardPack_*`, `ContractReview_*`, `DecisionMemo_*`, `DORMANT_SCAN_*` — these MUST be `.docx`.
 - Email drafts in particular: do NOT save a file at all. Push to Gmail Drafts via Zapier (already wired since v3.2.2). The pre-v3.7.0 `[Project]/deliverables/email_drafts/*.md` pattern is vestigial and was retired in this release.
-- Allowed `.md` paths (context/memory, not deliverables): `_hq/briefings/*.md`, `_hq/intel/*.md`, `_hq/insights/*.md`, `_hq/views/*.md`, `_hq/voice/*.md`, `_hq/meetings/*_transcript.md`, project root files (`PROJECT_CONTEXT.md`, `PROJECT_BRAIN.md`, `SESSION_NOTES_*.md`, `MASTER_TRACKER.md`, `PEOPLE.md`, `DECISION_LOG.md`, etc.).
+- Allowed `.md` paths (context/memory, not deliverables): `_hq/briefings/*.md`, `_hq/intel/*.md`, `_hq/insights/*.md`, `_hq/views/*.md`, `_hq/voice/*.md`, `_hq/meetings/*_transcript.md`, project root files (`PROJECT_CONTEXT.md`, `PROJECT_BRAIN.md`, `SESSION_NOTES*.md`, `MASTER_TRACKER.md`, `PEOPLE.md`, `DECISION_LOG.md`, etc.).
 
 **Test guard:** `tests/run_no_md_deliverables_test.py` scans `skills/`, `shared/`, `references/` for forbidden directory and filename patterns. Non-empty result outside the test file itself, the staging repo's `CHANGELOG.md`, `MD_DELIVERABLE_POLICY.md`, and this `CONTRACT.md` is a release blocker. The chalette plugin's `ship-cr-plugin` runs this test as part of the pre-push gate.
 

@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.7.0 (2026-11-22)
+
+The Hub opens in the Evening look and reads more calmly. Today names only live work, with one short line for each change you made; the week grid runs into the evening, so late meetings show; messages that need nothing from you leave Needs you; one line at the top says whether everything is OK; and a new Tidy section clears the workspace's loose ends in one press, with Undo. A project you make gets its folder at once. After updating, say "update my hub".
+
 ## v6.6.0 (2026-11-22)
 
 Apply is faster and comes sooner. A press you save on the Hub reaches your records about a minute later, not at the next hourly run; a confirmed send still waits for the hourly Apply or Go, so you keep time to take it back. Apply writes its closes in one go and stops at once when nothing waits. Hub prep and the Hub inbox each run in one step, and every import checks your off-limits list before writing about anyone. After updating, say "update my hub" and allow anything new it asks for once.
@@ -16,7 +20,7 @@ The Hub has a new layout and does more from the page. Six tabs: Today, Inbox, We
 
 ## v6.3.1 (2026-11-20)
 
-Fixes to closing and to Maintenance. A won deal closes an item only when the deal is with the person the item is about, and a sent file closes an item only when the file is that item. A reopened item is asked about once, not again with every new clue. An out-of-date Maintenance task is now noticed and brought up to date, your settings file is never overwritten when it cannot be read, and the health check says why a step was left unfinished instead of asking you to run it again. When a scheduled run cannot read your past chats, the Hub says so. Items from the old discuss-later list become tasks only when they read as tasks; the rest are kept as notes. Where an earlier update already turned such items into tasks, a one-time repair can be run by hand to turn them back into notes.
+Fixes to closing and to Maintenance. A won deal closes an item only when the deal is with the person the item is about, and a sent file closes an item only when the file is that item. A reopened item is asked about once, not again with every new clue. An out-of-date Maintenance task is now noticed and brought up to date, your settings file is never overwritten when it cannot be read, and the health check says why a step was left unfinished instead of asking you to run it again. Items from the old discuss-later list become tasks only when they read as tasks; the rest are kept as notes. Where an earlier update already turned such items into tasks, a one-time repair can be run by hand to turn them back into notes.
 
 ## v6.3.0 (2026-11-19)
 

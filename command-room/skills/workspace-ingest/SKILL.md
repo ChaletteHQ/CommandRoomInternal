@@ -32,7 +32,7 @@ You are the **one-time ingester + file migrator**. You write:
 - `_hq/data/aliases.json` (org and project rows from the parsed nickname / @handle / abbreviation mappings; a person's spellings go through the writer, see **Person spellings** in Phase 4)
 
 **Migrated files (copied from source into correctly-shaped folders):**
-- `[Project]/SESSION_NOTES_[Project].md` (migrated from v1.x `_hq/sessions/` or custom session notes)
+- `[Project]/SESSION_NOTES_<folder name>.md` (migrated from v1.x `_hq/sessions/` or custom session notes)
 - `[Project]/meetings/*.md` (migrated meeting transcripts, Granola exports, call notes)
 - `[Project]/deliverables/*` (migrated PDFs, .docx, .xlsx, .pptx, markdown deliverables)
 - `[Project]/PROJECT_CONTEXT.md` (seeded from parsed PROJECT_BRAIN.md content; this is the v2.7.1 replacement for per-project skills)
@@ -41,7 +41,7 @@ You are the **one-time ingester + file migrator**. You write:
 
 **Report + audit trail:**
 - `_hq/INGEST_REPORT.md` (one-shot report of data + file migration — counts, file-by-file disposition, warnings, source shape, rollback path)
-- `_hq/_ingest-queue/` (low-confidence files the CEO must classify manually before they move to final homes)
+- Nothing for a file that matches no project: it stays where it is at the source, and the run log records it as `left_at_source` (cr1#1581). Older runs parked such files in `_hq/_ingest-queue/`; nothing writes there now.
 - `_hq/_ingest-undo.jsonl` (append-only log of every write this run makes — a `run_start` header line per run, then one line per file copy / merge / data write, with source path, destination path, sha256, timestamp, and whether the destination was CREATED by this run or already existed)
 - `_archive/ingest_source_YYYY-MM-DD/` (full backup of the source folder — reference copy; the source is never mutated, so this is belt-and-suspenders, not the rollback point)
 - `_archive/pre-ingest-data_[ts]/` (Phase 3.9 snapshot of the target workspace's `_hq/data/` taken BEFORE any data write — THIS is the rollback point for substrate; see Phase 3.9)
@@ -194,7 +194,7 @@ Before any JSON is written, verify the parser didn't silently drop entries. This
 **Off limits and personal, before any write about a person (cr1#1577).** The owner keeps some people off limits and some on the personal lane; nothing about them enters the book through an import, and the reply names none of them. After Phase 3.5 has checked the parse against the source, and before Phase 3.9 or any write, build `{"items": {"orgs": [...], "people": [...], "threads": [...], "events": [...], "aliases": [...]}}`, the parser's five collections whole, as they would be written; land it as ONE text with `plan write` at rel `_hq/.system/import/screen_items.json` (the read door caps what an argument may carry, and an import is bigger, so the items travel by that rel), render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>", "items_rel": "_hq/.system/import/screen_items.json", "same_ids": false}}'`, paste what it prints and run that, then take the landed file away with `plan remove` (`{"rel": "_hq/.system/import/screen_items.json"}`) whatever the answer: it holds the items before the screen. Set `"same_ids": true` when the source is an older workspace of this same book (Parsers A and B): its ids are the book's, so an id alone walls. On a seat whose files are local the same call runs in this shell, `screen_import("<WORKSPACE>", {"orgs": orgs, "people": people, "threads": threads, "events": events, "aliases": aliases}, same_ids=<as above>)`.
 
 - **`result.stop` true, or `ok` false:** the wall could not be read, or the items could not be checked. Say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", write nothing (no snapshot, no record, no event, no spelling, no report), and end the run.
-- **Otherwise write only what comes back:** the five collections ARE `result.items` from here to the end of the run. Phase 4's records, events, alias rows and person spellings, the connector inference, and Phase 9's counts come from those and nothing else. Never write an item the screen left out, never put one back by hand, and never name a left-out person anywhere: not in a report line, a warning, a queue note or the run summary.
+- **Otherwise write only what comes back:** the five collections ARE `result.items` from here to the end of the run. Phase 4's records, events, alias rows and person spellings, the connector inference, and Phase 9's counts come from those and nothing else. Never write an item the screen left out, never put one back by hand, and never name a left-out person anywhere: not in a report line, a warning, a left-at-source row or the run summary.
 - **The dedupe never lands on a walled person.** Before Phase 3.9, run Phase 4's AUGMENT match (email, then name, then alias) for each kept person. A match on an id in `result.walled_ids` means the screen and the dedupe disagree: write nothing, say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", and end the run. Those ids are never said or written; the append path and the record wall refuse an import row or spelling that links one in any case.
 - **Keep `result.left_out`.** Every later screen in this run passes it as `"carried"`, so the run ends with one line. When the run's last screen's `result.line` is not empty, say it once in the run summary and put it under Warnings in the report, word for word. It names no one; add no name, count or hint to it.
 
@@ -278,7 +278,7 @@ Produce an in-memory `files[]` array. No writes yet.
 For each discovered file, assign:
 
 **File type** (pattern match on name, extension, folder, content):
-- `session_notes` — name matches `SESSION_NOTES_*`, `session-notes-*`, `notes-YYYY-MM-DD*`, or contains dated-entry headings
+- `session_notes` — name matches `SESSION_NOTES*`, `session-notes-*`, `notes-YYYY-MM-DD*`, or contains dated-entry headings
 - `meeting_transcript` — name matches `*Granola*`, `*transcript*`, `*call-notes*`, or folder is `meetings/`, `granola/`, `calls/`
 - `project_context` — name matches `PROJECT_CONTEXT*`, `PROJECT_BRAIN*`, `CONTEXT.md`, `README-project*`
 - `deliverable` — extension in {.docx, .xlsx, .pptx, .pdf, .key, .numbers, .pages} AND folder hints at "deliverables", "outputs", "final", "shared"
@@ -291,14 +291,14 @@ For each discovered file, assign:
 **Project assignment** (which project folder does this file belong to):
 - **High confidence (≥0.9):** file is already inside a folder whose name matches a canonical thread's `folder_name`. Copy destination: obvious.
 - **Medium confidence (0.7–0.9):** file contents mention a thread's canonical_name or a key alias ≥3 times, AND the filename or folder name has weak association. Needs CEO confirmation in preview.
-- **Low confidence (0.4–0.7):** single mention or weak signal. Flag for `_ingest-queue/`.
-- **Unknown (<0.4):** no signal. Route to `_ingest-queue/unclassified/`.
+- **Low confidence (0.4–0.7):** single mention or weak signal. Leave it at its source (`action: leave`), unless the CEO names its project in the preview.
+- **Unknown (<0.4):** no signal. Leave it at its source (`action: leave`).
 
 **Destination path** (computed based on type + project assignment):
 
 | type | destination pattern |
 |---|---|
-| session_notes | `[Project]/SESSION_NOTES_[Project].md` (if one exists, append with dated header; if multiple historical files, concatenate chronologically) |
+| session_notes | `[Project]/SESSION_NOTES_<folder name>.md`, or the older spelling that folder already holds: the `path` `session_notes_file:notes_file` returns (if one exists, append with dated header; if multiple historical files, concatenate chronologically) |
 | meeting_transcript | `[Project]/meetings/[original_filename]` |
 | project_context | `[Project]/PROJECT_CONTEXT.md` (if multiple, pick highest-mtime and stash others as `PROJECT_CONTEXT.archive-[ts].md`) |
 | deliverable | `[Project]/deliverables/[original_filename]` |
@@ -307,21 +307,21 @@ For each discovered file, assign:
 | decision_doc | `[Project]/deliverables/memos/[original_filename]` if project known, else `_hq/memos/` |
 | voice_sample | `_archive/voice-samples-historical/[original_filename]` (deprecated; preserved for reference only) |
 | loose_doc + known project | `[Project]/_misc/[original_filename]` |
-| loose_doc + unknown project | `_hq/_ingest-queue/unclassified/[original_filename]` |
+| loose_doc + unknown project | none: it stays at its source (`action: leave`) |
 
-Produce an in-memory `migration_plan[]` with one row per file: `{source_path, dest_path, type, confidence, project_id, reason, action}` where `action ∈ {copy, queue, skip, conflict}`.
+Produce an in-memory `migration_plan[]` with one row per file: `{source_path, dest_path, type, confidence, project_id, reason, action}` where `action ∈ {copy, leave, skip, conflict}` (`leave`: a file that matches no project stays at its source, cr1#1581).
 
 ### Phase 6.5: Registration gate (v3.16+)
 
-**Off limits and personal, before any write about a person (cr1#1577).** File and folder names name people too. Before this gate asks about new project folders, before the Phase 7 preview is shown, and before any `_hq/_unrouted/` folder is named, build `{"items": {"notes": [<each implied project name and each file name the buckets, the preview, the queue or the report would show>]}}`, land it as ONE text with `plan write` at rel `_hq/.system/import/screen_items.json` (the read door caps what an argument may carry, and an import is bigger, so the items travel by that rel), render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>", "items_rel": "_hq/.system/import/screen_items.json", "carried": 0}}'`, paste what it prints and run that, then take the landed file away with `plan remove` (`{"rel": "_hq/.system/import/screen_items.json"}`) whatever the answer: it holds the items before the screen, with `"carried"` set to the last screen's `result.left_out`. Show and file only what comes back. A file whose name was left out, or whose implied project was, is held out of the whole migration: it stays at its source and is not copied, queued or merged, nothing lists it, and no `_hq/_unrouted/` folder is made for it. `result.stop` true, or `ok` false: copy nothing, say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", and end the run. Keep `result.left_out` for the next screen.
+**Off limits and personal, before any write about a person (cr1#1577).** File and folder names name people too. Before this gate asks about new project folders, before the Phase 7 preview is shown, and before any file is listed as left at its source, build `{"items": {"notes": [<each implied project name and each file name the buckets, the preview, the left-at-source rows or the report would show>]}}`, land it as ONE text with `plan write` at rel `_hq/.system/import/screen_items.json` (the read door caps what an argument may carry, and an import is bigger, so the items travel by that rel), render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>", "items_rel": "_hq/.system/import/screen_items.json", "carried": 0}}'`, paste what it prints and run that, then take the landed file away with `plan remove` (`{"rel": "_hq/.system/import/screen_items.json"}`) whatever the answer: it holds the items before the screen, with `"carried"` set to the last screen's `result.left_out`. Show and file only what comes back. A file whose name was left out, or whose implied project was, is held out of the whole migration: it stays at its source, nothing copies, merges or lists it, and it gets no `left_at_source` row. `result.stop` true, or `ok` false: copy nothing, say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", and end the run. Keep `result.left_out` for the next screen.
 
 **Why this exists.** A destination of the form `[Project]/…` will *create that folder on disk as a side effect of the copy* even when no thread record exists for it. That is how orphan project folders appear — a folder full of deliverables that the substrate has no record of, invisible to every daily flow and to `go [project]`. Filing must never bring a project folder into existence without the thread that owns it.
 
-For every `migration_plan[]` row whose `dest_path` is under a top-level `[Project]/` folder (i.e. NOT under `_hq/`, `_archive/`, or an `_ingest-queue`/`_unrouted` bucket), confirm the destination project is **registered**: its `project_id` resolves to a thread in `entities.json`, OR the folder name exactly matches a thread `folder_name`. Then:
+For every `migration_plan[]` row whose `dest_path` is under a top-level `[Project]/` folder (i.e. NOT under `_hq/` or `_archive/`), confirm the destination project is **registered**: its `project_id` resolves to a thread in `entities.json`, OR the folder name exactly matches a thread `folder_name`. Then:
 
 - **Registered →** file as planned.
-- **Not registered, but a clear project name is implied** (high-confidence assignment to a name with no thread yet) → do **not** create the folder yourself (this skill is read-capable on the entity store only during its own Phase 4 writes; ad-hoc thread creation mid-filing is out of scope). Instead, in the Phase 7 preview, list these under a new bucket **"New project folders this would create"** and ask the CEO: *"[N] files want to go into projects I don't have a record of yet: [names]. Want me to set these up as real projects, or set them aside?"* On "set up" → hand the named threads to `workspace-manager` ("new project [name]") so they are registered + scaffolded the canonical way, THEN file. On "set aside" → reroute those rows to `_hq/_unrouted/[implied-name]/[original_filename]`.
-- **Not registered and no clear project →** route to `_hq/_ingest-queue/unclassified/` as today.
+- **Not registered, but a clear project name is implied** (high-confidence assignment to a name with no thread yet) → do **not** create the folder yourself (this skill is read-capable on the entity store only during its own Phase 4 writes; ad-hoc thread creation mid-filing is out of scope). Instead, in the Phase 7 preview, list these under a new bucket **"New project folders this would create"** and ask the CEO: *"[N] files want to go into projects I don't have a record of yet: [names]. Want me to set these up as real projects, or set them aside?"* On "set up" → hand the named threads to `workspace-manager` ("new project [name]") so they are registered + scaffolded the canonical way, THEN file. On "set aside" → those rows become `action: leave`: the files stay at their source.
+- **Not registered and no clear project →** `action: leave`: the file stays at its source.
 
 This keeps the existing contract (orchestrators don't write the entity store directly; `workspace-manager` owns thread creation — see PROJECT_MAPPING_RULES "Forbidden behaviors") while closing the silent-folder-creation hole. The integrity checker's `C10.orphan_folder` finding is the backstop that catches any orphan that still slips through.
 
@@ -339,7 +339,7 @@ Filing into your projects:               412 files
   - Intel and briefings:                  72
   - Other docs going into project folders: 34
 
-Set aside for you to look at:             18 files
+Staying where they are (no project yet): 18 files
   - Not sure which project they belong to: 12
   - Couldn't place at all:                  6
 
@@ -359,14 +359,14 @@ Look good?
 
 Allow three responses:
 - **"yes" / "proceed":** continue to Phase 8
-- **"show queue" / "show conflicts":** render the detailed file list for the named bucket, then re-prompt
+- **"show what stays" / "show conflicts":** render the detailed file list for the named bucket, then re-prompt
 - **"skip migration" / "data only":** skip Phase 8, write the report noting that file migration was declined, exit
 
-If the CEO wants to reclassify a specific file before execution, accept "move [file] to [project]" or "queue [file]" and update `migration_plan[]` accordingly.
+If the CEO wants to reclassify a specific file before execution, accept "move [file] to [project]" or "leave [file]" (it stays at its source, `action: leave`) and update `migration_plan[]` accordingly.
 
 ### Phase 7.5: Smart merge for context-bearing docs (v2.7.4+)
 
-**Off limits and personal, before any write about a person (cr1#1577).** A merge writes a document's words into a live file. Before any merge, build `{"items": {"documents": [{"ref": "<its row in migration_plan>", "text": "<its whole text>"}, ...]}}` with every context-bearing file, land it as ONE text with `plan write` at rel `_hq/.system/import/screen_items.json` (the read door caps what an argument may carry, and an import is bigger, so the items travel by that rel), render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>", "items_rel": "_hq/.system/import/screen_items.json", "carried": 0}}'`, paste what it prints and run that, then take the landed file away with `plan remove` (`{"rel": "_hq/.system/import/screen_items.json"}`) whatever the answer: it holds the items before the screen, with `"carried"` set to the last screen's `result.left_out`. Merge only what comes back: a document left out stays at its source and is not merged, copied or queued, and nothing lists it. `result.stop` true, or `ok` false: merge and copy nothing, say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", and end the run. Keep `result.left_out`; its `line` is the run's line.
+**Off limits and personal, before any write about a person (cr1#1577).** A merge writes a document's words into a live file. Before any merge, build `{"items": {"documents": [{"ref": "<its row in migration_plan>", "text": "<its whole text>"}, ...]}}` with every context-bearing file, land it as ONE text with `plan write` at rel `_hq/.system/import/screen_items.json` (the read door caps what an argument may carry, and an import is bigger, so the items travel by that rel), render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>", "items_rel": "_hq/.system/import/screen_items.json", "carried": 0}}'`, paste what it prints and run that, then take the landed file away with `plan remove` (`{"rel": "_hq/.system/import/screen_items.json"}`) whatever the answer: it holds the items before the screen, with `"carried"` set to the last screen's `result.left_out`. Merge only what comes back: a document left out stays at its source and is not merged or copied, and nothing lists it. `result.stop` true, or `ok` false: merge and copy nothing, say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", and end the run. Keep `result.left_out`; its `line` is the run's line.
 
 Before the generic copy loop runs in Phase 8, a dedicated merge pass runs for files classified as **context-bearing**: `session_notes`, `meeting_transcript`, `project_context`, `project_brain`, `decision_doc`.
 
@@ -375,10 +375,10 @@ Before the generic copy loop runs in Phase 8, a dedicated merge pass runs for fi
 **Pass logic:**
 
 For each context-bearing file:
-1. **Determine canonical target** — the canonical file that should own this content in the new workspace. E.g., `PROJECT_CONTEXT.md` for the project, `SESSION_NOTES_[Project].md` for session notes, `[Project]/meetings/[YYYY-MM-DD_topic].md` for meeting transcripts.
+1. **Determine canonical target** — the canonical file that should own this content in the new workspace. E.g., `PROJECT_CONTEXT.md` for the project, `SESSION_NOTES_<folder name>.md` for session notes (render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "session_notes_file:notes_file", "args": {"workspace_root": "<WS>", "folder": "<the project folder>"}}'`, paste what it prints and run that; write to the `path` it returns and never rename a notes file the folder already holds; on `no_folder`, tell the owner the project has no folder yet and never create one), `[Project]/meetings/[YYYY-MM-DD_topic].md` for meeting transcripts.
 2. **If canonical target does not yet exist:** copy the source file to the target path (action stays `copy`). Log normally.
 3. **If canonical target DOES exist** (either from onboarding's Phase 4 build or a prior ingest pass): **merge, don't overwrite.**
-   - For `SESSION_NOTES_*`: append each source entry chronologically under a `## Ingested from [source filename] — [source mtime]` header. Preserve original ordering within the source.
+   - For `SESSION_NOTES*.md`: append each source entry chronologically under a `## Ingested from [source filename] — [source mtime]` header. Preserve original ordering within the source.
    - For `PROJECT_CONTEXT.md` and `PROJECT_BRAIN.md`: append a `## Prior context (ingested [YYYY-MM-DD])` section at the bottom. Do not rewrite or re-order the existing content.
    - For `meeting_transcript`: route to `[Project]/meetings/` as usual but with filename `[YYYY-MM-DD]_[original-stem]_ingested.md` if a same-stem file already exists.
    - For `decision_doc`: append a `## Historical decision — ingested from [source]` section to the project's `DECISION_LOG.md` OR copy to `[Project]/deliverables/memos/` if no DECISION_LOG exists yet.
@@ -387,7 +387,7 @@ For each context-bearing file:
 
 **Important: Phase 7.5 is merge-only for context-bearing types.** Reference files (`intel`, `briefing`, `deliverable`, `loose_doc`, `voice_sample`) flow through Phase 8's copy loop unchanged — those are files, not context, and copy-as-separate is correct for them.
 
-**After Phase 7.5 completes:** Phase 8 runs on the remaining (non-context-bearing) files and handles them with the existing copy / conflict / queue logic.
+**After Phase 7.5 completes:** Phase 8 runs on the remaining (non-context-bearing) files and handles them with the existing copy / conflict / leave logic.
 
 ### Phase 8: Execute file migration (copies for non-context-bearing files)
 
@@ -404,13 +404,12 @@ For each row in `migration_plan[]` with `action == copy`:
 {"ts":"2026-04-21T14:02:10Z","action":"copy","source":"/Users/.../old/foo.md","dest":"[Project]/meetings/foo.md","sha256":"abc...","size":12345,"confidence":0.92,"conflict":false}
 ```
 
-5. If file type is `session_notes` and destination `SESSION_NOTES_[Project].md` already exists, append the source content under a dated header (`## Imported from [source_path] — ingested YYYY-MM-DD`) rather than overwriting.
+5. If file type is `session_notes` and destination `SESSION_NOTES_<folder name>.md` (or the older spelling the folder already holds) already exists, append the source content under a dated header (`## Imported from [source_path] — ingested YYYY-MM-DD`) rather than overwriting.
 
-For rows with `action == queue`:
+For rows with `action == leave` (a file that matches no project, cr1#1581):
 
-- Copy to `_hq/_ingest-queue/[unclassified|low-confidence]/[original_filename]`.
-- Write a companion `.meta.json` alongside each queued file describing: source_path, candidate projects with confidence scores, detected type, reason for queueing.
-- Log in `_ingest-undo.jsonl` with `action: "queue"`.
+- Do not copy it anywhere. It stays where it is at the source; there is no holding folder and no Unfiled folder. (A file the off-limits screen held out is not a `leave` row at all: it gets no row, so nothing lists it.)
+- Log one row in `_ingest-undo.jsonl`: `{"ts": "<now>", "action": "left_at_source", "source": "<source path>", "type": "<detected type>", "reason": "<low confidence | no project | set aside>", "candidates": [<candidate projects with confidence scores>]}`. That row is what lists the file for the Hub's "Documents with no project" pile (`doc_shelf.documents_with_no_project`; the pile is cr1#1584's). A later run that files the same source takes it off the list.
 
 For rows with `action == skip`:
 
@@ -420,7 +419,7 @@ After all file operations complete, append one `onboarding_step` event to `event
 
 ```json
 {"ts": "<now>", "type": "onboarding_step", "source_skill": "workspace-ingest",
- "data": {"step": "file_migration_complete", "counts": {"copied": N, "queued": N, "skipped": N, "conflicts": N}}}
+ "data": {"step": "file_migration_complete", "counts": {"copied": N, "left_at_source": N, "skipped": N, "conflicts": N}}}
 ```
 
 ### Phase 9: Write INGEST_REPORT + finish
@@ -432,7 +431,7 @@ Create `_hq/INGEST_REPORT.md` per the template in `references/ingest-report-temp
  "data": {"step": "ingest_complete", "source_shape": "<shape>", "counts": {...}}}
 ```
 
-Surface the `_ingest-queue/` to the CEO: *"18 files want your eyes on them — I wasn't sure where they belonged. Say `review ingest queue` to walk through them together, or come back to it later. No rush."*
+Say how many files matched no project and stayed where they are: *"18 files matched no project, so I left them where they are. Tell me where any of them belongs and I'll file it."*
 
 Print the report summary and exit.
 
@@ -445,7 +444,7 @@ On trigger: *"undo migration"*, *"undo ingest"*, *"roll back the migration"*, *"
 **The one rule: undo reverses ONLY what the undo log records this run as having done.** It never deletes anything based on a file attribute (an AUGMENT merge stamps `last_writer: "workspace-ingest"` on the user's pre-existing, merged substrate — a delete keyed on that attribute destroys their data). If there is no `run_start` line for the run being undone, refuse: *"I don't have a record of that run, so I won't guess at what to remove."*
 
 1. Read `_hq/_ingest-undo.jsonl` in reverse order back to the run's `run_start` header line.
-2. For each `copy` or `queue` row, delete the destination file (the source was never touched).
+2. For each `copy` or `queue` row (a `queue` row is an older run's), delete the destination file (the source was never touched). A `left_at_source` row copied nothing, so there is nothing to delete.
 3. For each `conflict` row, delete the `.conflict-[ts]` destination file.
 4. For each `merge` row, open the target file and strip exactly the section under the logged `merged_section_header` (the rest of the file predates this run — leave it).
 5. **Substrate, by mode (from the `run_start` header):**
@@ -512,7 +511,7 @@ Re-running after partial failure (some files written, not others — detected vi
 Any phase failure after Phase 3.9 (snapshot):
 
 1. Restore `_hq/data/` from the Phase 3.9 snapshot (`_archive/pre-ingest-data_[ts]/` — recorded in the run's `run_start` undo-log line). Never blanket-delete `_hq/data/**`: in AUGMENT mode those files hold the user's pre-existing substrate.
-2. Delete only files the undo log records this run as having created (copies, queue files, `data_create` rows).
+2. Delete only files the undo log records this run as having created (copies, an older run's queue files, `data_create` rows).
 3. Source folder was never touched — no restore needed.
 4. Move any partially-written `_hq/INGEST_REPORT.md` to `_archive/` rather than deleting.
 5. Append failure details to `_hq/CONFLICTS.md` (create if needed).
@@ -536,7 +535,7 @@ A failure between Phase 2 and Phase 3.9 needs no data restore (nothing wrote yet
 - Does not skip connector inference — always runs the enrichment pass (unless no connectors are available).
 - Does not upgrade the plugin itself — that's the plugin update mechanism; this migrates customer data only.
 - Does not ingest skill folders (`_hq/skills/**`) — skills are code, not entities.
-- Does not guarantee perfect extraction — non-standard shapes drop to Parser D (generic) with warnings in INGEST_REPORT. Low-confidence files land in `_hq/_ingest-queue/` for manual review rather than being guessed.
+- Does not guarantee perfect extraction — non-standard shapes drop to Parser D (generic) with warnings in INGEST_REPORT. Files that match no project stay at their source and are listed for review rather than being guessed.
 - Does not write to `[Project]/PROJECT_CONTEXT.md` with invented content — only seeds from explicit source material (PROJECT_BRAIN.md, README-project.md). If no source exists, leaves PROJECT_CONTEXT.md unwritten for the CEO to fill in via onboarding Phase 2.
 
 ---
@@ -567,7 +566,7 @@ anyone else to.
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Underlying pipeline for two intents: extract context from a source + (optionally) copy source files into workspace project folders. Two thin alias skills route to focused subsets of this pipeline — use ingest-context if you want context only (no file copies), use file-documents if you want both context + file copies into projects. Use workspace-ingest directly only for ambiguous intent — when you say 'review ingest queue', 'ingest folder [path]' and want the skill to detect what makes sense from the source content. Both layers copy-only (never moves or deletes), back up source folder first, write an undo log. Direct triggers (intent-ambiguous): 'ingest folder [path]', 'ingest this folder'. Default mode AUGMENT (existing workspace preserved); BOOTSTRAP mode only when workspace is empty. DOES NOT fire on focused triggers 'ingest context from [path]' (routes to ingest-context), 'file documents from [path]' (routes to file-documents), single-URL intake (intel-intake), or new-customer setup (command-room-onboarding).
+> Underlying pipeline for two intents: extract context from a source + (optionally) copy source files into workspace project folders. Two thin alias skills route to focused subsets of this pipeline — use ingest-context if you want context only (no file copies), use file-documents if you want both context + file copies into projects. Use workspace-ingest directly only for ambiguous intent — when you say 'ingest folder [path]' and want the skill to detect what makes sense from the source content. Both layers copy-only (never moves or deletes), back up source folder first, write an undo log. Direct triggers (intent-ambiguous): 'ingest folder [path]', 'ingest this folder'. Default mode AUGMENT (existing workspace preserved); BOOTSTRAP mode only when workspace is empty. DOES NOT fire on focused triggers 'ingest context from [path]' (routes to ingest-context), 'file documents from [path]' (routes to file-documents), single-URL intake (intel-intake), or new-customer setup (command-room-onboarding).
 
 ## The Access preamble this file refers to
 

@@ -106,6 +106,17 @@ RECEIPT_BACKFILL = "session_backfill_run"
 NO_TOOL_REASON = "no session-transcript tool in this run"
 #: cr1#1489: an empty read on a cloud fire (cr1#979's fire-place check).
 CLOUD_REASON = "a cloud run cannot reach the chats on the computer"
+#: cr1#1489 (owner ruling 2026-11-22, "Yes, hide it"): the writer's own two
+#: wordings of a run with no chat reader at all. Not a fault the seat can fix
+#: by itself, so never said to the owner; `reader_missing` counts any skip,
+#: since a model passing the reason writes its own words.
+NO_READER_REASONS = frozenset({NO_TOOL_REASON, CLOUD_REASON})
+#: cr1#1489: the one sentence a person hears after asking, by its own phrase,
+#: for the chat sweep or the chat catch-up when this run has no
+#: session-transcript tool:
+#: plain, no fault named, nothing to type anywhere else. The session-sweep
+#: and session-backfill skills carry it word for word.
+NO_READER_LINE = "Reading past chats is not available in this version of the Claude app."
 #: The receipt field naming the session tool a sweep read with.
 TRANSCRIPT_TOOL_FIELD = "transcript_tool"
 #: cr1#1489: how many empty `complete` sweeps in a row, with no tool named
@@ -855,11 +866,17 @@ _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
 
 
 def chats_unread(workspace_root) -> dict:
-    """cr1#1489, READ ONLY, for the Hub's maintenance note: `{}` when the
-    chat capture is reading, else `{line, unread_since, gap, notes}`.
+    """cr1#1489, READ ONLY, OPERATOR-ONLY: `{}` when the chat capture is
+    reading, else `{line, unread_since, gap, notes}`.
+
+    NEVER SHOWN TO A CLIENT (owner ruling 2026-11-22, "Yes, hide it"). It
+    was the Hub's maintenance note (#1500); the session-transcript tool it
+    tells the owner to use is not in the current Claude app, typed or
+    scheduled, so no seat can act on it. It stays as Chalette's own read of
+    the book, beside the skip receipts it reads; no surface a client sees
+    calls it (`tests/run_cr1489_hide_chats_note_test.py` fences that).
     cr1#1590: `notes` holds one `{kind, short, act, line}` per sentence of
-    `line`, for the Hub's note rows: a few words, the one thing to type (a
-    new chat opens with it typed in) and that sentence, word for word.
+    `line`: a few words, the phrase it names and that sentence, word for word.
 
       * the newest sweep is skipped or blocked: chats are not being read, and
         the line says what to type on the computer (`unread_since` is the day
@@ -959,6 +976,32 @@ def chats_unread(workspace_root) -> dict:
         notes.append({"kind": "look", "short": f"Chats {_short_day(gap['from'])} to {_short_day(gap['to'])} never read",
                       "act": {"label": "Catch up my chat history", "chat": "catch up my chat history"}, "line": bits[-1]})
     return {"line": " ".join(bits), "unread_since": since if unread else None, "gap": gap, "notes": notes}
+
+
+def reader_missing(workspace_root) -> bool:
+    """cr1#1489, READ ONLY: is the newest `session_sweep_run` a skip for want
+    of a chat reader? Any `skipped` sweep is one, whatever words its
+    `skip_reason` uses: by the writer's contract (cr1#740) a skip means this
+    run had no session-transcript tool (`NO_READER_REASONS` are the writer's
+    own two wordings; a model passing the reason writes its own). A read that
+    errored is `blocked`, never a skip. The health check reads this so the
+    chat capture's pass is never a line to the owner while it cannot read
+    (owner ruling 2026-11-22); the receipt itself still says so for
+    Chalette. Read through the shared receipt reader, every log of the book.
+    A catch-up's receipt is not a sweep's. Never raises: unreadable is False."""
+    try:
+        from receipts import iter_receipts
+
+        rows = [r for r in iter_receipts(workspace_root, task_ids=["session-sweep"])
+                if isinstance(r.get("raw"), dict) and r["raw"].get("type") == RECEIPT_SWEEP]
+    except Exception:  # noqa: BLE001
+        return False
+    if not rows:
+        return False
+    dated = [r for r in rows if r.get("dt") is not None]
+    newest = max(dated, key=lambda r: r["dt"]) if dated else rows[-1]
+    data = newest["raw"].get("data") if isinstance(newest["raw"].get("data"), dict) else {}
+    return str(data.get("status") or "").strip().lower() == "skipped"
 
 
 def last_sweep(workspace_root, *, receipt_type: str = RECEIPT_SWEEP) -> Optional[dict]:
@@ -1156,10 +1199,13 @@ __all__ = [
     "RECEIPT_BACKFILL",
     "NO_TOOL_REASON",
     "CLOUD_REASON",
+    "NO_READER_REASONS",
+    "NO_READER_LINE",
     "TRANSCRIPT_TOOL_FIELD",
     "GAP_EMPTY_RUNS",
     "BACKFILL_DAYS",
     "chats_unread",
+    "reader_missing",
     "SweepItemError",
     "session_source_ref",
     "content_hash",

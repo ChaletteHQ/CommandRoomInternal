@@ -43,7 +43,7 @@ You are a **primary appender** for `_hq/data/events.jsonl` — every meeting you
 
 You never write `_hq/data/aliases.json` or a person's `aliases` yourself. A new spelling for someone on file (a nickname, a new email form) goes through the write door: `plan run_writer` naming `people_writer:door_update_person` with `{"add_aliases": ["<the spelling>"], "alias_evidence": "<the line that tied it to them>", "person_id": "<their id>", "source_skill": "meeting-notes", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `add_person_aliases(workspace_root, [{"person_id": "<their id>", "alias": "<the spelling>"}], source_skill="meeting-notes", evidence="<the line>")`). A spelling that comes back in `aliases_held` (`held` in-shell) was not saved, and you write nothing else for it: `name_on_file` means it is another person's name and the writer has raised the one question; `conflict` gets one line in your summary. After your appends, the writer helper regenerates affected views (`DECISION_LOG.md`, `PEOPLE.md`, `MASTER_TRACKER.md`).
 
-You **append** to `[Project]/SESSION_NOTES_[NAME].md` as a human-readable narrative duplicate of the events you just persisted. Both must succeed: if the events.jsonl append fails, skip the markdown append and log a conflict.
+You **append** to `[Project]/SESSION_NOTES_<folder name>.md` as a human-readable narrative duplicate of the events you just persisted. Both must succeed: if the events.jsonl append fails, skip the markdown append and log a conflict.
 
 You **do not write** to `entities.json` projects (that's workspace-manager) or people (that's people-crm). For a **new person**, the durable record is the `person_proposal` event (Step 5f) — a chat suggestion ("say add [name]") on its own is NOT capture; dismiss that chat and the proposal is stranded forever (F-46 P2b). For a **project state change**, surface a suggestion: "Sounds like Project Y is now blocked — want me to mark it that way?" Owner skills execute on the next turn.
 
@@ -63,7 +63,7 @@ Works for **any business owner** — scaling fast, running operations, managing 
 
 1. **Pulls the meeting source** — transcript from whichever transcript connector is wired (via `discover_transcript_tool()`), or process pasted text
 2. **Extracts structured data** — decisions, action items, attendees, financial info, scope changes
-3. **Routes to primary project** — saves SESSION_NOTES to `[WORKSPACE_ROOT]/[Project Folder Name]/SESSION_NOTES_[NAME].md` (where `[NAME]` = the user's first name, set during onboarding — e.g., `SESSION_NOTES_Pat.md`). To find the correct [NAME], look for the existing SESSION_NOTES file in the project folder (there should be exactly one file matching `SESSION_NOTES_*.md`). If no SESSION_NOTES file exists yet, check other project folders for the pattern, or check `_hq/BUSINESS_CONTEXT.md` for the user's name. If still unknown, ask: "What's your first name? I need it for your session notes files."
+3. **Routes to primary project** — saves the narrative to `[WORKSPACE_ROOT]/[Project Folder Name]/SESSION_NOTES_<folder name>.md`: the folder's own name, exactly as spelled (e.g., `Northstar/SESSION_NOTES_Northstar.md`). Never ask for or use the owner's name. To get the file, render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "session_notes_file:notes_file", "args": {"workspace_root": "<WS>", "folder": "<the project folder>"}}'`, paste what it prints and run that, and write to the `path` it returns: the ruled name in a folder with no notes yet, or the older spelling a folder already holds, appended to as it is (`shared/WORKSPACE_API.md` § Session notes file). Never rename or merge a notes file. On `no_folder`, tell the owner the project has no folder yet and never create one.
 4. **Updates Master Tracker** — records commitments, last touched, next action, deadline pressure
 5. **Updates ref files** — new contacts → contacts.md, scope/budget changes → scope.md, etc.
 6. **Applies business lens** — flags what matters for strategy/execution (risks, opportunities, timeline pressure, relationship dynamics)
@@ -193,15 +193,15 @@ For the full resolution rules and confidence model, read `references/ORG_AND_THR
 
 **Never let an active "go [project]" session override content-based classification.** The skill routes based on what the meeting was about, not which project the user happened to be in when they invoked this skill. If the user is in Project A and the call was primarily about Project B, the primary_thread_id is Project B. Project A may appear in related_thread_ids if it was discussed at all.
 
-**Routing effect:** The full SESSION_NOTES narrative is appended to the primary project's `SESSION_NOTES_[NAME].md`. Related projects receive a short cross-reference line in their own session notes — never a duplicate of the full narrative. events.jsonl carries the full event (with primary + related + confidence); the markdown views are regenerated from it.
+**Routing effect:** The full SESSION_NOTES narrative is appended to the primary project's `SESSION_NOTES_<folder name>.md`. Related projects receive a short cross-reference line in their own session notes — never a duplicate of the full narrative. events.jsonl carries the full event (with primary + related + confidence); the markdown views are regenerated from it.
 
 ---
 
 ## Step 4: Route to the Primary Project
 
-The primary project from Step 3 owns the SESSION_NOTES narrative. Save the full entry to: `[WORKSPACE_ROOT]/[Project Folder Name]/SESSION_NOTES_[NAME].md`.
+The primary project from Step 3 owns the SESSION_NOTES narrative. Save the full entry to: `[WORKSPACE_ROOT]/[Project Folder Name]/SESSION_NOTES_<folder name>.md` (the `path` `session_notes_file:notes_file` returns, Step 3).
 
-For each related project, append a short cross-reference line to its own `SESSION_NOTES_[NAME].md`:
+For each related project, append a short cross-reference line to its own `SESSION_NOTES_<folder name>.md` (ask `session_notes_file:notes_file` for that project's folder too):
 
 ```
 ## [Date] — Cross-ref from [Primary Project display_name]

@@ -117,9 +117,9 @@ Every active project gets one with REAL content. If you don't have enough info f
 
 ---
 
-## SESSION_NOTES_[NAME].md (one per project)
+## SESSION_NOTES_<folder name>.md (one per project)
 
-**CRITICAL:** `[NAME]` = the user's first name. Set this once during onboarding and use it identically for every project. Example: if the user's name is Pat, every project gets `SESSION_NOTES_Pat.md`. This consistency is essential — every skill looks for this exact file name.
+**CRITICAL:** the name is `SESSION_NOTES_` plus the project folder's own name, exactly as spelled (spaces and capitals kept). Example: the folder `Northstar Rollout` gets `Northstar Rollout/SESSION_NOTES_Northstar Rollout.md`. Never the user's name. Every skill finds the file through `session_notes_file:notes_file` (`shared/WORKSPACE_API.md` § Session notes file), which returns this name for a new folder.
 
 One per project, seeded with onboarding context:
 

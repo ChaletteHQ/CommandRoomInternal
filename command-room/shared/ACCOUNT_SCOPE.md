@@ -124,7 +124,7 @@ account is out-of-scope for never enters these files:
 | `_hq/data/staging_emissions.jsonl` — dismissed draft text (EMAIL_DRAFT_PROTOCOL §4) | prose-mandated (capture path) — documented residue, not structurally walled |
 | `_hq/data/sender-priority-rules.json` + `triage_feedback` events | events walled at the append chokepoint; the rules file is prose-mandated residue |
 | `_hq/voice/corrections-*.jsonl` — voice-correction logs mined from sent mail | prose-mandated residue (sent-mail mining prose consults the account map; no structural hook) |
-| `SESSION_NOTES_*.md` appends derived from connector reads | prose-mandated residue (`workspace-manager`, `meeting-notes`) |
+| `SESSION_NOTES*.md` appends derived from connector reads | prose-mandated residue (`workspace-manager`, `meeting-notes`) |
 | Regenerated views (`MASTER_TRACKER`, `PEOPLE`, `DECISION_LOG`, …) | transitive — derived from walled sources, inherit scope |
 
 **Documented residue (walled at the read tier, not the write tier — see §5):**

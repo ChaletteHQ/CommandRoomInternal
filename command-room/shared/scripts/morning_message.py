@@ -92,7 +92,8 @@ def needs_you(plate: Optional[Dict[str, Any]], review: Optional[Dict[str, Any]],
     """What needs the owner this morning, in the page's order (the plate,
     then Review, then the Inbox): `[{source, id, title}]`. The page's
     `needsYou`: a commitment due today or one to follow up (never past its
-    date), a Review question marked for today, every Inbox item."""
+    date), a Review question marked for today, every Inbox item but one the
+    Inbox run marked as needing nothing (`needs: false`, cr1#1635)."""
     out: List[Dict[str, Any]] = []
     if isinstance(plate, dict) and plate.get("today") == day:
         for r in plate.get("rows") or []:
@@ -107,7 +108,7 @@ def needs_you(plate: Optional[Dict[str, Any]], review: Optional[Dict[str, Any]],
                 out.append({"source": "review", "id": "q:" + str(r["id"]), "title": r.get("title")})
     if isinstance(inbox, dict):
         for it in inbox.get("items") or []:
-            if isinstance(it, dict):
+            if isinstance(it, dict) and it.get("needs") is not False:
                 out.append({"source": "inbox", "id": "m", "title": it.get("subject") or it.get("name")})
     return out
 

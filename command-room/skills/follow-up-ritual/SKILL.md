@@ -527,7 +527,7 @@ anyone else to.
 - **Deal-signal post-step (PIPE1 Part 2 — silent tier, MANDATORY).** After the substrate writes land, run meeting-notes Step 5h's exact recipe scoped to this meeting's counterparty org(s): `detect_deal_signals("<WORKSPACE>", org_ids=[...])` → `propose_candidates(...)` (never `run_deal_signal_job` — the Sunday job owns that receipt). When the internal meeting-notes run already executed Step 5h for THIS meeting, skip the propose call (open-fingerprint dedup makes a double-call harmless, but one call is the contract) — still render the lines: each returned candidate's `nudge_line` goes under **Logged** in the pack chat card, verbatim, every candidate (Bug #92b — no re-deciding inclusion). Zero candidates → zero lines. Propose-and-confirm only; nothing here writes a deal field.
 - **Commitments** — land as `commitment` events via the internal `meeting-notes` run; MASTER_TRACKER regenerates from the substrate (never written directly).
 - **Decisions** — invokes `decision-log` skill (event append; DECISION_LOG view regenerates).
-- **Appends to `SESSION_NOTES_[NAME].md`** — 1-line log entry: "Closed the loop on [Meeting] — 3 follow-up emails drafted, 2 decisions logged."
+- **Appends to `SESSION_NOTES_<folder name>.md`** (the file `session_notes_file:notes_file` names) — 1-line log entry: "Closed the loop on [Meeting] — 3 follow-up emails drafted, 2 decisions logged."
 
 ## Demo Beat (May 14)
 

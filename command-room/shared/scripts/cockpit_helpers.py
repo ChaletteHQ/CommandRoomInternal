@@ -202,6 +202,17 @@ NEW_STREAM_HALF_LINE = ("{name} was added to your book but could not be finished
                         "Ask in a chat to finish {name} or to put this elsewhere.")
 NEW_STREAM_UNSURE_LINE = ("The work stream {name} could not be set up, and part of it may be on your book; "
                           "this has no home yet. Check {name} in a chat before pressing again.")
+#: cr1#1582: a new work stream gets its folder in the same press, so a name
+#: no folder can carry is asked about before anything is written.
+NEW_STREAM_FOLDER_NAME_LINE = ("{name} cannot be a folder name on Windows or a Mac ({why}); "
+                               "nothing was written. Pick another name.")
+NEW_STREAM_FOLDER_PICK_LINE = ("More than one folder called {name} is already here ({where}); "
+                               "nothing was written. Say in a chat which one {name} should use.")
+NEW_STREAM_FOLDER_TAKEN_LINE = ("The folder {folder} is already {other}'s; nothing was written. "
+                                "Pick another name.")
+NEW_STREAM_NO_FOLDER_LINE = " Its folder could not be made, so it has none yet."
+UNASSIGN_FOLDER_ARCHIVED_LINE = " Its folder had something in it, so it was moved whole to the archive."
+UNASSIGN_FOLDER_STAYS_LINE = " Its folder could not be moved, so it stays."
 #: A heard line already tracked when a later step refused (review of part two).
 HEARD_TRACKED_ONLY_LINE = "The line is now tracked, but it was not given a home; it waits under No home yet."
 NOT_WORK_FAILED_LINE = "That one could not be set aside; nothing was written."
@@ -1513,14 +1524,16 @@ def _maintenance_trouble(workspace_root) -> Dict[str, Any]:
     read" and "not confirmed as read", so the words claim only the second.
     `left_unread` (cr1#979) is the due connector jobs the newest run left
     unread; `silent` (cr1#1007) the sources that usually bring items in and
-    have read nothing on their last runs; `chats` (cr1#1489) the chat
-    capture that is not reading, or a span it never read
-    (`session_sweep.chats_unread`). Answers `{failing, unread, left_unread,
-    silent, chats, line}`; `line` is empty when there is nothing to say, and
-    an unreadable read says nothing.
+    have read nothing on their last runs. `chats` is always `{}`: the chat
+    capture's "not being read" line (#1500) is never said to a client (owner
+    ruling 2026-11-22 on cr1#1489, "Yes, hide it"; `session_sweep.
+    chats_unread` is operator-only), and the field stays for the released
+    pages, which read it empty as no note. Answers `{failing, unread,
+    left_unread, silent, chats, line}`; `line` is empty when there is
+    nothing to say, and an unreadable read says nothing.
 
     cr1#1590: `notes` holds one `{kind, short, act, line}` a sentence of
-    `line` (the chats may give two), for the Hub's note rows: `kind` is
+    `line`, for the Hub's note rows: `kind` is
     `fail` or `look`, `short` a few words, `act` the one thing to do (a new
     chat with a phrase typed in) and `line` that sentence, word for word."""
     import connector_reads as cr
@@ -1574,19 +1587,47 @@ def _maintenance_trouble(workspace_root) -> Dict[str, Any]:
         quiet = md.silent_sources_note(silent)
         if quiet:
             notes.append(quiet)
-    try:
-        # cr1#1489: the nightly chat capture cannot read the chats from a
-        # cloud run; say so, with what to type on the computer, and name a
-        # span the old empty receipts moved past with the catch-up's last day.
-        from session_sweep import chats_unread
-        chats = chats_unread(workspace_root)
-    except Exception:  # noqa: BLE001
-        chats = {}
-    if chats.get("line"):
-        bits.append(chats["line"])
-        notes.extend(n for n in chats.get("notes") or [] if isinstance(n, dict) and n.get("short"))
+    # cr1#1489 (owner ruling 2026-11-22): the chat capture's "not being read"
+    # line and its typed-phrase advice are no client's to see; the field stays
+    # empty for the released pages, which read `mt.chats.line`.
     return {"failing": failing, "unread": unread, "left_unread": left,
-            "silent": silent, "chats": chats, "line": " ".join(b for b in bits if b), "notes": notes}
+            "silent": silent, "chats": {}, "line": " ".join(b for b in bits if b), "notes": notes}
+
+
+#: cr1#1489: the two phrases the hidden chat-capture rows offered (#1500).
+HIDDEN_CHAT_ACTS = frozenset({"sweep my chats", "catch up my chat history"})
+
+
+def scrub_chats_note(doc: Any) -> Optional[Dict[str, Any]]:
+    """cr1#1489 (owner ruling 2026-11-22), PURE: a Maintenance document a page
+    still holds from before the hide, with the chat capture's sentences taken
+    out of `line`, its rows out of `notes` and its `chats` emptied; None when
+    it carries none of them. A refresh that keeps the page's copy (an idle
+    answer over a page that says done) sends this instead, so no page, and
+    no run that reads the page, keeps the old advice."""
+    if not isinstance(doc, dict):
+        return None
+    chats = doc.get("chats") if isinstance(doc.get("chats"), dict) else {}
+    said = str(chats.get("line") or "").strip()
+    notes = doc.get("notes") if isinstance(doc.get("notes"), list) else []
+
+    def hidden(n: Any) -> bool:
+        if not isinstance(n, dict):
+            return False
+        act = n.get("act") if isinstance(n.get("act"), dict) else {}
+        if str(act.get("chat") or "").strip().lower() in HIDDEN_CHAT_ACTS:
+            return True
+        text = str(n.get("line") or "").strip()
+        return bool(said and text and text in said)
+
+    if not said and not any(hidden(n) for n in notes):
+        return None
+    out = {k: v for k, v in doc.items() if k not in ("doc_id", "id", "version")}
+    line = str(doc.get("line") or "")
+    if said:
+        line = " ".join(line.replace(said, " ").split())
+    out.update(chats={}, line=line, notes=[n for n in notes if not hidden(n)])
+    return out
 
 
 #: cr1#1378: how far back the Hub looks for an Apply that failed. A failure
@@ -1734,7 +1775,50 @@ def schedule_holder_status(workspace_root, env: Optional[Dict[str, str]] = None
             "account": account, "pending": bool(held.get("pending"))}
 
 
-def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
+def maintenance_status(workspace_root=None, *, now_iso=None, review: Optional[Dict[str, Any]] = None,
+                       projects: Optional[Dict[str, Any]] = None,
+                       with_answer: bool = True) -> Dict[str, Any]:
+    """The Hub's `status/maintenance` document (`_maintenance_doc`), with
+    cr1#1585's one "is everything OK?" answer as `everything_ok`
+    (`everything_ok.answer` over this very document, and `review` when the
+    caller already built the To confirm feed, `projects` the projects feed
+    with its tidy piles). `with_answer=False` is the document alone, which
+    that answer reads when asked outside the Hub."""
+    doc = _maintenance_doc(workspace_root, now_iso=now_iso)
+    if with_answer and workspace_root:
+        try:
+            import everything_ok
+
+            doc["everything_ok"] = everything_ok.answer(workspace_root, now_iso=_iso(_now(now_iso)),
+                                                        maintenance=doc, review=review, projects=projects)
+        except Exception:  # noqa: BLE001 - the Maintenance record never fails for the answer
+            pass
+    return doc
+
+
+def _maintenance_first_run_pending(workspace_root) -> bool:
+    """cr1#1585 review round 1: Maintenance has not had its first chance to
+    run: registered on this seat (its own trigger's time, else the
+    workspace's) after its second-most-recent slot, by the watchdog's own
+    rule (`task_watchdog.registered_after_slot`). False when it cannot tell."""
+    try:
+        import maintenance_dispatcher as md
+        import task_watchdog as tw
+
+        cfg = tw.read_workspace_config(workspace_root)
+        triggers = cfg.get("triggers") if isinstance(cfg.get("triggers"), dict) else {}
+        ws_reg = tw._to_local_naive(tw.parse_ts(cfg.get("registered_at") or ""))
+        reg = tw.task_registered_at(md.MAINTENANCE_TASK_ID, None, trigger_map=triggers,
+                                    created_times=tw.schedule_created_times(workspace_root) if triggers else {},
+                                    workspace_registered=ws_reg)
+        cron = md.DEFAULT_SCHEDULES[md.MAINTENANCE_TASK_ID]["cron"]
+        recent = tw.effective_fires(cron, now=tw._now_local(), count=2)
+        return bool(reg is not None and tw.registered_after_slot(reg, recent, None))
+    except Exception:  # noqa: BLE001 - no verdict is not a first run
+        return False
+
+
+def _maintenance_doc(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
     """The Hub's `status/maintenance` document (cr1#666), composed from the
     book, READ/COMPUTE ONLY: a `status_doc` for the `maintenance` leg plus
     `finished_at` (the newest heartbeat's finish time; the newest receipt's
@@ -1743,7 +1827,8 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
     (`maintenance_dispatcher.maintenance_staleness`, from the newest receipt,
     as of `now_iso`), `behind_hours`, the hours past which it counts as
     behind, and `failing` and `unread` (cr1#822), `left_unread` (cr1#979) and
-    `silent` (cr1#1007) and `chats` (cr1#1489), which the line names too. A Hub Apply that failed
+    `silent` (cr1#1007), which the line names too, and `chats` (cr1#1489),
+    always `{}` since the owner's 2026-11-22 ruling. A Hub Apply that failed
     (cr1#1378) is a `failing` entry too, but never in the line: it is
     `apply_line`, its own sentence, and `apply_at`, its own run's time
     (cr1#1385), empty when none failed. cr1#1590: `notes` (Maintenance's
@@ -1777,10 +1862,17 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
         import maintenance_dispatcher as md
 
         newest, last, beat, newest_via = _maintenance_history(workspace_root)
-        hours = md.maintenance_staleness(workspace_root, now=now).get("hours_behind")
+        behind = md.maintenance_staleness(workspace_root, now=now)
+        hours = behind.get("hours_behind")
     except Exception:  # noqa: BLE001 - the page keeps its old document
         return doc
+    # cr1#1585 review round 1: the slot rule the typed surfaces use (its most
+    # recent slot went unserved), beside the hours Start reads.
+    doc["stale"] = bool(behind.get("stale"))
     if newest is None:
+        # A brand-new seat: registered after its second-most-recent slot, so
+        # Maintenance has not had its first chance yet (the watchdog's rule).
+        doc["first_run_pending"] = _maintenance_first_run_pending(workspace_root)
         return doc
     finished = _parse((beat or {}).get("finished_at"))
     trouble = _maintenance_trouble(workspace_root)
@@ -1955,6 +2047,32 @@ WEEK_AWAY_TIMED_HOURS = 20
 WEEK_AWAY_RE = re.compile(
     r"(?i)\b(out of (the )?office|ooo|vacation|holiday|holidays|time off|day off|"
     r"days off|pto|annual leave|leave|off sick|sick day|away|travel(l)?ing|on leave)\b")
+#: cr1#1641: an all-day event on the owner's personal calendar that runs
+#: this many days or more (a stay, a trip) is his time away, whatever its
+#: title, when it is his own and names no one else. A one-day personal
+#: event ("an anniversary") is not.
+WEEK_AWAY_PERSONAL_DAYS = 2
+#: cr1#1641 (review round 1): the time-away words a colleague's own entry
+#: uses ("<Name> OOO", "<Name> - PTO", "<Name> out of office"). Only before
+#: one of these is a capitalised word read as a person's name; before
+#: "vacation", "holiday" or "trip" it is a place ("Hawaii vacation").
+WEEK_AWAY_COLLEAGUE_RE = re.compile(
+    r"(?i)\b(out of (the )?office|ooo|pto|away|leave|annual leave|on leave|off sick|sick day)\b")
+#: cr1#1641: words that may stand before the time-away word without naming
+#: anyone ("Family vacation", "Christmas holiday", "Friday off"). Any other
+#: capitalised word there reads as a person's name ("<Name> OOO"), so the
+#: event is someone else's time away, not the owner's.
+WEEK_AWAY_LEAD_WORDS = frozenset((
+    "my", "our", "the", "a", "all", "full", "half", "whole", "personal", "family", "company", "team",
+    "office", "public", "bank", "national", "federal", "state", "religious", "school", "summer",
+    "winter", "spring", "fall", "autumn", "ski", "beach", "christmas", "xmas", "easter", "thanksgiving",
+    "new", "year", "years", "labor", "labour", "memorial", "independence", "juneteenth", "presidents",
+    "veterans", "boxing", "good", "friday", "monday", "tuesday", "wednesday", "thursday", "saturday",
+    "sunday", "january", "february", "march", "april", "may", "june", "july", "august", "september",
+    "october", "november", "december", "medical", "sick", "parental", "paternity", "maternity",
+    "honeymoon", "wedding", "birthday", "annual", "mental", "health", "wellness", "recharge", "flex",
+    "floating", "comp", "jury", "duty", "bereavement", "study", "sabbatical", "unpaid", "paid",
+    "travel", "trip", "work", "remote", "conference"))
 
 
 # ---------------------------------------------------------------------------
@@ -2144,6 +2262,167 @@ def _day_name(d: _dt.date, today: _dt.date) -> str:
     return "Today" if d == today else d.strftime("%A")
 
 
+def _away_calendar_says(m: Dict[str, Any]) -> bool:
+    """cr1#1641: the calendar itself marks the event out of office (the
+    read's `out_of_office: true`, the connector's own event type). Only a
+    plain True does; a read that says nothing leaves the title to decide."""
+    return m.get("out_of_office") is True
+
+
+def _away_someone_elses_event(m: Dict[str, Any]) -> bool:
+    """cr1#1641: the event is someone else's, by what the read says of it:
+    another person organises it, or other people are on it and the owner
+    does not organise it (a colleague's out-of-office sent to the team).
+    Nothing said leaves the title to decide."""
+    if m.get("organiser") is False:
+        return True
+    if m.get("organiser") is True:
+        return False
+    n = m.get("others")
+    if isinstance(n, int) and not isinstance(n, bool) and n > 0:
+        return True
+    return any(isinstance(a, dict) and a.get("self") is not True and str(a.get("name") or a.get("email") or "").strip()
+               for a in (m.get("attendees") if isinstance(m.get("attendees"), list) else []))
+
+
+def _away_names(workspace_root) -> Dict[str, List[str]]:
+    """cr1#1641: `{own, others}`: the names the owner goes by, and every
+    other person's on file, each as given. Read once per feed; {} on a book
+    that cannot be read (the event's own attendees and the title's shape
+    still decide)."""
+    try:
+        from people_names import people_names
+
+        people = people_names(workspace_root)
+        owner = _owner_id(workspace_root)
+    except Exception:  # noqa: BLE001 - no names leaves the other checks
+        return {"own": [], "others": []}
+    own = [n for n in people.get(owner) or []] if owner else []
+    others = [n for pid, ns in people.items() if pid != owner for n in ns or []]
+    return {"own": own, "others": others}
+
+
+def _name_forms(name: str) -> List[str]:
+    """A name and its first word, when that word is a name of its own."""
+    name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not name:
+        return []
+    first = name.split(" ")[0]
+    return [name] + ([first] if first != name and len(first) >= 2 else [])
+
+
+def _away_leading_name(title: str, own: set) -> bool:
+    """cr1#1641: one to three capitalised words that name no one standing
+    before the first time-away word ("<Name> OOO", "<First> <Last> - PTO")
+    read as the person whose time away it is. A word that names no one
+    ("Family vacation", "Friday off") or one of the owner's own names keeps
+    it his; any word that is not a plain capitalised name ("2 day OOO",
+    "back-to-back") leaves it his too: the rule only takes what is plainly
+    a name."""
+    hit = WEEK_AWAY_RE.search(title)
+    if not hit or not WEEK_AWAY_COLLEAGUE_RE.fullmatch(hit.group(0)):
+        return False
+    lead = re.sub(r"[\-–—:|/(),.]+", " ", title[:hit.start()]).split()
+    if not lead or len(lead) > 3:
+        return False
+    for w in lead:
+        if not re.fullmatch(r"[A-Z][a-z]+(?:'s)?", w):
+            return False
+        bare = re.sub(r"'s$", "", w).casefold()
+        if bare in own or bare in WEEK_AWAY_LEAD_WORDS:
+            return False
+    return True
+
+
+def _away_title(title: str) -> str:
+    """cr1#1641 (review round 1): the title as the time-away checks read it:
+    a curly apostrophe is a plain one."""
+    return str(title or "").replace("\u2019", "'").replace("\u2018", "'")
+
+
+def _away_loose_words(title: str) -> set:
+    """cr1#1641 (review round 1): the title's words written all in capitals
+    or all in small letters ("DUSTIN OOO", "OOO: dustin"), folded, a
+    possessive set aside: a first name on file matches these in any case."""
+    out = set()
+    for w in re.findall(r"[A-Za-z][A-Za-z'\-]*", title):
+        w = re.sub(r"(?i)'s$", "", w)
+        if len(w) >= 2 and (w.isupper() or w.islower()):
+            out.add(w.casefold())
+    return out
+
+
+def _away_names_someone(title: str, m: Dict[str, Any], names: Dict[str, List[str]],
+                        leading: bool = True) -> bool:
+    """cr1#1641: the title names someone other than the owner: a person on
+    file or on the event (a whole name in any case, a first name as
+    written, or in any case where the title writes the word all in capitals
+    or all in small letters), a possessive ("<Name>'s vacation"), or, when
+    `leading`, a name before a colleague's time-away word. The owner's own
+    names never count, nor a name that is also a word that names no one
+    ("Summer", "June": WEEK_AWAY_LEAD_WORDS)."""
+    own = {f.casefold() for n in names.get("own") or [] for f in _name_forms(n)}
+    for a in (m.get("attendees") if isinstance(m.get("attendees"), list) else []):
+        if isinstance(a, dict) and a.get("self") is True:
+            own |= {f.casefold() for f in _name_forms(str(a.get("name") or ""))}
+    theirs = list(names.get("others") or [])
+    theirs += [str(a.get("name") or "") for a in (m.get("attendees") if isinstance(m.get("attendees"), list) else [])
+               if isinstance(a, dict) and a.get("self") is not True]
+    loose = _away_loose_words(title)
+    for n in theirs:
+        forms = _name_forms(n)
+        if not forms:
+            continue
+        whole = forms[0]
+        if whole.casefold() not in own and " " in whole and re.search(
+                r"(?i)(?<!\w)" + re.escape(whole) + r"(?!\w)", title):
+            return True
+        for f in forms:
+            if f.casefold() in own or len(f) < 2 or f.casefold() in WEEK_AWAY_LEAD_WORDS:
+                continue
+            if re.search(r"(?<!\w)" + re.escape(f) + r"(?!\w)", title) or (" " not in f and f.casefold() in loose):
+                return True
+    for w in re.findall(r"(?<!\w)([A-Z][A-Za-z\-]*)'s(?!\w)", title):
+        if w.casefold() not in own and w.casefold() not in WEEK_AWAY_LEAD_WORDS:
+            return True
+    return leading and _away_leading_name(title, own)
+
+
+def _away_stay_is_his(m: Dict[str, Any]) -> bool:
+    """cr1#1641 (review round 1): a personal stay counts only when the read
+    says the owner organises it. A family calendar's days ("<someone>
+    visiting", "School closed") are not his time away: when the Hub cannot
+    tell, no clash."""
+    return m.get("organiser") is True
+
+
+def _away_leading_applies(m: Dict[str, Any], stay: bool) -> bool:
+    """cr1#1641 (review round 1): the name-before-the-word guess is for an
+    event that may be a colleague's; never for one the owner organises, one
+    the read says has nobody else on it (`others` 0: "Offsite OOO" he
+    blocked), nor for his own stay."""
+    return not stay and m.get("organiser") is not True and not _no_one_else(m)
+
+
+def _own_time_away(m: Dict[str, Any], title: str, names: Dict[str, List[str]], *,
+                   personal_stay: bool = False) -> bool:
+    """cr1#1641: the event is the owner's own time away, so it marks its
+    days away and a work meeting on them clashes. Never someone else's
+    event; then the calendar's own out-of-office mark, else a time-away
+    word, or a personal all-day event of WEEK_AWAY_PERSONAL_DAYS or more
+    that he organises (`personal_stay`), in a title that names no one
+    else. When the Hub cannot tell, no clash."""
+    if _away_someone_elses_event(m):
+        return False
+    if _away_calendar_says(m):
+        return True
+    title = _away_title(title)
+    stay = personal_stay and _away_stay_is_his(m)
+    if not (stay or WEEK_AWAY_RE.search(title)):
+        return False
+    return not _away_names_someone(title, m, names, leading=_away_leading_applies(m, stay))
+
+
 def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -> Dict[str, Any]:
     """The seven days' meetings for the Week view, from the same calendar
     read as the Today list (the run reads seven days for it). Each day: its
@@ -2169,6 +2448,17 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
     busy: Dict[_dt.date, List[tuple]] = {d: [] for d in dates}
     if wall is False:
         wall = _meeting_wall(workspace_root)
+    # cr1#1641: the names a time-away title is checked against, read once
+    # and only when some event might be time away.
+    names_box: List[Dict[str, List[str]]] = []
+
+    def own_away(ev: Dict[str, Any], title: str, personal_stay: bool = False) -> bool:
+        if not (personal_stay or _away_calendar_says(ev) or WEEK_AWAY_RE.search(title)):
+            return False
+        if not names_box:
+            names_box.append(_away_names(workspace_root))
+        return _own_time_away(ev, title, names_box[0], personal_stay=personal_stay)
+
     for m in meetings or []:
         if not isinstance(m, dict):
             continue
@@ -2190,7 +2480,8 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
                 d += _dt.timedelta(days=1)
             if not span:
                 continue
-            if WEEK_AWAY_RE.search(title):
+            stay = personal and (d1 - d0).days >= WEEK_AWAY_PERSONAL_DAYS
+            if own_away(m, title, stay):
                 for d in span:
                     away.setdefault(d, title or "time away")
                 continue
@@ -2216,9 +2507,19 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
             d += _dt.timedelta(days=1)
         if not span:
             continue
-        if WEEK_AWAY_RE.search(title) and end - start >= _dt.timedelta(hours=WEEK_AWAY_TIMED_HOURS):
+        if end - start >= _dt.timedelta(hours=WEEK_AWAY_TIMED_HOURS) and (
+                _away_calendar_says(m) or WEEK_AWAY_RE.search(title)):
+            if own_away(m, title):
+                for d in span:
+                    away.setdefault(d, title)
+                continue
+            # cr1#1641: someone else's day-long time away is shown on its
+            # days as an all-day row, so it takes none of the owner's free
+            # time and is never a clash.
             for d in span:
-                away.setdefault(d, title)
+                by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
+                                  "start": None, "end": None, "all_day": True,
+                                  "personal": personal, "clash": False, "solo": False})
             continue
         extras = _meeting_extras(m, wall)
         # cr1#1541: where it is, as a Today row carries it, only when the read
@@ -2754,6 +3055,9 @@ _CLOSER_WORDS = {
     "commitment-triage": "closed by you",
     "meeting-notes": "closed from meeting notes",
 }
+#: cr1#1636 item 4: a closer with no words of its own is said plainly, never by
+#: its step's name (the line read "2 by commitment backlog sweep").
+CLOSER_FOR_YOU = "closed for you"
 
 
 def _changes(workspace_root, now: _dt.datetime, days: Optional[int] = None) -> Dict[str, Any]:
@@ -2794,7 +3098,7 @@ def _changes(workspace_root, now: _dt.datetime, days: Optional[int] = None) -> D
             cid = str(d.get("commitment_id") or d.get("id") or "")
             if cid and ts is not None:
                 key = str(ev.get("source_skill") or "other").split(":")[0]
-                closes[cid] = {"at": ts, "how": _CLOSER_WORDS.get(key, "closed by " + key.replace("-", " "))}
+                closes[cid] = {"at": ts, "how": _CLOSER_WORDS.get(key, CLOSER_FOR_YOU)}
         elif kind == "commitment_reopened":
             closes.pop(str(d.get("commitment_id") or d.get("target_id") or ""), None)
     inside = lambda t: since <= t <= now  # noqa: E731
@@ -3445,6 +3749,16 @@ def feed_projects(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     except Exception:  # noqa: BLE001 - an unread loose-ends list says so, never a guessed empty
         out["errors"].append("no_home")
         out["no_home"] = {"rows": [], "n": None, "n_hidden": 0}
+    # cr1#1584: the Tidy section's piles, read apart from the cards too: an
+    # optional block an older page never reads.
+    try:
+        import hub_tidy
+
+        nh = out["no_home"]
+        out["tidy"] = hub_tidy.tidy_block(root, _iso(now), None if "no_home" in out["errors"]
+                                          else list(nh.get("rows") or []))
+    except Exception:  # noqa: BLE001 - an unread pile is offered nowhere, and said so
+        out["errors"].append("tidy")
     try:
         cards, from_log = tc.read_cards(root)
     except Exception:  # noqa: BLE001 - no cards answers an empty tab, and says so
@@ -5158,6 +5472,334 @@ def _bring_back(workspace_root, tid: str, actor: str) -> None:
                   reason="Brought back on the Command Room Hub")
 
 
+# ---------------------------------------------------------------------------
+# cr1#1584: the Tidy section's presses, written with the Record tab's
+# project and folder writes (`apply_week_choices`)
+# ---------------------------------------------------------------------------
+
+TIDY_ARCHIVE_REASON = "Archived from Tidy on the Command Room Hub"
+TIDY_RESTORE_REASON = "Put back from Tidy on the Command Room Hub"
+TIDY_UNMAKE_REASON = "Taken back from Tidy on the Command Room Hub"
+TIDY_VERB_LINE = "That press is not one this pile has, so nothing was written."
+TIDY_UNREADABLE_LINE = "That pile could not be checked just now, so nothing was written. Press Go, then try again."
+TIDY_LEFT_LINE = "That one is no longer in the pile, so nothing was written."
+TIDY_TAKEN_LINE = "A project by that name is there already, so nothing was written."
+TIDY_NO_FOLDER_LINE = "That folder could not be found, so nothing was written."
+TIDY_BACK_LINE = "An Undo needs the press it takes back, so nothing was written."
+TIDY_CHANGED_LINE = "That one changed since that press, so the Undo wrote nothing."
+TIDY_DONE_LINE = "Already done by this press; nothing more was written."
+
+
+def _tidy_book(workspace_root) -> List[Dict[str, Any]]:
+    from events_io import load_events_owner_scoped
+
+    return [e for e in load_events_owner_scoped(str(workspace_root))[0] if isinstance(e, dict)]
+
+
+def _tidy_last_status(events: List[Dict[str, Any]], tid: str) -> Optional[Dict[str, Any]]:
+    """The newest `status_change` on a project: `{seq, from_status, to_status}`."""
+    last = None
+    for ev in events:
+        if ev.get("type") == "status_change" and str(ev.get("primary_thread_id") or "") == tid:
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            last = {"seq": ev.get("seq"), "from_status": str(d.get("from_status") or ""),
+                    "to_status": str(d.get("to_status") or "")}
+    return last
+
+
+def _tidy_written(events: List[Dict[str, Any]], choice_id: Any) -> Optional[Dict[str, Any]]:
+    """What an earlier run wrote for this very press, read off the Apply
+    run's own audit row (`apply_week_choices` names the press there):
+    `{seq, thread_id}`, or None when no run wrote it. So a run handed a press
+    whose result never reached the page answers `already` with the write's
+    own row, and the page's Undo still names it (the #1342 rule for Assign)."""
+    cid = str(choice_id or "")
+    if not cid:
+        return None
+    for ev in reversed(events):
+        d = ev.get("data") if ev.get("type") == "apply_choices_applied" and isinstance(ev.get("data"), dict) else {}
+        if d.get("surface") != WEEK_SURFACE:
+            continue
+        for row in d.get("actions") or []:
+            if isinstance(row, dict) and row.get("id") == cid and row.get("outcome") == "ok"                     and isinstance(row.get("seq"), int) and not isinstance(row.get("seq"), bool):
+                return {"seq": row["seq"], "thread_id": str(row.get("thread_id") or "")}
+    return None
+
+
+def _tidy_gate(workspace_root, c: Dict[str, Any], verb: str, n: str, now_iso: str,
+               memo: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """A Tidy press, asked against its pile's rule as the book stands now
+    (`hub_tidy.tidy_sets`, read again after every write of the batch). None
+    when the row may be written, else `(said, handler)`, writing nothing."""
+    import hub_tidy
+
+    kind = hub_tidy.pile_kind(c.get("pile"))
+    if hub_tidy.TIDY_VERBS.get(kind) != verb:
+        return ({"outcome": "refused", "line": TIDY_VERB_LINE}, {"status": "refused", "error": "pile_verb"})
+    if "sets" not in memo:
+        memo["sets"] = hub_tidy.tidy_sets(workspace_root, now_iso)
+    ids = memo["sets"].get(kind)
+    if ids is None:
+        return ({"outcome": "refused", "line": TIDY_UNREADABLE_LINE}, {"status": "refused", "error": "pile_unreadable"})
+    if n not in ids:
+        return ({"outcome": "refused", "line": TIDY_LEFT_LINE}, {"status": "refused", "error": "pile_left"})
+    return None
+
+
+def _apply_tidy_row(workspace_root, c: Dict[str, Any], verb: str, n: str, actor: str, now_iso,
+                    memo: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """cr1#1584: one Tidy row, through the owning writer. Answers `(what the
+    result says, the audit's handler result)`.
+
+      * `archive` (Gone quiet): the lifecycle question's own `archive`
+        answer: `thread_archive.archive_thread`, then each lifecycle question
+        still open on it resolved `applied`, as that answer resolves it.
+        The result keeps the `seq` of the status row it wrote;
+      * `restore` (its Undo): back to the status it had, through the
+        lifecycle's own typed status write (`lifecycle_pass._set_status`,
+        which `bring_back` uses), only while the archive that press wrote
+        is the project's newest status change (`back_seq`);
+      * `make project` (Folders with no project): `thread_writer.
+        create_thread` with that folder, under the owner's own company; the
+        result keeps the new project's id and the `seq` of its
+        `thread_created`;
+      * `unmake project` (its Undo): that project archived, only while
+        nothing has landed on it since it was made.
+
+    A press an earlier run already wrote answers `already` with that write's
+    row (`_tidy_written`); one whose item left the pile is refused
+    (`_tidy_gate`); an Undo answers `already` and writes nothing when the
+    owner acted since."""
+    import thread_archive as ta
+
+    root = Path(str(workspace_root))
+    iso_now = _iso(_now(now_iso))
+    if not n:
+        return {"outcome": "error", "line": UNKNOWN_VERB_LINE.format(verb=verb or "none")}, {"status": "error"}
+    import hub_tidy
+
+    if verb in set(hub_tidy.TIDY_VERBS.values()):
+        done = _tidy_written(_tidy_book(root), c.get("id"))
+        if done is not None:
+            said = {"outcome": "already", "line": TIDY_DONE_LINE, "seq": done["seq"]}
+            if done["thread_id"]:
+                said["thread_id"] = done["thread_id"]
+            return said, {"status": "already_written", "seq": done["seq"]}
+        held = _tidy_gate(root, c, verb, n, iso_now, memo)
+        if held is not None:
+            return held
+    elif verb in TIDY_BUCKET_BACKS:
+        # cr1#1584 PR 2: a merge's or a tidy's Undo names its dated folder in `n`
+        if not c.get("back_of"):
+            return {"outcome": "refused", "line": TIDY_BACK_LINE}, {"status": "refused", "error": "no_press"}
+    elif not c.get("back_of") or not isinstance(c.get("back_seq"), int) or isinstance(c.get("back_seq"), bool):
+        return {"outcome": "refused", "line": TIDY_BACK_LINE}, {"status": "refused", "error": "no_press"}
+    if verb in TIDY_MORE:
+        return _apply_tidy_more(root, c, verb, n, memo, iso_now)
+
+    if verb == "archive":
+        import brain_proposals as bp
+
+        res = ta.archive_thread(str(root), n, reason=TIDY_ARCHIVE_REASON, source_skill=COMMITMENT_SRC)
+        memo.pop("sets", None)
+        if res.get("status") == "already_archived":
+            return {"outcome": "already", "line": "Already archived; nothing was written."}, {"status": "already_archived"}
+        for p in bp.open_brain_proposals(str(root), now_iso=iso_now):
+            if p.get("kind") == "dormancy" and str(p.get("thread_id") or "") == n:
+                bp.resolve_proposal(str(root), str(p["id"]), "applied", resolved_by=actor,
+                                    source_skill=COMMITMENT_SRC, note=TIDY_ARCHIVE_REASON)
+        last = _tidy_last_status(_tidy_book(root), n) or {}
+        return ({"outcome": "applied", "line": "Archived.", "seq": last.get("seq"),
+                 "from_status": str(res.get("from_status") or "")},
+                {"status": "archived", "seq": last.get("seq")})
+
+    if verb == "restore":
+        import lifecycle_pass as lp
+
+        last = _tidy_last_status(_tidy_book(root), n)
+        prev = str((last or {}).get("from_status") or "")
+        if (last is None or last.get("seq") != c.get("back_seq") or last.get("to_status") != ta.ARCHIVED_STATUS
+                or prev not in ("active", "dormant") or _tidy_status_of(root, n) != ta.ARCHIVED_STATUS):
+            return {"outcome": "already", "line": TIDY_CHANGED_LINE}, {"status": "already_resolved"}
+        lp._set_status(str(root), n, from_status=ta.ARCHIVED_STATUS, to_status=prev,
+                       reason=TIDY_RESTORE_REASON, source_skill=COMMITMENT_SRC)
+        return {"outcome": "applied", "line": "Put back as " + prev + "."}, {"status": "updated", "to_status": prev}
+
+    if verb == "make project":
+        import thread_writer as tw
+
+        if not (root / n).is_dir() or tw.resolve_folder_name(root, n, n) != n:
+            return {"outcome": "refused", "line": TIDY_NO_FOLDER_LINE}, {"status": "refused", "error": "no_folder"}
+        try:
+            made = _writer_create(root, canonical_name=n, folder_name=n, status="active",
+                                  org_id=_own_org(root), source_skill=SOURCE_SKILL)
+        except ValueError:
+            return {"outcome": "refused", "line": TIDY_TAKEN_LINE}, {"status": "refused", "error": "name_taken"}
+        finally:
+            memo.pop("sets", None)
+        tid = str(made.get("id") or "")
+        seq = None
+        for ev in _tidy_book(root):
+            if ev.get("type") == "thread_created" and str((ev.get("data") or {}).get("primary_thread_id") or "") == tid:
+                seq = ev.get("seq")
+        return ({"outcome": "applied", "line": "Made a project.", "thread_id": tid, "seq": seq},
+                {"status": "created", "thread_id": tid, "seq": seq})
+
+    # `unmake project`: the project this row names, made by the press it takes back
+    events = _tidy_book(root)
+    made = next((ev for ev in events if ev.get("type") == "thread_created" and ev.get("seq") == c.get("back_seq")
+                 and str((ev.get("data") or {}).get("primary_thread_id") or "") == n), None)
+    if made is None or _tidy_status_of(root, n) != "active" or _tidy_touched_since(events, n, made.get("seq")):
+        return {"outcome": "already", "line": TIDY_CHANGED_LINE}, {"status": "already_resolved"}
+    ta.archive_thread(str(root), n, reason=TIDY_UNMAKE_REASON, source_skill=COMMITMENT_SRC)
+    return {"outcome": "applied", "line": "Taken back: that project is archived."}, {"status": "archived"}
+
+
+#: cr1#1584 PR 2: the presses `_apply_tidy_more` writes, and the two Undos
+#: that name a dated folder rather than a row of the log.
+TIDY_MORE = frozenset({"link folder", "unlink folder", "merge notes", "unmerge notes", "tidy clutter", "untidy clutter",
+                       "file away", "put back"})
+TIDY_BUCKET_BACKS = frozenset({"unmerge notes", "untidy clutter", "put back"})
+
+
+def _tidy_updated_seq(events: List[Dict[str, Any]], tid: str) -> Optional[int]:
+    """The seq of the newest `thread_updated` row on a project."""
+    last = None
+    for ev in events:
+        if ev.get("type") == "thread_updated" and str((ev.get("data") or {}).get("primary_thread_id") or "") == tid:
+            last = ev.get("seq")
+    return last if isinstance(last, int) and not isinstance(last, bool) else None
+
+
+def _tidy_folder_of(root: Path, tid: str) -> str:
+    from entities_io import entities_collection, read_entities_json
+
+    for p in entities_collection(read_entities_json(root / "_hq" / "data" / "entities.json"), "projects"):
+        if isinstance(p, dict) and str(p.get("id") or "") == tid:
+            return str(p.get("folder_name") or "")
+    return ""
+
+
+def _apply_tidy_more(root: Path, c: Dict[str, Any], verb: str, n: str,
+                     memo: Dict[str, Any], iso_now: str = "") -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """cr1#1584 PR 2: the relink, the notes merge and Command Room's own
+    tidy, and each one's Undo, through the owning writer. A press reached
+    here passed its pile's rule (`_tidy_gate`).
+
+      * `link folder`: `thread_writer.update_thread(folder_name=)` to the
+        project's same-named folder, as the pile reads it now (never a name
+        the page sent); never makes a folder. Its Undo, `unlink folder`,
+        clears it only while that write is the project's newest change;
+      * `merge notes`: `notes_merge.merge_notes`, archive first; its Undo,
+        `unmerge notes`, `notes_merge.unmerge_notes` on the dated folder the
+        merge answered, only while the merged file is unchanged;
+      * `tidy clutter`: `cleanup_actions.tidy_folder` (cr1#1019), archive
+        first with a manifest; its Undo, `untidy clutter`,
+        `cleanup_actions.undo_folder_tidy` on that tidy's dated folder."""
+    import thread_writer as tw
+
+    if verb == "link folder":
+        import hub_tidy
+
+        folder = str((hub_tidy.relink_counted(root)[0].get(n) or {}).get("where") or "")
+        if not folder or not (root / folder).is_dir() or tw.resolve_folder_name(root, folder, folder) != folder:
+            return {"outcome": "refused", "line": TIDY_NO_FOLDER_LINE}, {"status": "refused", "error": "no_folder"}
+        tw.update_thread(root, n, folder_name=folder, source_skill=SOURCE_SKILL)
+        memo.pop("sets", None)
+        seq = _tidy_updated_seq(_tidy_book(root), n)
+        return ({"outcome": "applied", "line": "Linked to its folder.", "seq": seq},
+                {"status": "updated", "seq": seq})
+    if verb == "unlink folder":
+        if _tidy_updated_seq(_tidy_book(root), n) != c.get("back_seq") or not _tidy_folder_of(root, n):
+            return {"outcome": "already", "line": TIDY_CHANGED_LINE}, {"status": "already_resolved"}
+        tw.update_thread(root, n, folder_name=None, source_skill=SOURCE_SKILL)
+        return {"outcome": "applied", "line": "Unlinked; the folder stays where it is."}, {"status": "updated"}
+    if verb == "merge notes":
+        import notes_merge
+
+        from commitment_state import _now_calendar_day
+
+        # the heading's date is the Apply run's own day, on the workspace's calendar
+        day = _now_calendar_day(iso_now or _iso(_now(None)), workspace_path=str(root))
+        res = notes_merge.merge_notes(root, n, today=day.isoformat() if day else None)
+        memo.pop("sets", None)
+        if res.get("status") != "merged":
+            return {"outcome": "refused", "line": TIDY_LEFT_LINE}, {"status": "refused", "error": "not_merged"}
+        return ({"outcome": "applied", "line": "Merged into " + str(res.get("ruled") or "one file") + ".",
+                 "bucket": res.get("bucket")}, {"status": "merged"})
+    if verb == "unmerge notes":
+        import notes_merge
+
+        res = notes_merge.unmerge_notes(root, n)
+        if res.get("status") == "restored":
+            line = "Put back." + (" Some could not be put back, their places being taken." if res.get("left") else "")
+            return {"outcome": "applied", "line": line}, {"status": "undone"}
+        if res.get("status") in ("changed", "already"):
+            return {"outcome": "already", "line": TIDY_CHANGED_LINE}, {"status": "already_resolved"}
+        return {"outcome": "refused", "line": TIDY_BACK_LINE}, {"status": "refused", "error": "no_merge"}
+    if verb in ("file away", "put back"):
+        # a loose file at a project's root into `deliverables/`, archive first,
+        # and that move's Undo, named by the press it takes back
+        import root_files
+
+        if verb == "file away":
+            res = root_files.move_to_deliverables(root, n, press=str(c.get("id") or ""))
+            memo.pop("sets", None)
+            if res.get("status") != "moved":
+                return {"outcome": "refused", "line": TIDY_LEFT_LINE}, {"status": "refused", "error": "not_loose"}
+            return ({"outcome": "applied", "line": "Moved into deliverables.", "bucket": str(c.get("id") or "")},
+                    {"status": "updated"})
+        res = root_files.put_back(root, str(c.get("back_of") or ""))
+        if res.get("status") == "restored":
+            return {"outcome": "applied", "line": "Put back."}, {"status": "undone"}
+        if res.get("status") in ("changed", "already"):
+            return {"outcome": "already", "line": TIDY_CHANGED_LINE}, {"status": "already_resolved"}
+        if res.get("status") == "busy":
+            return ({"outcome": "error", "line": "That file is open somewhere, so it was not moved back. Close it and press Undo again."},
+                    {"status": "error", "error": "busy"})
+        return {"outcome": "refused", "line": TIDY_BACK_LINE}, {"status": "refused", "error": "no_move"}
+    import cleanup_actions as ca
+
+    if verb == "tidy clutter":
+        res = ca.tidy_folder(root)
+        memo.pop("sets", None)
+        if not res.get("bucket") or not res.get("moved"):
+            return {"outcome": "already", "line": "Nothing to tidy; nothing was written."}, {"status": "noop"}
+        return ({"outcome": "applied", "line": f"Tidied {int(res['moved'])}, kept in the archive.",
+                 "bucket": res.get("bucket")}, {"status": "archived"})
+    res = ca.undo_folder_tidy(root, n)
+    if int(res.get("restored") or 0):
+        return {"outcome": "applied", "line": "Put back."}, {"status": "undone"}
+    return {"outcome": "already", "line": TIDY_CHANGED_LINE}, {"status": "already_resolved"}
+
+
+def _tidy_status_of(root: Path, tid: str) -> str:
+    from entities_io import entities_collection, read_entities_json
+
+    for p in entities_collection(read_entities_json(root / "_hq" / "data" / "entities.json"), "projects"):
+        if isinstance(p, dict) and str(p.get("id") or "") == tid:
+            return str(p.get("status") or "").lower()
+    return ""
+
+
+def _tidy_touched_since(events: List[Dict[str, Any]], tid: str, seq: Any) -> bool:
+    """Whether anything landed on a project after the row that made it: a
+    row filed on it, a status change, or a change to its record."""
+    if not isinstance(seq, int):
+        return True
+    for ev in events:
+        s = ev.get("seq")
+        if not isinstance(s, int) or s <= seq:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        named = {str(ev.get("primary_thread_id") or ""), str(d.get("primary_thread_id") or ""),
+                 str(d.get("thread_id") or ""), str(d.get("target_id") or "")}
+        named |= {str(x) for x in (ev.get("related_thread_ids") or []) if x}
+        if tid in named:
+            return True
+    return False
+
+
 def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
                        *, resolved_by: str = "", now_iso=None) -> Dict[str, Any]:
     """A WRITER. The Done tab's presses (cr1#780), each through its own rail,
@@ -5168,6 +5810,9 @@ def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
       * `bring back`: dormant or retired to active as the owner's act, the
         questions standing on it answered (`_bring_back`);
       * `archive`: `thread_archive.archive_thread`, the one archive path.
+
+    A row of kind `tidy` (cr1#1584, the Tidy section's piles and their Undo)
+    goes to `_apply_tidy_row`, which asks the pile's rule first.
 
     A project in any other state is left alone. A refusal of one row never
     stops the rest."""
@@ -5193,13 +5838,19 @@ def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
 
     results: List[Dict[str, Any]] = []
     audit: List[Dict[str, Any]] = []
+    tidy_memo: Dict[str, Any] = {}
     for c in rows:
         verb = str(c.get("action") or "").strip().lower()
         n = str(c.get("n") or "").strip()
         r: Dict[str, Any] = {"id": c.get("id"), "action": verb, "n": n}
         handler: Any = None
         try:
-            if verb not in WEEK_VERBS or not n:
+            if str(c.get("kind") or "") == "tidy":
+                # cr1#1584: a Tidy pile's press or its Undo, asked against
+                # the pile's own rule (or the write it takes back) first.
+                said, handler = _apply_tidy_row(workspace_root, c, verb, n, actor, now_iso, tidy_memo)
+                r.update(said)
+            elif verb not in WEEK_VERBS or not n:
                 r.update(outcome="error", line=UNKNOWN_VERB_LINE.format(verb=verb or "none"))
                 handler = {"status": "error"}
             elif verb == "undo":
@@ -5259,7 +5910,12 @@ def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
             r.update(_row_error(exc))
             handler = {"status": "error", "error": type(exc).__name__}
         results.append(r)
-        audit.append({"n": n, "action": verb, "handler_result": handler, "said": r.get("outcome")})  # cr1#1378
+        entry = {"n": n, "action": verb, "handler_result": handler, "said": r.get("outcome")}  # cr1#1378
+        if str(c.get("kind") or "") == "tidy":
+            # cr1#1584: the press and the row its write made, so a run handed
+            # the same press again answers from here (`_tidy_written`)
+            entry.update(id=c.get("id"), seq=r.get("seq"), thread_id=r.get("thread_id"))
+        audit.append(entry)
     if audit:
         ev = build_apply_choices_applied_event(source=COMMITMENT_SRC, actions=audit)
         ev["data"]["surface"] = WEEK_SURFACE
@@ -5302,6 +5958,18 @@ def _settings_source(stored: Optional[Dict[str, Any]]) -> str:
     if origin == "first_fire_defaults":
         return SOURCE_DEFAULT
     return SOURCE_ON_FILE if origin else SOURCE_SENTENCE
+
+
+def _local_day(value, tzinfo) -> Optional[str]:
+    """cr1#1643 review: a stored time as the day it fell on where the owner is,
+    never its UTC day (its first ten characters): a rule confirmed on a
+    Sunday evening in California is a Sunday rule. A date alone stays that
+    day; nothing is None."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    at = _parse(s) if len(s) > 10 else None
+    return at.astimezone(tzinfo).date().isoformat() if at is not None else (s[:10] or None)
 
 
 def _rule_last_used(events: List[Dict[str, Any]], skill: str, applied_at) -> Optional[str]:
@@ -5349,6 +6017,7 @@ def feed_settings(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     now = _now(now_iso)
     iso_now = _iso(now)
     ws = str(workspace_root)
+    tzinfo = _workspace_tz(workspace_root)
     errors: List[str] = []
     events = _review_events(workspace_root)
     rules: List[Dict[str, Any]] = []
@@ -5365,7 +6034,7 @@ def feed_settings(workspace_root, *, now_iso=None) -> Dict[str, Any]:
                 "rule": str(r.get("rule") or "")[:200], "effect": str(r.get("effect") or "")[:300],
                 "why": str(r.get("rests_on") or "")[:300], "where": str(r.get("skill") or ""),
                 "op": str(r.get("op") or ""),
-                "confirmed_at": str(r.get("applied_at") or "")[:10] or None,
+                "confirmed_at": _local_day(r.get("applied_at"), tzinfo),
                 "asked_at": str(r.get("asked_at") or "")[:10] or None,
                 "last_used": _rule_last_used(events, str(r.get("skill") or ""), applied),
                 "source": SOURCE_HUB if r.get("corrections") == [] and str(r.get("rests_on") or "") == SOURCE_HUB else SOURCE_CORRECTION,
@@ -5436,7 +6105,7 @@ def feed_settings(workspace_root, *, now_iso=None) -> Dict[str, Any]:
 
         for skill in vc.written_overrides(ws) or []:
             ov = vc.load_voice_block_override(ws, skill) or {}
-            voice.append({"skill": skill, "last_refreshed": str(ov.get("last_refreshed") or "")[:10] or None,
+            voice.append({"skill": skill, "last_refreshed": _local_day(ov.get("last_refreshed"), tzinfo),
                           "calibration_level": ov.get("calibration_level"), "sample_count": ov.get("sample_count"),
                           "source": SOURCE_CORRECTION})
         stored_prep = load_skill_config(ws, "call-prep") or {}
@@ -5824,6 +6493,48 @@ def _due_day(due: Optional[_dt.date], today: _dt.date) -> str:
     return f"{due.strftime('%B')} {due.day}"
 
 
+#: cr1#1636 item 2: the statuses that end a line of work for the Today
+#: headline. Not `thread_cards.DONE_STATUSES` whole (review of cr1#1636): a
+#: `resolved` or `completed` thread can be a won deal (`deal_state.close_deal`)
+#: whose next steps are live work.
+NOT_LIVE_STATUSES = ("archived", "retired", "deleted", "merged")
+
+
+def _dead_threads(workspace_root) -> set:
+    """READ. The ids of every thread that is not live work (cr1#1636 item 2):
+    its own status, or its company's, is one of `NOT_LIVE_STATUSES`. A
+    thread's parent does not carry over (review of cr1#1636): the Work tab
+    and the thread cards show a live child under a closed parent as live, and
+    so does this. The company is read the canonical way, `org_id` then the
+    older `affiliation_id` (`thread_writer.thread_org_id`). An unreadable
+    record raises; the caller then leaves every row live, as before."""
+    from entities_io import entities_collection, read_entities_json
+    from thread_writer import thread_org_id
+
+    ent = read_entities_json(Path(str(workspace_root)) / "_hq" / "data" / "entities.json")
+    orgs = {str(o["id"]): o for o in entities_collection(ent, "orgs") if isinstance(o, dict) and o.get("id")}
+
+    def over(rec: Any) -> bool:
+        return isinstance(rec, dict) and str(rec.get("status") or "").strip().lower() in NOT_LIVE_STATUSES
+
+    return {str(t["id"]) for t in entities_collection(ent, "threads")
+            if isinstance(t, dict) and t.get("id") and (over(t) or over(orgs.get(str(thread_org_id(t) or ""))))}
+
+
+def _stamp_live(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[str, Any]]) -> None:
+    """READ. Marks each plate row `live` (cr1#1636 item 2): False when the
+    thread its commitment sits on is not live work (`_dead_threads`), else
+    True; a row on no thread is live. The Today headline, Do this first and
+    Needs you name live work only, and the top line's ranking leaves a row
+    that is not live out (`_lead_rows`). Never writes."""
+    from cru_match import _commitment_id
+
+    dead = _dead_threads(workspace_root)
+    thread_of = {str(_commitment_id(ev)): str(ev.get("primary_thread_id") or "") for ev in opens}
+    for r in rows:
+        r["live"] = thread_of.get(str(r.get("id")), "") not in dead
+
+
 def _lead_rows(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[str, Any]],
                now: _dt.datetime) -> List[Dict[str, Any]]:
     """READ. The top line's ranked items (cr1#1290), from the owner's own
@@ -5863,6 +6574,8 @@ def _lead_rows(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[str,
     stars = set(starred_ids(load_stars(root))) - {owner}
     out: List[Dict[str, Any]] = []
     for r in rows:
+        if r.get("live") is False:   # cr1#1636 item 2: never a row from work that is over
+            continue
         cid = str(r.get("id"))
         ev = by_id.get(cid) or {}
         ths = set(threads_of.get(cid) or set())
@@ -5919,6 +6632,12 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         origins = {}
     for r in rows:
         r["origin"] = origins.get(str(r.get("id")))
+    # cr1#1636 item 2: whether each row sits on live work, read before
+    # anything ranks the rows (`_lead_rows` leaves one that is not out).
+    try:
+        _stamp_live(workspace_root, rows, opens or [])
+    except Exception:  # noqa: BLE001 - an unread record leaves every row live, as before
+        pass
     late_rows: List[Dict[str, Any]] = []
     n_late_hidden = 0
     overdue_ok = False
@@ -6152,16 +6871,26 @@ def feed_inbox(workspace_root=None, page_html: str = "", *, fire_stamp: str = ""
             # above is that To unfiltered. The page never sends a Microsoft
             # 365 group reply on it.
             draft["to_unfiltered"] = True
-        rows.append({
+        row = {
             "n": it["n"], "kind": kind, "name": it["name"][:120], "subject": subject[:200],
-            "why": it["why"][:240],
+            # cr1#1635: the inbox page sets the why after a dash; the Hub's
+            # read never starts with one (the subject is cleaned the same way).
+            "why": re.sub(r"^[\s\u2012\u2013\u2014\u00b7-]+", "", it["why"])[:240],
             "draft": draft,
             "actions": actions,
             "thread_id": str(thread.get("thread_id") or "") if thread else None,
             "message_id": str(thread.get("message_id") or "") if thread else None,
             "message_ts": str(thread.get("ts") or "") if thread else None,
             "fire_stamp": fire_stamp,
-        })
+        }
+        # cr1#1635: the run's own verdict beside its why, when it gave one
+        # (`needs`, a true or false on the thread it read): false is a row
+        # that needs nothing from the owner, so the Hub lists it outside Needs
+        # you. No verdict, no field: the row is one the run listed for the
+        # owner, as before, and a page from before reads it that way too.
+        if thread is not None and isinstance(thread.get("needs"), bool):
+            row["needs"] = thread["needs"]
+        rows.append(row)
     return _with_words(workspace_root, {"generated_at": _iso(_now(now_iso)), "fire_stamp": fire_stamp,
             "page_rel": page_rel, "header": parser.header, "items": rows,
             "n_items": len(rows), "n_drafted": sum(1 for r in rows if r["draft"]["body"]),
@@ -7040,6 +7769,21 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             week.append({"id": cid, "n": str(raw.get("n") or ""), "action": verb,
                          "payload": raw.get("payload") if isinstance(raw.get("payload"), dict) else {},
                          "title": str(raw.get("title") or "")[:200]})
+        elif kind == "tidy":
+            # cr1#1584: a Tidy pile's press, or its Undo, for `apply_week_choices`
+            # (the project and folder writes the Record tab's presses share).
+            import hub_tidy
+
+            if verb not in hub_tidy.VERBS:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            week.append({"id": cid, "kind": "tidy", "n": str(raw.get("n") or "")[:200], "action": verb,
+                         "title": str(raw.get("title") or "")[:200],
+                         **({"pile": str(raw.get("pile"))[:80]} if raw.get("pile") else {}),
+                         **({"back_of": str(raw.get("back_of"))[:160]} if raw.get("back_of") else {}),
+                         **({"back_seq": raw.get("back_seq")} if isinstance(raw.get("back_seq"), int)
+                            and not isinstance(raw.get("back_seq"), bool) else {})})
         elif kind == "settings":
             # cr1#781: the Settings tab's edit, for `apply_settings_choices`.
             if verb not in SETTINGS_VERBS:
@@ -7719,6 +8463,21 @@ def _hub_day_checked(value, now, root):
     return d.isoformat(), ""
 
 
+def _reminders_kept(root) -> set:
+    """READ. The ids of every reminder the owner made that is not deleted now,
+    cleared ones included (cr1#1636 item 6): what the Hub's Undo on a cleared
+    reminder may put back. Reminders are the owner's own, so the personal
+    lane is read too."""
+    import reminders as rm
+    from events_io import load_events_org_scoped
+
+    events = load_events_org_scoped(str(root), drop_personal=False)[0]
+    made = {str((ev.get("data") or {}).get("id") or "") for ev in events
+            if isinstance(ev, dict) and ev.get("type") == "reminder" and isinstance(ev.get("data"), dict)
+            and ev["data"].get("origin") == rm.REMINDER_ORIGIN}
+    return {rid for rid in made if rid and not rm.is_deleted(events, rid)}
+
+
 def _hub_writes_in_book(root) -> Dict[str, Dict[str, Any]]:
     """Every reminder event a Hub press already wrote, by the press's id
     (cr1#675): a press applied twice answers from the first write."""
@@ -8354,7 +9113,9 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
       * reminder `add`: `reminders.capture_reminder`, the user's own words and
         the day they picked (`parse_later_when`: a date, or days from today);
       * reminder `done`: one `reminder_cleared` (a repeating one re-arms);
-      * reminder `push`: one `reminder_updated` with the new day;
+      * reminder `push`: one `reminder_updated` with the new day; a push
+        marked `restore` (the Hub's Undo on a cleared reminder, cr1#1636)
+        may re-arm one a clear took off the list, never a deleted one;
       * reminder `delete` (cr1#1221): one `reminder_deleted`, gone from
         every surface for good (a repeating one never re-arms), carrying
         its undo handle for the owner's `undo`;
@@ -8401,6 +9162,7 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
     written = _hub_writes_in_book(root)
     answered = _miss_written(root) if any(str(c.get("kind") or "").strip().lower() == "miss" for c in rows) else {}
     active = None
+    kept = None   # cr1#1636 item 6: reminders a restore may put back, read once
     results: List[Dict[str, Any]] = []
     for c in rows:
         kind = str(c.get("kind") or "").strip().lower()
@@ -8444,7 +9206,16 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                     # The owner's day, the one `feed_mine` built the list on (cr1#688).
                     today = cs._now_calendar_day(_iso(now), workspace_path=str(root)) or now.date()
                     active = {a.get("id") for a in rm.load_active_reminders(root, today, surface="m_facing")}
-                if not rid_ or rid_ not in active:
+                # cr1#1636 item 6: the Hub's Undo on a cleared reminder is a push
+                # marked `restore`. It may put back one a clear took off the list
+                # (the reader re-arms a cleared reminder on a push), never one
+                # that was deleted; a plain push still needs it on the list.
+                known = bool(rid_) and rid_ in active
+                if not known and rid_ and verb == "push" and inp.get("restore") is True:
+                    if kept is None:
+                        kept = _reminders_kept(root)
+                    known = rid_ in kept
+                if not known:
                     r.update(outcome="already" if verb in ("done", "delete") else "error", line=REMINDER_GONE_LINE)
                 elif verb == "delete":
                     ev = rm.build_reminder_deleted_event(rid_, source_skill=SOURCE_SKILL)
@@ -8469,6 +9240,9 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                             rid_, action="push", remind_from=when, source_skill=SOURCE_SKILL)
                         ev.setdefault("data", {})["hub_choice"] = choice_id
                         append_event(events_path, ev, holder="cockpit_helpers")
+                        # review of cr1#1636: a reminder put back is on the list
+                        # again for the rest of this run (an Undo then a Done)
+                        active.add(rid_)
                         r.update(outcome="applied", line=f"Moved to {when}.")
             elif kind == "miss" and verb == "tell":
                 r.update(_apply_miss(root, c, actor, now, answered, live, inbox))
@@ -8928,26 +9702,80 @@ def _own_org(root: Path) -> str:
     return str(own[0]["id"]) if len(own) == 1 else tw.UNAFFILIATED_ORG_ID
 
 
-def _create_stream(root: Path, name: str, parent_id: Optional[str] = None) -> str:
+def _create_stream(root: Path, name: str, parent_id: Optional[str] = None,
+                   folder_out: Optional[dict] = None) -> str:
     """A work stream through the one thread writer: the parent with the
     owner's name (unless an earlier Apply already wrote it) and one thread
-    under it, because a work stream is a parent thread. Answers its id."""
+    under it, because a work stream is a parent thread. Answers its id.
+
+    cr1#1582: both Hub adds (No home yet's New work stream and the Work
+    tab's bar, `hub_edit._stream_add`) come through here, so the stream's
+    folder is made in the same act (`_stream_folder`); its result lands in
+    `folder_out` when the caller passes one. No folder is guessed from the
+    name (`guess_folder=False`): `project_folder` decides it."""
     import thread_writer as tw
 
     org = _own_org(root)
     if not parent_id:
         parent_id = _writer_create(root, canonical_name=name, status="active", org_id=org,
-                                   source_skill=SOURCE_SKILL)["id"]
+                                   source_skill=SOURCE_SKILL, guess_folder=False)["id"]
     elif any(isinstance(t, dict) and t.get("parent_thread_id") == parent_id
              for t in tw._threads(tw._load_entities(root))):
+        if folder_out is not None:
+            folder_out.update(_stream_folder(root, parent_id))
         return parent_id  # another Apply finished it just now
     try:
         _writer_create(root, canonical_name=NEW_STREAM_CHILD.format(name=name), status="active",
                        org_id=org, parent_thread_id=parent_id, source_skill=SOURCE_SKILL,
-                       skip_dedup=True)
+                       skip_dedup=True, guess_folder=False)
     except _HalfMadeStream:
         raise _HalfMadeStream(parent_id) from None
+    got = _stream_folder(root, parent_id)
+    if folder_out is not None:
+        folder_out.update(got)
     return parent_id
+
+
+def _stream_folder_refusal(root: Path, name: str) -> Optional[str]:
+    """cr1#1582: the line that refuses a new work stream before anything is
+    written, when its folder cannot be made as asked (`project_folder.
+    folder_check`): a name no folder can hold, two folders of that name one
+    level down (the owner picks in a chat), or a folder another live project
+    records. None when the stream may be made."""
+    import project_folder
+
+    got = project_folder.folder_check(root, name)
+    if got.get("ok"):
+        return None
+    reason = got.get("reason")
+    if reason == "bad_name":
+        return NEW_STREAM_FOLDER_NAME_LINE.format(name=name, why=project_folder.name_problem(name) or "")
+    if reason == "ambiguous":
+        return NEW_STREAM_FOLDER_PICK_LINE.format(name=name, where=", ".join(got.get("folders") or []))
+    if reason == "taken":
+        return NEW_STREAM_FOLDER_TAKEN_LINE.format(folder=got.get("folder_name"), other=got.get("holder"))
+    return str(got.get("line") or NEW_STREAM_FAILED_LINE)
+
+
+def _stream_folder(root: Path, sid: str) -> dict:
+    """cr1#1582: the new work stream's folder, in the same press, through
+    `project_folder.make_project_folder` (the one place a project folder is
+    made): made at the workspace root or matched, and recorded on the stream
+    and on its own first thread. Never raises: a folder that could not be
+    made leaves the stream folderless, and the line says so."""
+    import project_folder
+    import thread_writer as tw
+
+    kids = [str(t.get("id")) for t in tw._threads(tw._load_entities(root))
+            if isinstance(t, dict) and str(t.get("parent_thread_id") or "") == sid]
+    try:
+        # its own first thread shares the folder, so it is not a project
+        # with no folder; the parent alone renders the folder's brain
+        # (`render_thread_live_state`, cr1#1582 review)
+        return project_folder.make_project_folder(root, sid, source_skill=SOURCE_SKILL,
+                                                  with_project=True, also_thread_ids=kids)
+    except Exception as exc:  # noqa: BLE001 - the stream stands without a folder
+        return {"ok": False, "outcome": "refused", "reason": type(exc).__name__}
 
 
 def _track_heard(root: Path, cid: str) -> tuple:
@@ -8993,6 +9821,10 @@ def _home_press(workspace_root, cid: str, verb: str, value: Any, ledger_open: se
         if not name:
             return {"status": "refused", "error": "no_name"}, "refused", NEW_STREAM_NAME_LINE
         how, found = _stream_for_name(root, name, evs)
+        if how == "new":
+            refused = _stream_folder_refusal(root, name)
+            if refused:
+                return ({"status": "refused", "error": "folder_name"}, "refused", refused)
         if how in ("taken", "archived", "closed"):
             rec = found or {}
             if how == "taken":
@@ -9025,11 +9857,14 @@ def _home_press(workspace_root, cid: str, verb: str, value: Any, ledger_open: se
         evs = load_events_owner_scoped(str(root))[0]
     answered = None
     half = ""
+    folder = None
     if how in ("new", "resume"):
         answered = _no_home_state(root, cid, ledger_open, now)
         if answered is None:
             try:
-                target = _create_stream(root, name, target if how == "resume" else None)
+                folder = {}
+                target = _create_stream(root, name, target if how == "resume" else None,
+                                        folder_out=folder)
                 # The stream's writes take a moment: the home's Apply-twice
                 # check reads the log as it stands now, so a second page
                 # pressing the same choice meanwhile is seen (review of cr1#1342).
@@ -9050,9 +9885,14 @@ def _home_press(workspace_root, cid: str, verb: str, value: Any, ledger_open: se
     handler = dict(handler or {})
     if tracked:
         handler["tracked_id"] = tracked
+    if folder:
+        handler["folder_name"] = folder.get("folder_name")
+        handler["folder_outcome"] = folder.get("outcome")
     if how in ("new", "resume") and outcome == "applied":
         handler["created_stream"] = target
         line = f"Started the work stream {name} and moved this there."
+        if folder and not folder.get("ok"):
+            line += NEW_STREAM_NO_FOLDER_LINE
     elif how == "existing" and outcome == "applied":
         line = line.rstrip(".") + ", the work stream you already have."
     if tracked and outcome == "applied":
@@ -9115,6 +9955,8 @@ def _made_stream_free(root: Path, sid: str, press_id: str, evs: list) -> tuple:
             continue  # the Hub's own receipts: never work
         if typ in ("thread_created", "thread_updated", "status_change") and src == SOURCE_SKILL:
             continue  # the Hub's own create and archive of these threads
+        if typ in ("project_folder_made", "project_folder_taken_back") and src == SOURCE_SKILL:
+            continue  # the Hub's own folder for this stream (cr1#1582)
         if typ == "reclassification" and d.get("origin") == ol.HOME_ORIGIN and press_id \
                 and press_id in (d.get("hub_choice"), d.get("undoes_choice")):
             continue  # this press and its Undo
@@ -9229,6 +10071,20 @@ def _undo_home(workspace_root, cid_in: str, press_id: Any, undo_id: str, ledger_
                 return handler, "error", UNASSIGN_ARCHIVE_FAILED_LINE.format(name=name) + tracked
             handler["stream"] = "archived_now"
             line = UNASSIGN_ARCHIVED_LINE.format(name=name) + tracked
+            # cr1#1582: the folder this press made goes with it: removed when
+            # empty, moved whole to the archive when anything is in it; a
+            # folder that was already there stays.
+            import project_folder
+
+            try:
+                back = project_folder.take_back_folder(root, target, source_skill=SOURCE_SKILL)
+            except Exception as exc:  # noqa: BLE001 - the stream is archived; the folder stays
+                back = {"ok": False, "outcome": "error", "reason": type(exc).__name__}
+            handler["folder_outcome"] = back.get("outcome")
+            if back.get("outcome") == "archived":
+                line += UNASSIGN_FOLDER_ARCHIVED_LINE
+            elif not back.get("ok"):
+                line += UNASSIGN_FOLDER_STAYS_LINE
             for tid in kids:
                 try:
                     ta.archive_thread(str(root), tid, reason=UNASSIGN_ARCHIVE_REASON, source_skill=SOURCE_SKILL,
@@ -11049,7 +11905,9 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
             return feed_week(workspace_root, sections=sections, now_iso=now_s)
 
         _run("feed/week", _week)
-        _run("status/maintenance", lambda: maintenance_status(workspace_root, now_iso=now_s))
+        _run("status/maintenance", lambda: maintenance_status(workspace_root, now_iso=now_s,
+                                                              review=built.get("feed/review"),
+                                                              projects=built.get("feed/projects")))
 
     # cr1#666: an `idle` answer over a page that says `done` is a read that
     # failed; the page keeps what it has.
@@ -11057,10 +11915,18 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
     maint = built.get("status/maintenance")
     if maint is not None and str(maint.get("state") or "") == "idle" \
             and page_maint is not None and str(page_maint.get("state") or "") == "done":
-        del built["status/maintenance"]
+        # cr1#1489: a kept copy that still carries the hidden chats note is
+        # sent back without it; any other is left on the page as it is.
+        clean = scrub_chats_note(page_maint)
+        if clean is not None:
+            built["status/maintenance"] = clean
+        else:
+            del built["status/maintenance"]
         for row in report:
             if row["doc"] == "status/maintenance":
                 row["kept_page"] = True
+                if clean is not None:
+                    row["scrubbed"] = True
 
     try:
         token, sizes = _keep_built(workspace_root, "refresh", report, built)
@@ -11458,6 +12324,7 @@ __all__ = [
     "RUNNING_TIMEOUT_MINUTES", "CONFIG_REL", "TEMPLATE_REL",
     "load_config", "save_config", "setup_check", "capabilities", "connector_display_name", "render_page",
     "render_page_file", "template_path", "status_doc", "running_timed_out",
+    "scrub_chats_note", "HIDDEN_CHAT_ACTS",
     "settle_statuses", "feed_today", "feed_plate", "feed_inbox", "feed_projects", "feed_mine", "apply_hub_choices", "plan_apply",
     "apply_commitment_choices", "log_run_receipt", "plan_task_registration",
     "plan_cockpit_registration", "PRE_HUB_NAMES", "mail_direct", "MAIL_DIRECT", "calendar_actions", "CALENDAR_ACTIONS", "record_calendar_changes", "plan_claim", "CLAIM_STALE_MINUTES", "COCKPIT_TASKS", "COCKPIT_TASK_IDS", "SURVIVING_CHATS",
@@ -11472,6 +12339,7 @@ __all__ = [
     "PROJECT_LIVE_ORDER", "PROJECTS_CAP", "HUB_TABS", "HUB_WORK_VIEWS", "HUB_WORD_TABS", "FILTERED_GROUPS", "feed_filtered", "PRIORITIES_CAP",
     "NO_HOME_CAP",
     "feed_board", "WEEK_AWAY_TIMED_HOURS", "WEEK_DAYS", "WEEK_DAY_MEETINGS", "WEEK_DAY_CARDS", "WEEK_LANES", "WEEK_AWAY_RE",
+    "WEEK_AWAY_LEAD_WORDS", "WEEK_AWAY_PERSONAL_DAYS", "WEEK_AWAY_COLLEAGUE_RE",
     "maintenance_status", "START_MAINTENANCE_BEHIND_HOURS",
     "render_from_recipe", "RECIPE_MISMATCH_LINE", "RECIPE_UNREADABLE_LINE",
     "refresh_all", "refresh_part", "unpack_refresh", "REFRESH_READS", "REFRESH_PART_BUDGET",

@@ -39,9 +39,9 @@ file migration).
   - Deliverables (.docx/.xlsx/.pptx/.pdf): N
   - Intel / briefings: N
   - Loose docs → project `_misc/`: N
-- **Queued for CEO review (`_hq/_ingest-queue/`):** N
+- **Left at their source, matching no project:** N
   - Low-confidence project match: N
-  - Unclassified: N
+  - No project: N
 - **Skipped:** N
   - Too large (≥100 MB): N (list names)
   - Unknown / unparseable: N
@@ -79,7 +79,7 @@ file migration).
 - [ ] Run `cleanup` in first week to validate data integrity
 - [ ] Spot-check views against source originals
 - [ ] Review `classifier_feedback.jsonl` after one week of passive capture
-- [ ] Walk `_hq/_ingest-queue/` and classify queued files ("review ingest queue")
+- [ ] Say where the files left at their source belong (they are listed for the Documents with no project pile)
 - [ ] Spot-check 5 migrated files against source originals to verify content integrity
 - [ ] Resolve any `.conflict-[ts]` files (pick winner, delete loser)
 

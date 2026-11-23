@@ -44,7 +44,7 @@ Every writable context file has exactly one primary owner skill. Other skills ma
 | `_people/_team-config.md` | `command-room-onboarding` (seed); `people-crm` (surgical updates) | — |
 | `[Project]/PROJECT_CONTEXT.md` | `workspace-manager` | All skills (read) |
 | `[Project]/PROJECT_BRAIN.md` | `workspace-manager` | All skills (read) |
-| `[Project]/SESSION_NOTES_[NAME].md` | `workspace-manager` (append); `meeting-notes` (append) | All skills (read) |
+| `[Project]/SESSION_NOTES_<folder name>.md` | `workspace-manager` (append); `meeting-notes` (append) | All skills (read) |
 | `[Project]/meetings/Call_Prep_*.docx` | `call-prep` | — |
 
 ### View files (never written directly)
@@ -283,7 +283,7 @@ Rules:
 
 ## Append Protocol — markdown append-only files
 
-Files: `SESSION_NOTES_[NAME].md`, `CONFLICTS.md`, `DECISION_LOG.md` (as a view, never written directly — regenerated from events), `intel/KNOWLEDGE_BASE.md`.
+Files: `SESSION_NOTES_<folder name>.md`, `CONFLICTS.md`, `DECISION_LOG.md` (as a view, never written directly — regenerated from events), `intel/KNOWLEDGE_BASE.md`.
 
 Every appended entry uses the shape:
 
@@ -293,7 +293,11 @@ Every appended entry uses the shape:
 [Content]
 ```
 
-For `SESSION_NOTES_[NAME].md`, events are also persisted to `events.jsonl` as `type: interaction` or `type: meeting`. The markdown file is a narrative duplicate written at the same time for human readability. Both must succeed; if the events.jsonl append fails, skip the markdown append and log a conflict.
+For `SESSION_NOTES_<folder name>.md`, events are also persisted to `events.jsonl` as `type: interaction` or `type: meeting`. The markdown file is a narrative duplicate written at the same time for human readability. Both must succeed; if the events.jsonl append fails, skip the markdown append and log a conflict.
+
+### Session notes file — one name (cr1#1580)
+
+A project's session notes live at the root of its folder as `SESSION_NOTES_<folder name>.md`: the folder's own name, exactly as spelled (spaces and capitals kept; for a nested folder, its own last segment). Never name the file after the owner, the project's label or anything else. Before you read or append, ask where the file is: render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "session_notes_file:notes_file", "args": {"workspace_root": "<WS>", "folder": "<the project folder>"}}'`, paste what it prints and run that. Use the `path` it returns: in a fresh folder it is the ruled name (`exists: false`, create it there); in a folder that already holds notes under an older spelling it is that file (`older_spelling: true`), and you append to it as it is. Never rename, merge or delete a notes file; when `other_notes` is not empty, leave them alone too (the tidy pile offers the merge). When it answers `ok: false` with `no_folder`, the project has no folder yet: tell the owner so in one plain sentence ("<project> has no folder yet, so I could not save its notes.") and never create one here; making a project's folder is the new-project step's job. In code, `shared/scripts/session_notes_file.py` (`write_target`, `find_notes`) is the same rule.
 
 ---
 
