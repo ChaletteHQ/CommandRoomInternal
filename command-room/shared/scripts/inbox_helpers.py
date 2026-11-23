@@ -1814,6 +1814,17 @@ def _compose_fire_receipt(workspace_root: str, *, task_id: str = TASK_ID,
     # capture's own figure keeps its meaning under its own name.
     if isinstance(data.get("errors"), list):
         data["n_errors"] = len(data["errors"])
+    # cr1#1602 (review of #1613): the Hub inbox run's receipt is written here,
+    # not through `receipts.log_receipt`, so its per-phase timings are added
+    # here, by the same reader (`task_timings`); a caller's are replaced.
+    try:
+        import task_timings
+
+        if canonical in task_timings.TASKS and receipt_type in task_timings.TIMED_RECEIPT_TYPES:
+            data["timings"] = task_timings.timings_for(
+                workspace_root, canonical, now=task_timings.receipt_now(workspace_root, canonical))
+    except Exception:  # noqa: BLE001 - a receipt is never refused for its timings
+        pass
     try:
         from late_fire import slot_provenance
 

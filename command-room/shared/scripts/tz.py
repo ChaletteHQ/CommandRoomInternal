@@ -32,7 +32,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Optional, Union
@@ -103,12 +103,40 @@ def _resolve_workspace_path(workspace_path: Union[str, Path, None]) -> Optional[
     return None
 
 
+#: Every spelling of "the workspace is on UTC ON PURPOSE". A configured name
+#: in this set is an answer, not a fallback: with no tz database it is still
+#: UTC, never the machine's day (cr1#1676 review; `clock_policy` reads it here).
+UTC_NAMES = ("UTC", "Etc/UTC", "Etc/Universal", "Universal", "Zulu",
+             "Etc/Zulu", "Etc/GMT", "GMT", "Etc/GMT+0", "Etc/GMT-0", "GMT0")
+
+
+def is_utc_name(name) -> bool:
+    """True for any spelling in `UTC_NAMES`, in any case."""
+    return str(name or "").strip().upper() in {n.upper() for n in UTC_NAMES}
+
+
+#: cr1#1676: the one UTC zone handed back when the workspace zone could not be
+#: loaded (no tz database, or a name the database does not know). It equals
+#: UTC, prints as "UTC" and behaves as UTC everywhere, but it is its own
+#: object, so a caller with a better fallback than UTC (the machine's own day:
+#: `prep_leg.local_day_floor`, `trusted_now`, `local_header_date`) can tell
+#: "the workspace is in UTC" from "the zone could not be loaded"
+#: (`zone_fell_back`).
+_UNLOADED_UTC = timezone(timedelta(0), "UTC")
+
+
 def _utc_fallback():
-    """Return a usable UTC timezone, surviving environments where ZoneInfo lacks tzdata."""
-    try:
-        return ZoneInfo("UTC")
-    except ZoneInfoNotFoundError:
-        return timezone.utc
+    """The UTC zone for a workspace zone that could not be loaded (cr1#1676:
+    always the one `_UNLOADED_UTC` object, which `zone_fell_back` recognises)."""
+    return _UNLOADED_UTC
+
+
+def zone_fell_back(value) -> bool:
+    """True when `value` (an aware datetime or a tzinfo) carries the UTC zone
+    `load_workspace_tz` handed back because the workspace zone could not be
+    loaded, not a zone that was loaded (cr1#1676)."""
+    zone = value.tzinfo if isinstance(value, datetime) else value
+    return zone is _UNLOADED_UTC
 
 
 def load_workspace_tz(workspace_path: Union[str, Path, None] = None):
@@ -194,6 +222,11 @@ def load_workspace_tz(workspace_path: Union[str, Path, None] = None):
                 tz_name, attempt,
             )
         return zone
+    # cr1#1676 review: a workspace on UTC on purpose keeps UTC with no tz
+    # database (`ZoneInfo("UTC")` fails too then); that is its answer, not a
+    # zone that could not be loaded.
+    if is_utc_name(tz_name):
+        return timezone.utc
     logger.warning(
         "tz.py: tz database missing for %r — %d attempts (likely Windows without `tzdata` package). "
         "Install `pip install tzdata` to enable workspace TZ rendering. Falling back to UTC.",
@@ -344,6 +377,10 @@ def local_header_date(
     try:
         local = to_local(dt_in, workspace_path=workspace_path)
     except (TZResolutionError, ValueError, TypeError):
+        local = None
+    # cr1#1676 review: a zone that could not be loaded comes back as UTC, not
+    # a raise; it takes the same machine-local fallback.
+    if local is not None and zone_fell_back(local):
         local = None
     if local is None:
         local = (dt_in if isinstance(dt_in, datetime)

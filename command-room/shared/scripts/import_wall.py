@@ -39,8 +39,18 @@ HOW A WALLED PERSON IS KNOWN.
     Last". Accents are folded and case is ignored.
   * In free text: each name on a walled record with a space in it, as
     written, with an optional middle initial or capitalised middle name
-    between the first and last word, as "Last, First", and joined
-    ("first_last", "FirstLast", "first-last", "first.last"). A one-word name
+    between the first and last word, as "Last, First", as "Last First"
+    (the surname first with no comma, cr1#1632 review; only with both words
+    capitalised as written, so "Ms. Sample drew the plan" or "the price cliff"
+    is never a walled "Drew Sample" or "Cliff Price", cr1#1639 review round
+    2, and both words on one line, never across a line break), and joined
+    ("first_last", "FirstLast", "first-last", "first.last", and "LastFirst"
+    with nothing between: each word capitalised as written and the surname's
+    tail in small letters, so "parked" and "PARKED" are never a walled "Ed
+    Park"; a joined name written all in capitals, "SAMPLERIO", is not caught,
+    cr1#1639 review rounds 3 and 4, ruling 67). An apostrophe in a name may be
+    left out or written as a space ("O'Brien", "OBrien", "O Brien"), and a
+    hyphen in one may be a space ("Sample-Stone", "Sample Stone"). A one-word name
     ("Mom", a first name alone) never matches free text: it would catch
     everybody who shares it. That is the one known gap.
 
@@ -142,16 +152,69 @@ def left_out_line(n: int) -> str:
 
 # ---------------------------------------------------------------- forms
 
-def _plain(text: Any) -> str:
-    """Accents folded, case kept, spaces as they were."""
-    s = unicodedata.normalize("NFKD", str(text or ""))
-    return "".join(ch for ch in s if not unicodedata.combining(ch))
+#: cr1#1677: letters from Cyrillic and Greek that look like a Latin letter,
+#: read as that letter (case kept), so a name spelled with one ("R" + a
+#: Cyrillic small i + "o Sample") is still the name. Only letters drawn the
+#: same as the Latin one; written as code points so the source stays ASCII.
+_CONFUSABLE = {
+    # Cyrillic small: a, e, o, p, c, y, x, i (Ukrainian), j, s (Macedonian), d (Komi)
+    0x0430: "a", 0x0435: "e", 0x043E: "o", 0x0440: "p", 0x0441: "c", 0x0443: "y",
+    0x0445: "x", 0x0456: "i", 0x0458: "j", 0x0455: "s", 0x0501: "d",
+    # Cyrillic capital: A, B, E, K, M, H, O, P, C, T, X, I, J, S
+    0x0410: "A", 0x0412: "B", 0x0415: "E", 0x041A: "K", 0x041C: "M", 0x041D: "H",
+    0x041E: "O", 0x0420: "P", 0x0421: "C", 0x0422: "T", 0x0425: "X", 0x0406: "I",
+    0x0408: "J", 0x0405: "S",
+    # Greek capital: A, B, E, Z, H, I, K, M, N, O, P, T, Y, X
+    0x0391: "A", 0x0392: "B", 0x0395: "E", 0x0396: "Z", 0x0397: "H", 0x0399: "I",
+    0x039A: "K", 0x039C: "M", 0x039D: "N", 0x039F: "O", 0x03A1: "P", 0x03A4: "T",
+    0x03A5: "Y", 0x03A7: "X",
+    # Greek small: o (omicron), i (iota), v (nu)
+    0x03BF: "o", 0x03B9: "i", 0x03BD: "v",
+}
 
 
-def _key(text: Any) -> str:
+def _plain(text: Any, extra: bool = True) -> str:
+    """Accents folded, case kept, spaces as they were. cr1#1677: NFKD (the
+    compatibility forms, fullwidth letters and the like, as before), then any
+    dash punctuation (Unicode category Pd: en dash, em dash, the Unicode
+    hyphen) read as "-", any invisible format character (category Cf: a
+    zero-width space or joiner, a soft hyphen, a direction mark) left out,
+    and a Cyrillic or Greek look-alike letter read as its Latin letter. Only
+    the wall's comparisons read this form; a value is kept as written.
+
+    `extra=False` is the fold as it was before cr1#1677 (NFKD, accents
+    only). The wall reads every name, address and value under BOTH
+    (`_READS`, review of #1681): the new steps alone would lose a name main
+    caught, one written in Cyrillic or Greek in capitals (the look-alike
+    map is not closed under case), or one beside a Thai, CJK or Arabic
+    letter across a zero-width space (left out, the two words join and the
+    edge check fails)."""
+    if not extra:
+        s = unicodedata.normalize("NFKD", str(text or ""))
+        return "".join(ch for ch in s if not unicodedata.combining(ch))
+    out = []
+    for ch in unicodedata.normalize("NFKD", str(text or "")):
+        if unicodedata.combining(ch):
+            continue
+        cat = unicodedata.category(ch)
+        if cat == "Cf":
+            continue
+        if cat == "Pd":
+            out.append("-")
+            continue
+        out.append(_CONFUSABLE.get(ord(ch), ch))
+    return "".join(out)
+
+
+#: The two readings every comparison takes (review of #1681): the fold with
+#: cr1#1677's steps, and the fold as main had it.
+_READS = (True, False)
+
+
+def _key(text: Any, extra: bool = True) -> str:
     """A name as identity compares it: accents folded, any case, one space,
     and "Last, First" read as "First Last"."""
-    s = " ".join(_plain(text).casefold().split())
+    s = " ".join(_plain(text, extra).casefold().split())
     if s.count(",") == 1:
         last, first = (p.strip() for p in s.split(","))
         if last and first:
@@ -159,11 +222,11 @@ def _key(text: Any) -> str:
     return s
 
 
-def _addr(text: Any) -> str:
+def _addr(text: Any, extra: bool = True) -> str:
     """The bare address, lower case, with a `+tag` on the local part left out."""
     import mail_rules
 
-    bare = mail_rules.address_of(_plain(text))
+    bare = mail_rules.address_of(_plain(text, extra))
     if not bare:
         return ""
     local, _, domain = bare.partition("@")
@@ -242,7 +305,7 @@ def _load_rules(root: Path) -> Optional[Dict[str, Any]]:
 def _addresses(person: Dict[str, Any]) -> set:
     found = list(person.get("emails") or []) if isinstance(person.get("emails"), list) else []
     found.append(person.get("email"))
-    return {a for a in (_addr(x) for x in found if isinstance(x, str)) if a}
+    return {a for a in (_addr(x, e) for x in found if isinstance(x, str) for e in _READS) if a}
 
 
 def _identity(item: Dict[str, Any]) -> set:
@@ -250,7 +313,7 @@ def _identity(item: Dict[str, Any]) -> set:
     for key in _ALIAS_FIELDS:
         if isinstance(item.get(key), list):
             names += item[key]
-    return {k for k in (_key(n) for n in names if isinstance(n, str)) if k}
+    return {k for k in (_key(n, e) for n in names if isinstance(n, str) for e in _READS) if k}
 
 
 def _write_dial() -> str:
@@ -277,11 +340,11 @@ def _off_senders(doc: Dict[str, Any], rules: Dict[str, Any]) -> set:
         for sender in senders:
             got = cc.sender_scope_override(rec, sender)
             if got and got.get(dial) is False and _addr(sender):
-                off.add(_addr(sender))
+                off.update(a for a in (_addr(sender, e) for e in _READS) if a)
     for rule in mail_rules.active_rules(rules):
         if rule.get("off_limits") and rule.get("mode") == "hide" and rule.get("match") == "sender":
             if _addr(rule.get("value")):
-                off.add(_addr(rule.get("value")))
+                off.update(a for a in (_addr(rule.get("value"), e) for e in _READS) if a)
     return off
 
 
@@ -338,13 +401,58 @@ _MIDDLE = r"(?:(?-i:[A-Z])\.?\s+|(?-i:[A-Z][a-z]+)\s+)?"
 _TAG = r"(?:\+[^@\s]*)?"
 
 
+def _word_rx(word: str, cap: bool = False, lower_tail: bool = False) -> str:
+    """One word of a walled name as a pattern: an apostrophe may be left out
+    or be a space ("o'brien", "obrien", "o brien"), a hyphen may be a space
+    ("sample-stone", "sample stone"); with `cap`, its first letter must be a
+    capital as written (cr1#1639 review round 2), the rest in any case; with
+    `lower_tail` too, the rest in small letters as written, except a letter
+    right after an apostrophe or a hyphen ("OBrien", "SampleStone"; review
+    round 3)."""
+    out = []
+    after_mark = False
+    for i, ch in enumerate(word):
+        if ch in "'’":
+            out.append(r"(?:['’]|\s+)?")
+            after_mark = True
+            continue
+        if ch == "-":
+            out.append(r"(?:-|\s+)")
+            after_mark = True
+            continue
+        if cap and i == 0 and ch.isalpha():
+            out.append("(?-i:" + re.escape(ch.upper()) + ")")
+        elif lower_tail and ch.isalpha() and not after_mark:
+            out.append("(?-i:" + re.escape(ch.lower()) + ")")
+        else:
+            out.append(re.escape(ch))
+        after_mark = False
+    return "".join(out)
+
+
 def _name_pattern(name: str) -> str:
-    words = [re.escape(w) for w in name.split()]
+    words = [_word_rx(w) for w in name.split()]
     first, last = words[0], words[-1]
+    parts = name.split()
     forms = [r"\s+".join(words),
              first + r"\s+" + _MIDDLE + last,
              last + r",\s*" + first + r"(?:\s+(?-i:[A-Z])\.?)?",
-             first + r"[_.\-]?" + last]
+             # cr1#1632 review: the surname first with no comma ("Sample Rio");
+             # cr1#1639 review round 2: only with both words capitalised as
+             # written, so an everyday sentence ("Ms. Sample will send") is kept.
+             # Final review: the two words on one line ("[ \t]+"), so a line
+             # ending "...Sample" and the next starting "May 12" is kept.
+             _word_rx(parts[-1], cap=True) + r"[ \t]+" + _word_rx(parts[0], cap=True),
+             first + r"[_.\-]?" + last,
+             # cr1#1639 review round 2: the surname first, joined ("SampleRio");
+             # round 3: each word capitalised and the surname's tail in small
+             # letters as written, so "parked" / "Parked" (walled "Ed Park")
+             # and "royal" ("Al Roy") are kept, and "PARKED" in capitals too.
+             # Lowercase "samplerio" is no longer caught (accepted), nor bare
+             # all-caps "SAMPLERIO" (ruling 67, round 4: a joined all-caps word
+             # cannot be told from FINAL, LEGAL or TOTAL, and dropping those
+             # silently hides the owner's own material).
+             _word_rx(parts[-1], cap=True, lower_tail=True) + _word_rx(parts[0], cap=True)]
     return "|".join(forms)
 
 
@@ -380,10 +488,12 @@ class _Matcher:
         return ", ".join(kept) if kept else None
 
     def names(self, value: Any) -> bool:
-        return isinstance(value, str) and self.rx is not None and bool(self.rx.search(_plain(value)))
+        if not isinstance(value, str):
+            return False
+        return self.rx is not None and any(self.rx.search(_plain(value, e)) for e in _READS)
 
     def exact(self, value: Any) -> bool:
-        return isinstance(value, str) and _key(value) in self.full
+        return isinstance(value, str) and any(_key(value, e) in self.full for e in _READS)
 
     def touches(self, value: Any) -> bool:
         stack = [value]

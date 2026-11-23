@@ -2545,7 +2545,8 @@ SCOPE_WOULD_HOLD = "would_hold"
 def render_plate(view: dict, surface: str = "plate", verbs: bool = True,
                  *, source_skill: str = "commitment-triage",
                  scope: str = SCOPE_ALL,
-                 exclude_ids=None, ask_lines: Optional[dict] = None) -> dict:
+                 exclude_ids=None, ask_lines: Optional[dict] = None,
+                 measure_pages: bool = True) -> dict:
     """Render a `build_plate` view for ONE surface. Owns every word (DD-2).
 
     surface   "brief" — DO IT + CHASE, top BRIEF_CAP rows by horizon, ONE
@@ -2736,7 +2737,10 @@ def render_plate(view: dict, surface: str = "plate", verbs: bool = True,
         # never an assumed nine.
         page_ids = set()
         if data_view is not None:
-            budget = measured_page_rows(data_view)
+            # cr1#1638: `measure_pages=False` (the Hub's feed, which draws its
+            # own page from the rows and never shows this wording) skips the
+            # chat widget's page fit, a render and leak scan of every page.
+            budget = measured_page_rows(data_view) if measure_pages else WIDGET_PAGE_ROWS
             flat = [str(it.get("n")) for sec in (data_view.get("sections") or [])
                     for it in (sec.get("items") or [])]
             page_ids = set(flat[:max(0, int(budget))])
@@ -3121,14 +3125,16 @@ def parked_data_view(workspace_root, *, now_iso: Optional[str] = None,
 
 def plate_data_view(workspace_root, *, now_iso: Optional[str] = None,
                     user_person_id: Optional[str] = None,
-                    source_skill: str = "commitment-triage") -> dict:
+                    source_skill: str = "commitment-triage",
+                    measure_pages: bool = True) -> dict:
     """`build_plate` -> `render_plate("plate", verbs=True)` -> the widget data
     view `widget_transport.render_and_persist` takes. A refused plate (no
     primary user) comes back as the one-line empty-state view, no rows, no
     verbs — never lanes."""
     view = build_plate(workspace_root, user_person_id=user_person_id,
                        now_iso=now_iso)
-    rendered = render_plate(view, "plate", True, source_skill=source_skill)
+    rendered = render_plate(view, "plate", True, source_skill=source_skill,
+                            measure_pages=measure_pages)
     if rendered.get("refused") or rendered["data_view"] is None:
         # The empty-state mode's own vocabulary (header only): no rows, no
         # verbs, no lanes — the line IS the surface.

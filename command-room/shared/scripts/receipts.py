@@ -1499,6 +1499,21 @@ def log_receipt(
     if isinstance(data.get("errors"), list) and "n_errors" in data:
         data["n_errors"] = len(data["errors"])
 
+    # cr1#1602 — the run's per-phase timings, measured by CODE: the door
+    # (`workspace_access._timed_door`) timed every step into the runtime
+    # cache, and `task_timings` groups this run's steps into the task's
+    # phases. Only the timed tasks' own run receipts carry it, and a
+    # `timings` a caller handed in is replaced, never kept (#1276: a typed
+    # run wrote timings the model chose). Additive: nothing else changes.
+    try:
+        import task_timings
+
+        if canonical in task_timings.TASKS and receipt_type in task_timings.TIMED_RECEIPT_TYPES:
+            data["timings"] = task_timings.timings_for(
+                workspace_root, canonical, now=task_timings.receipt_now(workspace_root, canonical, now))
+    except Exception:  # noqa: BLE001 - a receipt is never refused for its timings
+        pass
+
     # WALKFIX1 Item H — where this fire landed relative to its own slot, so the
     # ledger explains itself. Stamped HERE rather than asked of each
     # orchestrator: a prose mandate across a dozen orchestrators is presumed
@@ -1801,16 +1816,25 @@ def log_prep_receipt(
     return event
 
 
+def ledger_events(workspace_root) -> list[dict]:
+    """The log, read once by the same defensive path as the receipt readers,
+    for a caller that also reads other rows from it (cr1#1632: the Today feed's
+    receipts and its saved meeting pages, one read, HUBONECALL1)."""
+    return list(_iter_events(workspace_root))
+
+
 def prep_receipts(
     workspace_root,
     *,
     meeting_ids: Optional[Iterable[str]] = None,
     since: Optional[_dt.datetime] = None,
+    events: Optional[Iterable[dict]] = None,
 ) -> list[dict]:
     """Every prep_brief receipt, oldest first, optionally filtered by meeting
     id / time. Returns {meeting_id, slug, artifact, dt, fired_via, refreshed,
     raw}. Same defensive read path as iter_receipts — legacy/malformed lines
-    never break the reader."""
+    never break the reader. `events` is a read already made
+    (`ledger_events`), so a caller reads the log once."""
     wanted = None
     if meeting_ids is not None:
         wanted = {str(m).strip() for m in meeting_ids if str(m).strip()}
@@ -1818,7 +1842,7 @@ def prep_receipts(
         since = since.replace(tzinfo=_dt.timezone.utc)
 
     out: list[dict] = []
-    for ev in _iter_events(workspace_root):
+    for ev in (events if events is not None else _iter_events(workspace_root)):
         if not isinstance(ev, dict) or ev.get("type") != PREP_RECEIPT_TYPE:
             continue
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}

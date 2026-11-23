@@ -101,6 +101,9 @@ MAX_SEARCH_DEPTH = 5
 
 # The writer lock's content must never change (writer_lock.py:32-39).
 LOCK_REL = "_hq/data/.writer.lock"
+# cr1#1602: the door's step log (`task_timings.STEPS_REL`), refused to every
+# verb as the runtime cache is: only `_timed_door` writes it.
+STEPS_LOG_REL = "_hq/.cache/task-steps.jsonl"
 
 # Registered JSONL files — the append-only set `atomic_write.py:776-777` names.
 # `events.jsonl` and its year shards route through the event gate; the rest are
@@ -433,6 +436,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:refresh_part",  # cr1#1530 - one part of what the one-call refresh built, read from its scratch folder outside the workspace
     "cockpit_helpers:feed_board",  # cr1#1017 - the Week view's board on Today: due cards and priority lanes, read only
     "cockpit_helpers:plan_claim",  # cr1#675, cr1#691 - the claim an Apply run writes before it acts, planned and not written here
+    "hub_meeting:carried_points",  # cr1#1632 slice 1 - what the owner's last meeting page with these people left, for the next brief; read only
     "cockpit_helpers:plan_page_records",  # cr1#817 - the page's own sends and drafts with no book record yet, claimed for one run, planned not written here
     "cockpit_helpers:apply_repin",  # cr1#1608 - an Apply batch the page refused, pinned again to the versions read, never by hand
     "cockpit_helpers:plan_apply",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
@@ -628,6 +632,10 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # write list.
     "meeting_substance:meeting_summaries",
     "meeting_substance:feedback_entries",
+    # cr1#1632 (slice 2): what the owner attached to a meeting on the Hub, as
+    # the brief's Attached section; screened by the imports' wall (fail
+    # closed), reads the log, writes nothing
+    "meeting_attach:for_brief",
     # cr1#397 (SPEC CRAFT1 step 2): craft recall. The craft files a task
     # reads, the Sources lines for the rules an output used (read back from
     # the file through each rule's id), and people-crm's two verbs. All four
@@ -1534,8 +1542,18 @@ def fence_path(vm_path: Path, rel: str) -> Tuple[Optional[Path], Optional[str]]:
     posix = inside.as_posix()
     if posix == RUNTIME_CACHE_REL or posix.startswith(RUNTIME_CACHE_REL + "/"):
         return None, R_REFUSED_RUNTIME
-    if posix == LOCK_REL:
+    # cr1#1602 (review round 2 of #1613): compared casefolded, because a
+    # Windows or macOS folder takes `TASK-STEPS.jsonl` as the same file; an
+    # exact compare let a differently cased name write the step log by hand.
+    # Review round 3: and with each part's trailing dots and spaces taken off,
+    # which Windows drops from a name (`task-steps.jsonl.` is the same file).
+    same = "/".join(seg.rstrip(". ") for seg in posix.split("/")).casefold()
+    if same == LOCK_REL.casefold():
         return None, R_REFUSED_LOCK
+    # cr1#1602 (review of #1613): the door's own step log is a cache only the
+    # door writes; a row written by hand would read as measured.
+    if same == STEPS_LOG_REL.casefold():
+        return None, R_REFUSED_RUNTIME
     return target, None
 
 
@@ -1921,14 +1939,17 @@ def _helper_child_env(ctx: Dict[str, Any],
     # reads them with; left to each side's default, a Windows child wrote its
     # error text in the code page and a refusal came back with none of it.
     base["PYTHONIOENCODING"] = "utf-8"
-    # THE DOOR SAYS SO (MF-M2-13). `run_helper` promises it writes nothing at
-    # all, and the allow-list is read/compute only — but a listed READ can
+    # THE DOOR SAYS SO (MF-M2-13). `run_helper` promises it writes nothing to
+    # the book (cr1#1602: only the door's own timing row, in the cache), and the allow-list is read/compute only — but a listed READ can
     # still reach a best-effort diagnostic writer two frames down
     # (`events_io._record_stale_read` did, and dropped a sidecar beside the
     # customer's ledger). A helper child is told it is a helper child, so a
     # best-effort writer on a read path can hold its record; nothing else
     # changes, and an in-process or in-shell reader never sees this key.
     base[HELPER_DOOR_ENV] = "run_helper"
+    # cr1#1679: a helper started from inside a writer child does not inherit
+    # the writer's running-step name (only `_writer_child_env` sets it).
+    base.pop(RUNNING_STEP_ENV, None)
     if ctx.get("tz") and _tz_reaches_the_child(ctx, platform or sys.platform):
         base["TZ"] = str(ctx["tz"])
     if ctx.get("runtime_version"):
@@ -2228,6 +2249,50 @@ def fence_helper_args(vm_path: Path, args: Any) -> Optional[Tuple[str, str]]:
     return None
 
 
+#: cr1#1602 (review round 4 of #1613, N4): the writer child's environment
+#: names the step it runs; `task_timings.RUNNING_STEP_ENV` reads the same key.
+RUNNING_STEP_ENV = "CR_TIMED_STEP"
+
+#: cr1#1602: the door reasons that mean the call's helper or writer ran (or
+#: began to), so its time is kept; every other refusal ran nothing.
+_TIMED_REFUSALS = frozenset({R_TIMEOUT, R_HELPER_FAILED, R_WRITE_UNVERIFIED})
+
+
+def _timed_door(fn: Callable[..., Dict[str, Any]]) -> Callable[..., Dict[str, Any]]:
+    """cr1#1602: time one door call by code and keep ONE row in the runtime
+    cache (`task_timings.append_step`, `_hq/.cache/task-steps.jsonl`), which
+    a scheduled task's receipt reads for its phases. Monotonic for the
+    duration, the clock for the start. The helper or writer never sees the
+    file and is never told the time; a row that cannot be kept is dropped and
+    the call's answer is unchanged."""
+    import functools
+
+    @functools.wraps(fn)
+    def door(name, args=None, **kw):
+        started = time.time()
+        t0 = time.monotonic()
+        out = fn(name, args, **kw)
+        try:
+            ran = isinstance(out, dict) and (out.get("ok") or out.get("reason") in _TIMED_REFUSALS)
+            if ran and out.get("ws") and isinstance(name, str):
+                _ensure_scripts_on_path()
+                import task_timings
+
+                # Review round 4 of #1613 (N3): a helper that answers ok false
+                # ran and failed; its row says so, as a door refusal does.
+                res = out.get("result")
+                ok = bool(out.get("ok")) and not (isinstance(res, dict) and res.get("ok") is False)
+                task_timings.append_step(out["ws"], name, started=started,
+                                         elapsed_ms=int((time.monotonic() - t0) * 1000),
+                                         ok=ok, args=args)
+        except Exception:  # noqa: BLE001 - a timing never changes the call's answer
+            pass
+        return out
+
+    return door
+
+
+@_timed_door
 def run_helper(name: str, args: Optional[Dict[str, Any]] = None, *,
                timeout_s: int = DEFAULT_TIMEOUT_S,
                ctx: Optional[Dict[str, Any]] = None,
@@ -2241,8 +2306,9 @@ def run_helper(name: str, args: Optional[Dict[str, Any]] = None, *,
     fences exactly as a `read` or `write` target would. The manifest alone was
     not enough — `atomic_write` is in it by construction, which made this verb a
     write-anywhere primitive (review B-2) — and neither is a gated writer:
-    every entry reads or computes, so this verb writes nothing at all
-    (review B-1). Writes go through `write` and `append_jsonl`, which carry the
+    every entry reads or computes, so this verb writes nothing to the book;
+    the door appends one timing row to the runtime cache (review B-1, amended
+    by cr1#1602: `_timed_door`, `_hq/.cache/task-steps.jsonl`). Writes go through `write` and `append_jsonl`, which carry the
     `REGISTERED_JSONL` rule this door cannot express. The helper runs in a child process
     with cwd = the workspace root and
     `sys.path[0]` = the installed runtime's scripts dir, under a wall-clock
@@ -2431,15 +2497,21 @@ def _relativize(value: Any, vm_path: Path) -> Any:
 
 
 def _writer_child_env(ctx: Dict[str, Any],
-                      env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+                      env: Optional[Dict[str, str]] = None, step: Optional[str] = None) -> Dict[str, str]:
     """The helper child's environment, minus the one key that says "read
     door": a writer child is not a helper child, so a best-effort writer
-    beneath it (the identity cache) is allowed to write."""
+    beneath it (the identity cache) is allowed to write. cr1#1602 (review
+    round 4 of #1613, N4): `step` names the writer being run, so a receipt it
+    writes marks its own phase (`task_timings.RUNNING_STEP_ENV`)."""
     base = _helper_child_env(ctx, env)
     base.pop(HELPER_DOOR_ENV, None)
+    base.pop(RUNNING_STEP_ENV, None)
+    if step:
+        base[RUNNING_STEP_ENV] = str(step)
     return base
 
 
+@_timed_door
 def run_writer(name: str, args: Optional[Dict[str, Any]] = None, *,
                args_file: Optional[str] = None,
                timeout_s: int = DEFAULT_TIMEOUT_S,
@@ -2515,7 +2587,7 @@ def run_writer(name: str, args: Optional[Dict[str, Any]] = None, *,
     if refusal is not None:
         refusal["name"] = name
         return refusal
-    child_env = _writer_child_env(ctx, env)
+    child_env = _writer_child_env(ctx, env, step=name)
     # THE WRITER IS NAMED BEFORE ANYTHING RUNS - asked of the environment the
     # writer itself will see, so the door and the writer cannot disagree.
     try:

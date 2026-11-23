@@ -36,8 +36,8 @@ product already answers that question with, called as it is.
         date he never set: it came from a meeting, a mail or a chat message
         (`cockpit_helpers._row_origin`) and no change of his own ever moved
         it (`cockpit_helpers._owner_own_change`). Its press is `snooze` to
-        the last day of this week as the plate reads a week
-        (`week_day`, `plate_view.horizon_of`'s own boundary);
+        the last day of this week by the Hub's one definition (`week_day`,
+        `cockpit_helpers.week_end`, shared with the Week board, cr1#1657);
   * the fence every pile is held to: an item on the personal lane
     (`morning_message._personal_ids`), or with a person the owner put off
     limits on it (`account_scope_gate.off_limits_person_ids`), never enters
@@ -123,13 +123,16 @@ def _iso(now: _dt.datetime) -> str:
 
 
 def week_day(workspace_root, now: _dt.datetime) -> str:
-    """The last day of this week as the plate reads one (`plate_view.
-    horizon_of`: "This week" runs through Sunday of the current ISO week), on
-    the workspace's own calendar."""
+    """The last day of this week, on the workspace's own calendar, by the
+    Hub's one definition (`cockpit_helpers.week_end`, cr1#1657): the Sunday
+    that ends this Monday-to-Sunday week, or on a Saturday or a Sunday the
+    last of the Week board's seven days, so a pile never moves its items to
+    the day it is pressed."""
+    from cockpit_helpers import week_end
     from commitment_state import _now_calendar_day
 
     day = _now_calendar_day(_iso(now), workspace_path=str(workspace_root)) or now.date()
-    return (day + _dt.timedelta(days=6 - day.weekday())).isoformat()
+    return week_end(day).isoformat()
 
 
 def fence(workspace_root) -> Optional[Dict[str, set]]:
@@ -146,6 +149,11 @@ def fence(workspace_root) -> Optional[Dict[str, set]]:
         if not connector_reads.chat_wall(root).get("readable"):
             return None
         if not _rules_readable(root):
+            return None
+        # cr1#1682: a book whose `people` is there but not a list reads as
+        # "nobody" to the lenient readers below, so nobody is walled: no answer.
+        from personal_leak import people_records
+        if people_records(root) is None:
             return None
         personal = _personal_ids(root)
         if personal is None:

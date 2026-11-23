@@ -323,7 +323,7 @@ OPEN_DIRECTIONS = (("you_owe", "you_owe"), ("owes_you", "owed_to_you"),
                    ("other", "other"))
 
 
-def open_by_person(ws, now_iso=None) -> tuple:
+def open_by_person(ws, now_iso=None, *, keep=None) -> tuple:
     """({person id: {"open": [...], "unlinked": [...]}}, counted_from_log):
     every person's open rows in one read of the open list's per-person index,
     split as `open_list_index.person_view` splits one person's: confirmed rows
@@ -331,7 +331,12 @@ def open_by_person(ws, now_iso=None) -> tuple:
     snoozed rows left out, and the rows that name a person without being
     linked to them apart (`unlinked`). Each row is `{id, title, due,
     direction, overdue}`. Writes nothing (cr1#1012 part 3d: the Hub's People
-    tab reads this instead of counting the log its own way)."""
+    tab reads this instead of counting the log its own way).
+
+    `keep` (cr1#1657): `{commitment id: day}`, the items a Later hid until a
+    day with their date kept (`mute_ledger.workspace_check_backs`). Such a
+    row stays on the person's card while it is hidden, with `check_back`
+    (that day), so what someone owes the owner never leaves their card."""
     import open_list as ol
     import open_list_index as oli
     ws = Path(ws)
@@ -340,18 +345,26 @@ def open_by_person(ws, now_iso=None) -> tuple:
     entries, list_doc, from_log = oli._read(ws, "people", oli.BY_PERSON_FILE,
                                             now, tzinfo)
     by_id = {str(r.get("id")): r for r in list_doc.get("rows") or []}
+    back = {str(k): str(v) for k, v in (keep or {}).items() if v}
 
     def row(r: dict, direction: str) -> dict:
-        return {"id": r.get("id"), "title": str(r.get("title") or "")[:240],
-                "due": r.get("due") or None, "direction": direction,
-                "overdue": bool(r.get("overdue"))}
+        out = {"id": r.get("id"), "title": str(r.get("title") or "")[:240],
+               "due": r.get("due") or None, "direction": direction,
+               "overdue": bool(r.get("overdue"))}
+        if r.get("snoozed") and back.get(str(r.get("id"))):
+            out["check_back"] = back[str(r.get("id"))]
+        return out
+
+    def shown(r: dict) -> bool:
+        return oli._visible(r) or (bool(r.get("snoozed")) and not r.get("observed")
+                                   and str(r.get("id")) in back)
 
     out: Dict[str, dict] = {}
     for pid, e in (entries or {}).items():
         opens: List[dict] = []
         for key, direction in OPEN_DIRECTIONS:
             for r in oli._shape(by_id, e.get(key) or [], today, now):
-                if oli._visible(r):
+                if shown(r):
                     opens.append(row(r, direction if r.get("confirmed")
                                      else "unconfirmed"))
         unlinked = []

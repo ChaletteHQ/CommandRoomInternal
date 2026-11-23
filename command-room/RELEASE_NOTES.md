@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.8.0 (2026-11-23)
+
+Meetings get their own pages on the Hub. Open an upcoming meeting for a live prep page: what to cover, what is owed both ways and what was left open last time, saved with one Undo; attach a link or a file, which shows in the next brief. Past meetings lists the last seven days with what each still needs, and one press opens its wrap-up to place your promises and close it out. Refresh builds in about a quarter of the time, a move never hides work out of sight, and every scheduled task records how long each step took. After updating, say "update my hub".
+
 ## v6.7.0 (2026-11-22)
 
 The Hub opens in the Evening look and reads more calmly. Today names only live work, with one short line for each change you made; the week grid runs into the evening, so late meetings show; messages that need nothing from you leave Needs you; one line at the top says whether everything is OK; and a new Tidy section clears the workspace's loose ends in one press, with Undo. A project you make gets its folder at once. After updating, say "update my hub".

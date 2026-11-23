@@ -282,9 +282,18 @@ def week_sections(workspace_root: str, *, since_iso: str = "",
         objectives (8c; the status block, never the self-report ask).
 
     A part that cannot be read comes back empty with its name in `failed`,
-    the same best-effort posture the wrap's own blocks take (H-4)."""
+    the same best-effort posture the wrap's own blocks take (H-4).
+
+    cr1#1638: with no `since_iso` the window is the seven days before now, by
+    this code's clock (the Hub's Record tab), so no caller types a time."""
     import datetime as _dt
 
+    if not str(since_iso or "").strip():
+        base = (_dt.datetime.fromisoformat(str(now_iso).replace("Z", "+00:00")) if now_iso
+                else _dt.datetime.now(_dt.timezone.utc))
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=_dt.timezone.utc)
+        since_iso = (base - _dt.timedelta(days=7)).isoformat()
     out: Dict[str, Any] = {"change_lines": [], "open_proposals": None,
                            "decided_for_you": "", "still_waiting": "",
                            "objective_rows": [], "failed": []}

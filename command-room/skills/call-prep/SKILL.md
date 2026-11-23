@@ -216,6 +216,8 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"o
 
 # 3. The brief, through the gated chokepoint. The payload - {"json_payload":
 #    {"output_path": <step 1 path>, "brief_kind": "call_prep", "title", "subtitle",
+#    "parts" (cr1#1632: the `parts` assemble_prep_sections answered, passed
+#    through unchanged; the writer saves them beside the brief for the Hub),
 #    "sections", "exec_header", "workspace_root": "<WS>"}} - is written as JSON
 #    into THIS SESSION'S OWN scratch on the host that runs the door (never under
 #    the workspace) and named by `args_file`, because a brief does not survive a
@@ -229,9 +231,17 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args_file"
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"attendee_person_ids": [<the attendees resolved person_ids>], "brief_path": "<rel from step 3>", "fired_via": "manual", "generated_by": "call-prep", "meeting_id": "<the calendar event id>", "meeting_start": "<the event start>", "refreshed": <refresh from step 1>, "slug": "<slug from step 1>", "workspace_root": "<WS>"}, "name": "receipts:log_prep_receipt"}'
 ```
 
-Between steps 2 and 3 the five blocks are assembled by `prep_pipeline.assemble_prep_sections(walk_out_with=…, meeting_details=…, source_reads=…, operator_supplied=…, …)` — pure composition in the plugin, no workspace read or write; it owns section order and rejects unsourced talking points (`PrepContractError`). PREPSRC1: the Sources line is DERIVED there, from consumption, never hand-listed — pass `source_reads` (the SAME per-source report this skill returns to the prep leg, `{"mail": "read"|"absent"|"failed"}`, KEYS BARE TOKENS: `session_notes`, never `session-notes`) and `operator_supplied=True` when the render consumed anything the CEO typed; a hand-built `{"heading": "Sources", …}` section raises `PrepContractError`. Every one of the four forms answers ONE envelope; `ok:false` is a stop — and `reason: writer_identity_required` means say the envelope's `line`, verbatim, as the whole answer.
+Between steps 2 and 3, first ask what the owner's last meeting page with these people left (cr1#1632), a read: `python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"person_ids": [<the attendees resolved person_ids>], "workspace_root": "<WS>"}, "name": "hub_meeting:carried_points"}'`, and pass its `lines` unchanged as `carried=`. Then the five blocks are assembled by `prep_pipeline.assemble_prep_sections(walk_out_with=…, meeting_details=…, source_reads=…, operator_supplied=…, carried=…, …)` — pure composition in the plugin, no workspace read or write; it owns section order and rejects unsourced talking points (`PrepContractError`). PREPSRC1: the Sources line is DERIVED there, from consumption, never hand-listed — pass `source_reads` (the SAME per-source report this skill returns to the prep leg, `{"mail": "read"|"absent"|"failed"}`, KEYS BARE TOKENS: `session_notes`, never `session-notes`) and `operator_supplied=True` when the render consumed anything the CEO typed; a hand-built `{"heading": "Sources", …}` section raises `PrepContractError`. Every one of the four forms answers ONE envelope; `ok:false` is a stop — and `reason: writer_identity_required` means say the envelope's `line`, verbatim, as the whole answer.
 
 **The call shapes, so nothing is looked up in the plugin source (MIGRATE3-MB fix round 1, walk finding F-T2-10).** Every argument each step takes and every answer field the next step reads is here.
+
+What the owner attached to this meeting on the Hub (cr1#1632), and to earlier meetings with the same people, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"meeting_id": "<the calendar event id>", "person_ids": [<the attendees resolved person_ids>], "workspace_root": "<WS>"}, "name": "meeting_attach:for_brief"}'
+```
+
+A non-null `section` goes into `assemble_prep_sections(extra_sections=[...])` exactly as it came back: never re-worded, never a link or a file the answer did not list, and nothing said about what it left out. A null `section` (nothing attached, or `ok: false`) adds nothing and is not mentioned.
 
 The Owed rows for this meeting, a read beside the data (the open set lives on the customer's computer, never in this session):
 
@@ -258,8 +268,10 @@ prep_pipeline.assemble_prep_sections, every keyword it takes:
   discuss_bullets, talking_points, questions, tiles, timeline,
   supporting_sections, extra_sections, changed_summary, decide_summary,
   needs, source_reads ({"mail": "read"|"absent"|"failed", ...}),
-  operator_supplied (bool)
-  It answers {"sections": [...], "exec_header": {...}, "sources_consulted": [...]}.
+  operator_supplied (bool), carried (the `lines` hub_meeting:carried_points
+  answers, unchanged)
+  It answers {"sections": [...], "exec_header": {...}, "sources_consulted": [...],
+  "parts": {...}} (pass `parts` to make_brief_from_json unchanged).
 
 One section, as make_brief reads it (every key but heading is optional):
   {"heading": "<section title>",

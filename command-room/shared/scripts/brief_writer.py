@@ -1493,8 +1493,46 @@ def make_brief_from_json(json_payload: str) -> str:
         brand=payload.get("brand"),
         org_id=payload.get("org_id"),
     )
+    # cr1#1632 slice 1: a call prep's parts (`prep_pipeline.assemble_prep_sections`'s
+    # `parts`, passed through unchanged) are saved beside the document, so the
+    # Hub's live prep page reads lists, not prose. A brief without them writes
+    # what it wrote before.
+    if payload.get("brief_kind") == "call_prep":
+        # The parts go beside the brief's OWN path (the caller's
+        # `output_path`), never `make_brief`'s answer: under DELIV1 that is
+        # the customer-side or folder-relative spelling (review of #1651).
+        _write_parts(payload["output_path"], payload.get("parts"), payload.get("workspace_root"))
     print(path)
     return path
+
+
+def _write_parts(output_path: Any, parts: Any, workspace_root: Any = None) -> None:
+    """The brief's parts beside it, through the same DELIV1 seam as the
+    document (`_delivery_for`). Where the folder is this machine's own (every
+    fixture) the file is written in place. It does NOT go through the access
+    layer: `deliverables.land` takes documents and refuses `.json`, so on a
+    merged seat the parts do not land and the page shows the prose. A brief
+    rewritten with no parts loses a stale parts file beside it on a plain
+    seat (fail-soft: a merged seat deletes nothing), so the page never shows
+    old lists."""
+    import json as _json
+
+    from prep_pipeline import parts_path
+
+    target = parts_path(output_path)
+    try:
+        delivery = _delivery_for(target, workspace_root)
+        if not isinstance(parts, dict):
+            if (delivery is None or not getattr(delivery, "landing", False)) and Path(target).is_file():
+                Path(target).unlink()
+            return
+        build = delivery.build_path if delivery is not None else target
+        Path(build).parent.mkdir(parents=True, exist_ok=True)
+        Path(build).write_text(_json.dumps(parts, ensure_ascii=False), encoding="utf-8")
+        if delivery is not None:
+            delivery.finish()
+    except Exception as exc:  # noqa: BLE001 - the brief stands; the page falls back to the prose
+        sys.stderr.write(f"[brief_writer] the brief's parts were not saved: {type(exc).__name__}\n")
 
 
 def _cli(payload: str) -> int:

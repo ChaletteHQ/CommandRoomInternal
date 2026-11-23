@@ -56,6 +56,14 @@ already owns the record.
     no note from the Hub; a note already on it can still be taken back.
   Work streams and priorities take no context here: they have no note
   writer the Hub may use.
+  * a link or a file attached to a meeting (cr1#1632, slice 2, `meeting_edit`
+    `attach`): the press's own row IS the record, as an update on a thread
+    is: the meeting by its calendar id as `target_id`, the attachment
+    (`meeting_attach.check_press`), and the meeting's resolved attendees as
+    `with_ids`, judged first by the imports' wall (`meeting_attach.screen`:
+    a name or address naming someone off limits or personal is refused,
+    counted, never named). Its Remove is the `undo` press: one row naming
+    the press, and the readers (`meeting_attach`) leave it out.
 
 Each press that lands appends ONE `hub_edit` row through the event gate:
 what was pressed, the record it reached, and the value it replaced. That row
@@ -92,8 +100,14 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 EVENT = "hub_edit"
-KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit")
-VERBS = frozenset({"add", "rename", "set", "undo", "context", "update", "order", "star"})
+KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit", "meeting_edit")
+VERBS = frozenset({"add", "rename", "set", "undo", "context", "update", "order", "star", "attach"})
+#: cr1#1632: a link or a file attached to a meeting, and its Remove.
+MEETING_KIND = "meeting_edit"
+#: The longest meeting id taken, as `cockpit_helpers` takes a calendar event id.
+MEETING_ID_CAP = 512
+#: A longer one is refused whole, never cut (two cut ids would be one).
+MEETING_ID_LONG_LINE = "That meeting's calendar id is longer than the Hub takes; nothing was written."
 #: Add context (cr1#1383): the kinds that take a free note, a thread's
 #: (`stream_edit` on a thread that is not a work stream) and a person's. A
 #: commitment's note (`commitment_edit` `context`) has its own path,
@@ -220,6 +234,16 @@ STAR_FULL_LINE = "Five priorities at most. Take one off first. Nothing was writt
 STAR_NO_TARGET_LINE = "A star goes on a thread; nothing was written."
 STAR_NAME_TRIES = 9
 
+#: cr1#1632, Attached. The lines name no attachment: its name may be the
+#: very thing the wall refused, and a Remove may take back one that names
+#: someone put off limits since.
+ATTACH_LINE = "Attached to this meeting."
+ATTACH_ALREADY_LINE = "That is already attached to this meeting; nothing was written."
+ATTACH_FAILED_LINE = "It could not be attached; nothing was written. Try again, or say it in a chat."
+REMOVE_LINE = "Removed from this meeting."
+REMOVE_NO_PRESS_LINE = "That attachment is not on your book; nothing was written."
+REMOVE_ALREADY_LINE = "That was already removed; nothing was written."
+
 
 # ---------------------------------------------------------------------------
 # Reading the book
@@ -339,7 +363,13 @@ def apply_one(workspace_root, c: Dict[str, Any], actor: str) -> Dict[str, Any]:
     verb = str(c.get("action") or "").strip().lower()
     choice_id = str(c.get("id") or "").strip()
     inp = c.get("input") if isinstance(c.get("input"), dict) else {}
-    target = str(c.get("n") or "").strip()[:80]
+    # cr1#1632 review: a meeting's calendar id is taken whole, as the
+    # calendar actions take it (a Microsoft 365 id runs to ~150 characters).
+    # A meeting id over the cap is refused below, never cut (review round 2:
+    # two long ids sharing their first 512 characters would read as one).
+    target = str(c.get("n") or "").strip()
+    if kind != MEETING_KIND:
+        target = target[:80]
     evs = _events(root)
     done = _written(evs, choice_id)
     if done is not None:
@@ -347,6 +377,15 @@ def apply_one(workspace_root, c: Dict[str, Any], actor: str) -> Dict[str, Any]:
         return _ok(str(d.get("line") or "Already applied."), replayed=True, target_id=d.get("target_id"),
                    seq=done.get("seq"))
     before = _max_seq(evs)
+    if kind == MEETING_KIND:
+        # cr1#1632: Attached, a link or a file on a meeting, and its Remove.
+        if verb == "attach":
+            if len(target) > MEETING_ID_CAP:
+                return _no(MEETING_ID_LONG_LINE)
+            return _meeting_attach(root, target, inp, choice_id, evs, before)
+        if verb == "undo":
+            return _meeting_remove(root, str(inp.get("press") or "").strip(), choice_id, evs)
+        return _no(NO_TARGET_LINE)
     if verb == "update":
         # cr1#1540: a dated update on a thread, the press's own row and no other.
         return _thread_update(root, target, inp, choice_id, before) if kind == "stream_edit" \
@@ -1533,6 +1572,58 @@ def _priority_star(root: Path, tid: str, choice_id: str, before: int) -> Dict[st
     ev = _record(root, before, {"hub_choice": choice_id, "kind": "priority_edit", "action": "star",
                                 "target_id": pid, "thread_id": tid, "new": name, "line": line}, ids={pid})
     return _ok(line, target_id=pid, seq=ev.get("seq"))
+
+
+def _meeting_attach(root: Path, mid: str, inp: dict, choice_id: str, evs: List[dict],
+                    before: int) -> Dict[str, Any]:
+    """A link or a file attached to a meeting (cr1#1632): judged whole before
+    any write (the press, then the wall, then the same one already standing),
+    then the press's one row, which is the record."""
+    import meeting_attach as ma
+
+    if not mid:
+        return _no(ma.NO_MEETING_LINE)
+    att, why = ma.check_press(inp)
+    if att is None:
+        return _no(why)
+    clear = ma.screen(root, att)
+    if clear is None:
+        return _no(ma.UNREAD_LINE)
+    if clear is False:
+        return _no(ma.WALLED_LINE, left_out=1)
+    key = ma.key_of(att)
+    if any(r["meeting_id"] == mid and ma.key_of(r["attached"]) == key for r in ma.standing(evs)):
+        return _no(ATTACH_ALREADY_LINE, "already", target_id=mid)
+    data: Dict[str, Any] = {"hub_choice": choice_id, "kind": MEETING_KIND, "action": "attach",
+                            "target_id": mid, "attached": att, "with_ids": ma.meeting_people(root, mid),
+                            "line": ATTACH_LINE}
+    start = ma.day_of(inp.get("start"))
+    if start:
+        data["start"] = start
+    ev = _record(root, before, data)
+    if not ev:
+        return _no(ATTACH_FAILED_LINE, "error")
+    return _ok(ATTACH_LINE, target_id=mid, seq=ev.get("seq"))
+
+
+def _meeting_remove(root: Path, press_id: str, undo_id: str, evs: List[dict]) -> Dict[str, Any]:
+    """Remove an attachment: one row naming the attach press. Both rows stay
+    in the log; the readers leave a removed one out. Always allowed, a
+    person put off limits since included."""
+    rows = [e for e in _edits(evs) if e["data"].get("kind") == MEETING_KIND]
+    press = next((e for e in rows if e["data"].get("action") == "attach"
+                  and str(e["data"].get("hub_choice") or "") == press_id), None) if press_id else None
+    if press is None:
+        return _no(REMOVE_NO_PRESS_LINE)
+    if any(e["data"].get("action") == "undo" and str(e["data"].get("undoes_choice") or "") == press_id
+           for e in rows):
+        return _no(REMOVE_ALREADY_LINE, "already")
+    mid = str(press["data"].get("target_id") or "")
+    ev = _record(root, _max_seq(evs), {"hub_choice": undo_id, "kind": MEETING_KIND, "action": "undo",
+                                       "target_id": mid, "undoes_choice": press_id, "line": REMOVE_LINE})
+    if not ev:
+        return _no(UNDO_FAILED_LINE.format(name="It"), "error")
+    return _ok(REMOVE_LINE, target_id=mid, seq=ev.get("seq"))
 
 
 def taken_back_seqs(events: List[dict]) -> set:

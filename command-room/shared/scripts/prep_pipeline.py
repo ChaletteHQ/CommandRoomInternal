@@ -77,7 +77,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -801,6 +801,82 @@ def build_sources_section(
 # section, PREPSRC1), one order, both paths
 # ---------------------------------------------------------------------------
 
+#: cr1#1632 slice 1: the parts of a brief the Hub's live prep page reads,
+#: saved by the brief writer beside the document as `<document>.parts.json`.
+PARTS_SUFFIX = ".parts.json"
+PARTS_VERSION = 1
+PARTS_LIST_CAP = 20
+PARTS_TEXT_CAP = 300
+CARRIED_HEADING = "Carried From Last Time"
+#: A decision's options when its line names none: the owner still picks one.
+DEFAULT_OPTIONS = ("Yes", "No", "Not yet")
+#: ", or" is one separator; a comma between two digits ("2,500") is part of a number.
+_OPTION_SPLIT = re.compile(r"\s*,\s*or\s+|\s+or\s+|\s+vs\.?\s+|\s+/\s+|\s*(?:(?<!\d),|,(?!\d))\s*",
+                           re.IGNORECASE)
+#: A source cite at the end of a line ("(email, Jul 7)"): not part of the options.
+_TRAILING_CITE = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def _part_text(x: Any) -> str:
+    return " ".join(str(x or "").split())[:PARTS_TEXT_CAP]
+
+
+def decide_options(line: str) -> Dict[str, Any]:
+    """One decision line as `{q, opts}`: the question, and the options its
+    words name ("Pick the venue: hall or garden?" -> hall, garden), or
+    Yes / No / Not yet when they name none."""
+    text = _TRAILING_CITE.sub("", _part_text(line)).rstrip(" ?.")
+    q, tail = (text.split(":", 1) + [""])[:2] if ":" in text else (text, "")
+    opts = [o.strip(" ?.,") for o in _OPTION_SPLIT.split(tail) if o.strip(" ?.,")] if tail else []
+    if not (2 <= len(opts) <= 5) or any(len(o) > 60 for o in opts) \
+            or len({o.lower() for o in opts}) < len(opts):
+        return {"q": text, "opts": list(DEFAULT_OPTIONS)}
+    return {"q": q.strip(), "opts": opts}
+
+
+def _carried_lines(carried: Optional[List[Any]]) -> List[str]:
+    out = []
+    for x in carried or []:
+        if isinstance(x, dict):
+            t = _part_text(x.get("text"))
+            frm = _part_text(x.get("from"))
+            out.append(f"{t} (from {frm})" if t and frm else t)
+        else:
+            out.append(_part_text(x))
+    return [x for x in out if x][:PARTS_LIST_CAP]
+
+
+def prep_parts(*, verdict: str, decide_lines: List[str], questions: List[str], talking_points: List[str],
+               owed_table: Optional[dict], changed_lines: List[str], carried: List[str]) -> Dict[str, Any]:
+    """cr1#1632 slice 1: the brief's parts as lists (design E1's data shape):
+    `{v, walk, decide[{q, opts}], ask[], cover[], you_owe[], they_owe[],
+    changed[], carried[]}`. Pure: no read, no write."""
+    walk = _part_text(verdict)
+    if walk.lower().startswith("walk out with:"):
+        walk = walk[len("walk out with:"):].strip()
+    you, them = [], []
+    for row in (owed_table or {}).get("rows") or []:
+        if isinstance(row, list) and len(row) >= 2:
+            if _part_text(row[0]):
+                you.append(_part_text(row[0]))
+            if _part_text(row[1]):
+                them.append(_part_text(row[1]))
+    cap = PARTS_LIST_CAP
+    return {"v": PARTS_VERSION, "walk": walk,
+            "decide": [decide_options(x) for x in decide_lines if _part_text(x)][:cap],
+            "ask": [_part_text(x) for x in questions if _part_text(x)][:cap],
+            "cover": [_part_text(x) for x in talking_points if _part_text(x)][:cap],
+            "you_owe": you[:cap], "they_owe": them[:cap],
+            "changed": [_part_text(x) for x in changed_lines if _part_text(x)][:cap],
+            "carried": list(carried or [])[:cap]}
+
+
+def parts_path(brief_path: Any) -> str:
+    """Where a brief's parts live: beside it, `<brief>.parts.json`."""
+    p = str(brief_path or "")
+    return (p[:-5] if p.lower().endswith(".docx") else p) + PARTS_SUFFIX
+
+
 def assemble_prep_sections(
     *,
     walk_out_with: str,
@@ -821,6 +897,7 @@ def assemble_prep_sections(
     needs: Optional[str] = None,
     source_reads: Optional[dict] = None,
     operator_supplied: bool = False,
+    carried: Optional[List[Any]] = None,
 ) -> dict:
     """Compose the exec header + canonical section list for
     `brief_writer.make_brief(brief_kind="call_prep", ...)`. BOTH prep paths
@@ -933,6 +1010,12 @@ def assemble_prep_sections(
         sections.append({"heading": "Questions to Ask", "bullets": qs})
     for sec in extra_sections or []:
         sections.append(sec)
+    # cr1#1632 slice 1: what the owner's last meeting page with these people
+    # left (`hub_meeting.carried_points`): the decisions not made, the
+    # questions not answered and the points not covered.
+    carried_lines = _carried_lines(carried)
+    if carried_lines:
+        sections.append({"heading": CARRIED_HEADING, "bullets": carried_lines})
 
     # PREPSRC1 — the sources line, derived from what THIS assembly actually
     # consumed. The feeds and the reasoning behind each are documented once,
@@ -970,8 +1053,13 @@ def assemble_prep_sections(
         if src_section:
             sections.append(src_section)
 
+    # cr1#1632 slice 1: the brief's parts as lists, for the Hub's live prep
+    # page. The brief writer saves them beside the document (PARTS_SUFFIX);
+    # the prose stays as it was for every older reader.
+    parts = prep_parts(verdict=verdict, decide_lines=decide_lines, questions=qs, talking_points=tp,
+                       owed_table=owed_table, changed_lines=changed_lines, carried=carried_lines)
     return {"exec_header": exec_header, "sections": sections,
-            "sources_consulted": sources_consulted}
+            "sources_consulted": sources_consulted, "parts": parts}
 
 
 __all__ = [

@@ -496,7 +496,7 @@ def _workspace_local_date(instant_utc: _dt.datetime,
         localized = _tz.to_local(
             instant_utc,
             workspace_path=str(workspace_root) if workspace_root else None)
-        if localized is not None:
+        if localized is not None and not _tz.zone_fell_back(localized):   # cr1#1676
             return localized.date()
     except Exception:
         pass

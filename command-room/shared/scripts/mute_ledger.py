@@ -240,6 +240,44 @@ def active_dismissal_target_ids(events: Iterable[dict], now_iso: str) -> set:
 _SEQ_SPELLING = _re.compile(r"^(?:commitment_seq_|event_|seq_)?0*(\d+)$")
 
 
+def _commitment_keys(events: list) -> tuple:
+    """`(ids, by_seq)`: every commitment id in `events`, and the id at each
+    `commitment` event's seq, so a mute's target is read in every spelling a
+    writer has used (cr1#1292). Pure."""
+    try:
+        from cru_match import _commitment_id
+    except ImportError:  # pragma: no cover - direct-path import
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from cru_match import _commitment_id
+    ids: set = set()
+    by_seq: dict = {}
+    for ev in events:
+        if (ev.get("type") or ev.get("event")) != "commitment":
+            continue
+        cid = str(_commitment_id(ev))
+        ids.add(cid)
+        seq = ev.get("seq")
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            by_seq[seq] = cid
+    return ids, by_seq
+
+
+def _mute_target(raw, ids: set, by_seq: dict) -> Optional[str]:
+    """The item a mute's `target_id` names, or None when it names nothing.
+    An exact target is kept as written, as every reader did before (an
+    observed line, a step, any row keyed by its own id); a seq spelling is
+    resolved to the commitment at that seq. Pure."""
+    if raw in (None, "") or isinstance(raw, bool):
+        return None
+    key = str(raw).strip()
+    if key not in ids:
+        hit = _SEQ_SPELLING.match(key)
+        if hit and int(hit.group(1)) in by_seq:
+            return by_seq[int(hit.group(1))]
+    return key
+
+
 def item_snoozes(events: Iterable[dict], now_iso: str, *,
                  include_due_moves: bool = True) -> dict:
     """{commitment id: when its live snooze ends, ISO in UTC} (cr1#1292).
@@ -266,36 +304,12 @@ def item_snoozes(events: Iterable[dict], now_iso: str, *,
     `restore_due`) ends it or replaces it. `include_due_moves=False` reads
     the mute ledger alone."""
     events = list(events)
-    try:
-        from cru_match import _commitment_id
-    except ImportError:  # pragma: no cover - direct-path import
-        import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from cru_match import _commitment_id
-    ids: set = set()
-    by_seq: dict = {}
-    for ev in events:
-        if (ev.get("type") or ev.get("event")) != "commitment":
-            continue
-        cid = str(_commitment_id(ev))
-        ids.add(cid)
-        seq = ev.get("seq")
-        if isinstance(seq, int) and not isinstance(seq, bool):
-            by_seq[seq] = cid
+    ids, by_seq = _commitment_keys(events)
     out: dict = {}
     for m in live_mutes(events, now_iso):
-        raw = m.get("target_id")
-        if raw in (None, "") or isinstance(raw, bool):
+        cid = _mute_target(m.get("target_id"), ids, by_seq)
+        if cid is None:
             continue
-        key = str(raw).strip()
-        # An exact target is kept as written, as every reader did before
-        # (an observed line, a step, any row keyed by its own id); a seq
-        # spelling is resolved to the commitment at that seq.
-        cid = key
-        if key not in ids:
-            hit = _SEQ_SPELLING.match(key)
-            if hit and int(hit.group(1)) in by_seq:
-                cid = by_seq[int(hit.group(1))]
         end = _parse_dt(m.get("expires"))
         if cid is None or end is None:
             continue
@@ -385,6 +399,91 @@ def workspace_moved_ids(workspace_root, now_iso: str, events: Optional[list] = N
     every = item_snoozes(events, now_iso)
     muted = item_snoozes(events, now_iso, include_due_moves=False)
     return {str(k) for k in every if k not in muted}
+
+
+def check_backs(events: Iterable[dict], now_iso: str) -> dict:
+    """{commitment id: when its check-back ends, ISO in UTC} (cr1#1657).
+    Pure.
+
+    A "check back" is an item the owner does not owe himself (someone owes
+    it to him, or nobody owns it) that a Later hid until a day:
+    `commitment_state.apply_later`'s hiding leg, a `chat_dismissal` marked
+    `via: "later"` (the Week board's Move to, Snooze on any row, the
+    planner, a chat Later, End of Day's push). Their date is kept; the item
+    is off the lists until that day, and a calendar of days (the Week
+    board) and the person's card show it on that day as "check back".
+
+    An item is one only while a Later is ALL that hides it: a live mute of
+    any other kind (a hold, Not relevant, a review's snooze) or a hide that
+    runs longer keeps it hidden everywhere, as before."""
+    from commitment_state import LATER_SNOOZE_VIA   # lazy: that module reads this one
+    events = list(events)
+    now = _parse_dt(now_iso)
+    if now is None:
+        return {}
+    ids, by_seq = _commitment_keys(events)
+    cleared = _clear_index(events)
+    later: dict = {}
+    other: set = set()
+    for idx, ev in enumerate(events):
+        if ev.get("type") != "chat_dismissal":
+            continue
+        expires = dismissal_expiry(ev)
+        if expires is None or expires <= now or _is_cleared(ev, idx, cleared):
+            continue
+        d = ev.get("data") or {}
+        cid = _mute_target(d.get("target_id"), ids, by_seq)
+        if cid is None:
+            continue
+        if d.get("via") == LATER_SNOOZE_VIA:
+            if cid not in later or expires > later[cid]:
+                later[cid] = expires
+        else:
+            other.add(cid)
+    every = item_snoozes(events, now_iso)
+    return {cid: end.astimezone(_dt.timezone.utc).isoformat() for cid, end in later.items()
+            if cid not in other and _parse_dt(every.get(cid)) == end}
+
+
+def check_back_day(until_iso, tzinfo=None) -> Optional[_dt.date]:
+    """The day a check-back ends on (cr1#1657), or None. A Later given a
+    bare date (every Hub press: Move to, Snooze, the planner, the late
+    pile) hides until 00:00 UTC of the day named, so that stamp's own date
+    is the day; one given a time of day ends at that moment, read on the
+    workspace's calendar (`tzinfo`, else UTC). Pure."""
+    end = _parse_dt(until_iso)
+    if end is None:
+        return None
+    utc = end.astimezone(_dt.timezone.utc)
+    if (utc.hour, utc.minute, utc.second, utc.microsecond) == (0, 0, 0, 0) or tzinfo is None:
+        return utc.date()
+    return end.astimezone(tzinfo).date()
+
+
+def workspace_check_backs(workspace_root, now_iso: str, events: Optional[list] = None) -> dict:
+    """{commitment id: its check-back day, "YYYY-MM-DD"} over the owner's
+    own ledger (cr1#1657): `check_backs` on the day each ends
+    (`check_back_day`, on the workspace's calendar). `events`, the
+    owner-scoped ledger a caller already read, saves a second read. Read
+    only; {} when the ledger cannot be read, so a surface shows what the
+    lists show."""
+    if events is None:
+        try:
+            from events_io import load_events_owner_scoped
+            events = load_events_owner_scoped(str(workspace_root))[0]
+        except Exception:  # noqa: BLE001 - no ledger read: nothing is known hidden
+            return {}
+    try:
+        from open_list import _workspace_tz
+        tzinfo = _workspace_tz(Path(str(workspace_root)))
+    except Exception:  # noqa: BLE001 - no zone: the stamp's own UTC day
+        tzinfo = None
+    out: dict = {}
+    for cid, until in check_backs(events, now_iso).items():
+        day = check_back_day(until, tzinfo)
+        if day is not None:
+            out[str(cid)] = day.isoformat()
+    return out
 
 
 class DismissalNotFoundError(ValueError):
@@ -706,6 +805,9 @@ __all__ = [
     "remaining_ttl_label",
     "active_dismissal_target_ids",
     "workspace_moved_ids",
+    "check_backs",
+    "check_back_day",
+    "workspace_check_backs",
     "clear_dismissal",
     "clear_dismissals",
     "newer_hide_seq",

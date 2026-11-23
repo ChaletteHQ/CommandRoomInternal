@@ -2,80 +2,109 @@
 
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** this run writes the cockpit page's plate feed from the book. It writes the book nothing but the plate's display numbers (building the plate mints them), and the feed through the artifact database tool. It posts NO widget and lands NO page of its own: the chat turn is one line, then STOP. The page is the surface; this run is one of its four engines (COCKPIT1, cr1#608; four tasks per cr1#619).
 
-Read `cockpit-shared.md` in this folder first and do its shared step 0. Then the whole run in one call (the next section). The sections after it (settle the lights, clear the old choices, the leg one feed at a time: shared step 1 with leg `refresh` between the first two and the leg, then the shared last step) are the same work in steps, for a run where the one call is refused.
+**The whole run is one call beside the data (cr1#1530, cr1#1638).** Everything below runs in its order, and nothing else is read to do it: not `cockpit-shared.md`, not another task's file, not the workspace's brain file, no writing rules and no context loader (a refresh writes no words of the owner's). The sections after "When the one call is refused" are the same work in steps, for that case only.
 
-## The whole run in one call (cr1#1530)
+## Fixed, never chosen
 
-This section IS the refresh. Every section after it describes the same work one step at a time; those are used only when the one call here is refused (the last paragraph of this section says when). A refresh that ran each feed as its own call took about 35 tool calls, and a combined read of every feed was cut off at the device answer limit; here every feed is built in one process beside the data, pulled back in a few sized parts, and written to the page in one batch.
+- **`<WS>`** is the `ws` field of the device's discover answer (the bootloader's Step 1.3). **`<RT>`** is the runtime the bootloader resolved. Every device call below is rendered and run the way the bootloader renders its own.
+- **The run's id** is the `run_id` that step 3 answers. Never this session's id.
+- **No time is typed.** No call below passes a time: each helper and command reads its own clock.
+- **The page's documents stay in files.** Every read below saves them with `out_dir` in this session's own scratch, and only code reads those files. Never type a page document, a version or a choice into a call.
+- **Every answer passes through unchanged.** `batches` go to the page exactly as printed; parts are saved whole.
+- **The run mode** is `scheduled` unless a human message exists in this session, then `manual`; when uncertain, `manual`.
 
-**1. Read the page without carrying it through the chat.** Three reads: `list` on `status`; `query` on `choices` with `where: [["applied", "==", true]]`; and `list` on `feed` WITH `out_dir` set to a new folder in this session's own scratch (`<scratch>/page`). With `out_dir` the feeds are saved there as files and only their names come back: they are read for their versions, never for their content.
-
-**2. Shared step 1 with leg `refresh`** (the light to running), **then one writer call:**
+## 1. The page
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the applied choices as read>], "now_iso": "<now ISO>", "run_id": "<this session id>", "status_docs": [<every status document, as read>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_all"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:load_config"}'
 ```
 
-Its answer is small and carries no feed. It holds: `settle` (the lights a dead run left: `set` each on its own `status/<leg>`, pinned by the version rule in `cockpit-shared.md`; this is the one place a task writes another task's light, and this task's own light is never among them); `prune` (send its `writes` as ONE ArtifactData `batch`, exactly as they came back; an empty list means nothing to clear); `token` and `parts` (what to pull next); `pages` (each document, whether it was built, its size and its seconds); `failed` (the documents left out); `light`, `counts` and `line` (the finish).
+`found: false`: say "No Command Room Hub is set up for this folder; say `set up my hub` in a Command Room chat." and STOP. Load the page's database tool (`ArtifactData`; a listed deferred tool counts as present) and use the answer's `url` for every read and write. With no such tool, say "The Hub page could not be reached from this run." and STOP.
 
-**3. Pull each part, one call per part,** numbered from 0 to one less than the length of `parts`:
+## 2. The page, read into files: three reads in one turn
+
+Each with `out_dir` set to the same new folder in this session's own scratch, `<scratch>/page`: `list` on `status`; `query` on `choices` with `where: [["applied", "==", true]]` and `limit: 1000`; `list` on `feed`. Only the file names come back, which is all this run needs.
+
+## 3. The start, HERE in this shell
+
+```bash
+python3 "$RT/shared/scripts/cockpit_helpers.py" refresh-start --reads "<scratch>/page" --out "<scratch>/start"
+```
+
+It reads the saved page in code and prints one JSON line. `ok: false`: the start could not run; the whole turn is its `line`; STOP, writing nothing. `stop: true`: another refresh holds this task's light now; the whole turn is its `line`; STOP, writing nothing. Otherwise send `batches[0]` (this run's claim of its own light, the page's own run id when the page fired this run) as ONE `batch`. Refused because `status/refresh` changed: another refresh claimed it a moment ago; the whole turn is "Another refresh is running now; this one stopped without changing anything."; STOP. Then send each later list in `batches` as ONE `batch` (the lights a dead run left, and the old applied choices to clear); a refusal there is left alone, the next refresh does it.
+
+## 4. One writer call
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"run_id": "<step 3's run_id>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_all"}'
+```
+
+Its answer is small and carries no feed: `token` and `parts` (what to pull next), `pages` (each document, whether it was built, its size and its seconds), `failed` (the documents left out), `counts` and `line`. This task's own light is one of its documents, so the finish lands with the feeds.
+
+## 5. Pull each part, one call per part
+
+Numbered from 0 to one less than the length of `parts`:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"part": <the part's number>, "token": "<the token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_part"}'
 ```
 
-One part per call, never two in one call: each part is sized to pass the answer limit by itself, and two together are cut off. A part's answer is large by design and must reach a file in this session's own scratch WHOLE: when the tool saved the answer to a file, that file is the part; when the answer came back in the turn, save it to a file exactly as it came. Never retype, shorten or re-compose a part, and never save one in the workspace.
+One part per call, never two in one call. A part must reach a file in this session's own scratch WHOLE: when the tool saved the answer to a file, that file is the part; when the answer came back in the turn, save it to a file exactly as it came. Never retype, shorten or re-compose a part, and never save one in the workspace.
 
-**4. Unpack the parts HERE, in this shell,** never on the owner's computer (the files are here, and so is the page's database tool):
+## 6. The page again, then unpack HERE
 
-```bash
-python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" --pin "status/maintenance=<its version from step 1's read of status>" "<each saved part file>"
-```
-
-Leave the `--pin` out when `status/maintenance` is not on the page yet. It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. When it does, it has written one file per document and prints `batches`. A document it lists under `no_version` that DOES exist on the page needs its pin first: run the command once more with one more `--pin "<document>=<version>"` for each, the version taken from step 1's own results. A document that does not exist on the page yet takes no pin. Then send each batch as ONE ArtifactData `batch`, exactly as printed.
-
-A batch refused because a document changed names that entry: another run wrote that document a moment ago, so it is current. Send the batch again WITHOUT that entry, once per named entry; the document left out never changes the light. Any other refusal is left alone and named in the light's line. Never drop a pin to force a write.
-
-**5. The finish.** When every batch landed, `set` the answer's `light` on `status/refresh`, pinned to the version the running write returned. When the answer's `ok` is false the plate could not be read: its `light` is already the error light with its sentence, and no batch is sent. When a batch could not be sent for any reason but a document another run had just written, write the light through shared step 1's helper as `error` with one sentence naming the documents that did not land, never the answer's `done` light. Then the shared last step, with the answer's `counts` as the leg's counts. The final response is the light's sentence.
-
-A document under `failed` was not built or was too large to pull; the page keeps its old copy, it never changes the light, and it is NOT retried one call at a time in this run.
-
-**When the one call is refused.** An answer that says the name is not on the list (a runtime staged before this call existed), or one with no `token` and no `light`, means the one call cannot run here. Only then, do the sections below in their order, one call per feed. Never put two feed reads in one call: that is what was cut off.
-
-## First: settle the lights a dead run left
-
-`list` the `status` collection and pass every document to the helper; it returns the lights that stayed `running` past the timeout, rewritten as `no_answer` with their line:
+The claim changed `status/refresh`, so read the page's versions again into the same folder, in one turn: `list` on `status` and `list` on `feed`, each with `out_dir` `<scratch>/page`. Then, in this shell:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"docs": [<every status document, as read>], "now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:settle_statuses"}'
+python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" "<each saved part file>"
 ```
 
-`set` each returned document on its own `status/<leg>` (pinned by the version rule in `cockpit-shared.md`). This is the one place a task writes another task's light, and only a light no run has touched for `RUNNING_TIMEOUT_MINUTES`: a run that died must not leave its light running until morning. An empty answer means nothing to settle.
+It takes every version it needs from those saved reads; there is nothing to pin by hand. It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE `batch`, exactly as printed; this task's light comes last. A batch refused because a document changed names that entry: another run wrote it a moment ago, so it is current; send the batch again WITHOUT that entry, once per named entry. Never drop a pin to force a write.
 
-## Then: clear the old choices (cr1#683)
+**A batch not sent for any other reason means the light is written as `error`, never `done`** (the light is in the last batch, so a refused batch never leaves a `done` over feeds that did not land, and a refused last batch never leaves the light claimed and running). Write it through the `status_doc` call in "When a call says no", with one sentence naming the documents that did not land, `run_id` step 3's run id, and `set` it on `status/refresh` pinned to the version a `get` on `status/refresh` shows now. The final response is that sentence.
 
-A press stays in the page's `choices` collection after Apply writes it, so the page can show its result and offer Undo; past the expiry window it only slows the page and fills the database. `query` on `choices` with `where: [["applied", "==", true]]` and pass the documents to the helper:
+## 7. The receipt, then the final response
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"choices": [<the documents as read>], "now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:plan_prune_choices"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"counts": {"refresh": <the answer's counts>}, "fired_via": "<scheduled or manual>", "legs": ["refresh"], "task_id": "cockpit-refresh", "workspace_root": "<WS>"}, "name": "cockpit_helpers:log_run_receipt"}'
 ```
 
-Send its `writes` as ONE ArtifactData `batch`, exactly as they came back (a delete needs no pin). It never touches a waiting or a claimed choice, and it never changes the light: a refused batch is left for the next run. An empty answer means nothing to clear.
+The final response is the answer's `line`, one line, and nothing else. A document under `failed` was not built or was too large to pull; the page keeps its old copy, and it is NOT retried in this run.
+
+## When a call says no
+
+`refresh_all` answering `ok: false` with a `token` still sends its parts as above: its light is the error light with its sentence. An answer with no `token`, or a call that fails, writes the error light through this one call, then the receipt, and the final response is that line:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"leg": "refresh", "line": "<the answer's line, or the reason the call failed>", "run_id": "<step 3's run_id>", "state": "error", "stop_reason": "<the same line>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:status_doc"}'
+```
+
+`set` its answer on `status/refresh`, pinned to the version a `get` on `status/refresh` shows now.
+
+**When the one call is refused.** An answer that says the name is not on the list (a runtime staged before this call existed) means the one call cannot run here. Only then, do the feed sections below in their order, one call per feed. Never put two feed reads in one call: that is what was cut off. Step 3 has already run, so:
+
+- **Skip "First: settle, then clear the old choices":** step 3's batches did both, from the saved reads.
+- **Skip `cockpit-shared.md`'s shared steps 0 and 1:** no Inbox phase, no loader, and the light is NOT rewritten. Step 3's claim is the running light, with step 3's `run_id` and its `claimed_by`; every write below keeps that run id, never this session's id.
+- **The finish** is the `status_doc` call in "When a call says no" with `state` `done` and the plate's line (`error` and the sentence when a feed did not land), `run_id` step 3's run id, `set` on `status/refresh` pinned to the version a `get` on `status/refresh` shows now; then step 7's receipt.
+
+## First: settle, then clear the old choices
+
+Step 3 does both, from the saved reads: `refresh-start` runs `cockpit_helpers:settle_statuses` on the lights a dead run left, then `cockpit_helpers:plan_prune_choices` on the old applied choices, and its later batches carry them (the deletes as one batch). No step of this run does them again.
 
 ## The leg: the plate
 
 The scheduled fire runs half past the hour from 7 AM to 3 PM so the page is current when the owner opens it; the page fires it after `cockpit-apply` turns green, so the plate it reads carries the closes. Either way the leg is one writer call:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_plate"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_plate"}'
 ```
 
-`set` the answer on `feed/plate` (a large answer goes through `file_path`: save it in this session's own scratch first, never in the workspace; pinned by the version rule in `cockpit-shared.md`). The answer carries the header, the focus rows, the chase and schedule rows, the whole plate capped, and the closes of the last 24 hours. Light: `done` with "N on the plate, M closed overnight."
+`set` the answer on `feed/plate` (a large answer goes through `file_path`: save it in this session's own scratch first, never in the workspace; pinned by the version rule in `cockpit-shared.md`). The answer carries the header, the focus rows, the chase and schedule rows, the whole plate capped, and the closes of the last 24 hours. The finish's line: "N on the plate, M closed in the last day." (the finish bullet above is the only light write)
 
 **Then the work streams and priorities (cr1#660, cr1#1013).** One read beside the data, after the plate, so its counts match the closes the plate just showed. It reads the thread, work-stream and priority cards, the open list and the loose-ends list's items on no thread (the Work streams tab's "No home yet" section, cr1#1013 part 3), and feeds both the Work streams tab and the Priorities tab:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_projects"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_projects"}'
 ```
 
 `set` the answer on `feed/projects` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). It never changes the light: a failed projects read leaves the old feed in place, and the light says what the plate said.
@@ -83,7 +112,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 **Then the Week board (cr1#1017).** One read beside the data, after the work streams: the next seven days' due items from the open list and one lane per confirmed priority, for the Week view on Today (its meetings come from the Today feed's `week`, which the prep run writes):
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_board"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_board"}'
 ```
 
 `set` the answer on `feed/board` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
@@ -91,7 +120,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 **Then the Today lists (cr1#662).** The owner's active reminders and the priority to-dos they added on the page, one read beside the data:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_mine"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_mine"}'
 ```
 
 `set` the answer on `feed/mine` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
@@ -99,7 +128,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 **Then the mail rules (cr1#1020).** The owner's mail rules in force and the threads dropped from the inbox, one read beside the data:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_mail_rules"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_mail_rules"}'
 ```
 
 `set` the answer on `feed/mail_rules` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
@@ -107,7 +136,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 **Then the people (cr1#1020).** Everyone on file with what is open between the owner and them, and who is starred to Home, one read beside the data:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_people"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_people"}'
 ```
 
 `set` the answer on `feed/people` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
@@ -115,7 +144,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 **Then the morning brief (cr1#1310; behind the Hub's Brief button since cr1#1537, the Brief tab before).** Today's morning brief as the Morning Brief run saved it, one read beside the data. It reads that one saved file and nothing else, so the panel shows exactly what the brief posted:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_brief"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_brief"}'
 ```
 
 `set` the answer on `feed/brief` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
@@ -123,7 +152,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 **Then To confirm (cr1#779; the Review tab until cr1#1286).** The open questions and proposed closes, one read beside the data:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_review"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_review"}'
 ```
 
 `set` the answer on `feed/review` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
@@ -131,13 +160,13 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 **Then the Record tab (cr1#780; the Done tab until cr1#1537).** The recap's sections first, one read beside the data:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "since_iso": "<seven days before now, ISO>", "workspace_root": "<WS>"}, "name": "friday_wrap_helpers:week_sections"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "friday_wrap_helpers:week_sections"}'
 ```
 
 Then hand its answer to the feed, and `set` that answer on `feed/week`:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "sections": <the week_sections answer>, "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_week"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"sections": <the week_sections answer>, "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_week"}'
 ```
 
 It is pinned by the version rule in `cockpit-shared.md`. Like the projects, it never changes the light.
@@ -145,7 +174,7 @@ It is pinned by the version rule in `cockpit-shared.md`. Like the projects, it n
 **Then Settings (cr1#781; behind the Hub's gear since cr1#1537, the Settings tab before).** Everything learned and every setting, each with its source, read from the stores the skills read, one read beside the data:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_settings"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_settings"}'
 ```
 
 `set` the answer on `feed/settings` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
@@ -153,7 +182,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 **Then the Maintenance record (cr1#666).** When the Maintenance chat last finished, each job's last completion and how many hours it is behind, one read beside the data:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:maintenance_status"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:maintenance_status"}'
 ```
 
 `set` the answer on `status/maintenance` (pinned by the version rule in `cockpit-shared.md`), unless it answers `idle` while the page's document says `done`: that is a read that failed, and the page keeps what it has. It is not one of the four lights: it records when Maintenance last kept the book up, the page shows its line only when a job failed or a connector went unread (cr1#822), and Go runs Maintenance on every press whatever it says (cr1#682). The document names the fire that left the note (`fired_via`, `fired_at`, cr1#743): a scheduled fire's word reaches the page here, at the next Refresh or Go, exactly as a typed run's does. Like the projects, it never changes this task's light.

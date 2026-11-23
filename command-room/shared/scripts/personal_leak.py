@@ -137,6 +137,32 @@ def personal_tie_ids(workspace_root) -> frozenset:
         return frozenset()
 
 
+def people_records(workspace_root) -> Optional[list]:
+    """cr1#1682: the people records of entities.json, read strictly, for a
+    privacy fence that must fail CLOSED. `[]` when there is no file or it
+    names no people; None when the file is there and cannot be read, or its
+    `people` is there and is not a list (an object, a string: a hand edit or
+    a migration's shape), which a lenient reader takes as "nobody", so
+    nobody is walled. `personal_tie_ids` keeps its lenient empty answer (the
+    join's documented posture); a fence asks this one."""
+    p = Path(str(workspace_root)) / "_hq" / "data" / "entities.json"
+    if not p.exists():
+        return []
+    try:
+        import json as _json
+
+        data = _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - unreadable is not "nobody"
+        return None
+    if not isinstance(data, dict):
+        return None
+    entities = data.get("entities") if isinstance(data.get("entities"), dict) else data
+    people = entities.get("people")
+    if people is None:
+        return []
+    return list(people) if isinstance(people, list) else None
+
+
 # Row fields that carry person linkage — the join keys (BUG-8330 item 12).
 # Envelope `person_ids` plus the data-scope owner/counterparty spellings the
 # commitment family actually writes.
@@ -540,6 +566,7 @@ __all__ = [
     "PERSONAL_LEAK_PATTERNS",
     "is_org_surface",
     "is_personal",
+    "people_records",
     "personal_tie_ids",
     "scan_for_personal_leak",
 ]

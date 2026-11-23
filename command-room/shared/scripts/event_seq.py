@@ -120,8 +120,10 @@ def coerce_seq(value: Any, *, context: str = "") -> Optional[int]:
       - `str`            -> int when it is a clean integer literal. "1957"
                             is unambiguous and recovers the row's REAL
                             position, which is strictly better than dropping
-                            a genuine event out of its window. Warned either
-                            way, because a string seq is still a writer bug.
+                            a genuine event out of its window. Quiet when it
+                            reads back cleanly (cr1#1638: a known historical
+                            shape, read right every time); warned when it
+                            cannot be read. `malformed_seqs()` lists both.
       - anything else    -> None.
 
     `None`/absent returns None WITHOUT a warning — that is the known
@@ -142,7 +144,12 @@ def coerce_seq(value: Any, *, context: str = "") -> Optional[int]:
             recovered = int(value.strip())
         except ValueError:
             recovered = None
-        _warn(value, context, recovered)
+        # cr1#1638: a number written as text that reads back cleanly is a
+        # known historical shape, read correctly every time; it stays quiet
+        # (every such row is still listed by `malformed_seqs()`). A value that
+        # cannot be read at all still warns.
+        if recovered is None:
+            _warn(value, context, recovered)
         return recovered
     _warn(value, context, None)
     return None

@@ -315,23 +315,24 @@ def _zone_from_name(name) -> Optional[_dt.tzinfo]:
         return None
 
 
-#: Every spelling of "the workspace is on UTC ON PURPOSE". A configured name
-#: in this set is an answer, not a fallback, so the degrade below leaves it
-#: alone even on a machine with no tz database at all.
-UTC_NAMES = ("UTC", "Etc/UTC", "Etc/Universal", "Universal", "Zulu",
-             "Etc/Zulu", "Etc/GMT", "GMT", "Etc/GMT+0", "Etc/GMT-0", "GMT0")
-
-
 def _is_utc_name(name) -> bool:
-    return str(name or "").strip().upper() in tuple(n.upper() for n in UTC_NAMES)
+    """Every spelling of "the workspace is on UTC ON PURPOSE" (`tz.UTC_NAMES`,
+    the one list since cr1#1676): an answer, not a fallback, so the degrade
+    below leaves it alone even on a machine with no tz database at all.
+    Imported here, not at the top: this module imports nothing from this tree
+    at load (`diagnostic_stamp`'s callers)."""
+    from tz import is_utc_name
+
+    return is_utc_name(name)
 
 
 def _is_utc_zone(zone) -> bool:
     """True for a tzinfo that IS UTC, however it was constructed.
 
-    `ZoneInfo("UTC")` carries `key`; `datetime.timezone.utc` — what
-    `tz._utc_fallback` returns on a machine with no tz database — carries
-    none, and prints as `UTC`. Both are the fallback's answer.
+    `ZoneInfo("UTC")` carries `key`; a `datetime.timezone` UTC carries none
+    and prints as `UTC`: `timezone.utc` (a UTC-named workspace with no tz
+    database) and `tz._utc_fallback`'s object (a zone that could not be
+    loaded, cr1#1676) both do. Each counts as UTC here.
     """
     if zone is None:
         return False

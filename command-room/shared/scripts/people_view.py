@@ -401,8 +401,15 @@ def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
     except Exception:  # noqa: BLE001 - no cards answers no one, and says so
         cards, cards_from_log = {}, True
         errors.append("cards")
+    # cr1#1657: what someone owes the owner that a Later hid until a day
+    # stays on their card, marked with that day ("check back Tue").
     try:
-        opens, open_from_log = pc.open_by_person(root, now_iso)
+        from mute_ledger import workspace_check_backs
+        back = workspace_check_backs(root, _iso(_now(now_iso)))
+    except Exception:  # noqa: BLE001 - no read: the card shows what the lists show
+        back = {}
+    try:
+        opens, open_from_log = pc.open_by_person(root, now_iso, keep=back)
     except Exception:  # noqa: BLE001 - no open list leaves every person's empty, and says so
         opens, open_from_log = {}, True
         errors.append("open")
@@ -435,9 +442,13 @@ def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
             i["title"] = i["title"][:TITLE_CAP]
             i["direction_words"] = DIRECTION_WORDS.get(i["direction"], "")
         unlinked = mine.get("unlinked") or []
-        lists = list_offers({"name": who["name"], "email": who.get("email") or ""}, items, sign=sign, own=own)
-        nxt = (pick_next([i for i in items if i["direction"] == "you_owe"],
-                         [i for i in items if i["direction"] == "owed_to_you"], today)
+        # cr1#1657, ruling 63 (review of #1663): a row hidden until its
+        # check-back day shows on the card with its day, and nowhere else on
+        # it: not in the list offers, the counts or the next step, as before.
+        live = [i for i in items if not i.get("check_back")]
+        lists = list_offers({"name": who["name"], "email": who.get("email") or ""}, live, sign=sign, own=own)
+        nxt = (pick_next([i for i in live if i["direction"] == "you_owe"],
+                         [i for i in live if i["direction"] == "owed_to_you"], today)
                if pick_next else None)
         out.append({
             "id": pid, "name": who["name"], "role": who.get("role") or "",
@@ -450,10 +461,10 @@ def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
             # cr1#1012, the same split as the overdue ruling of 2026-11-11).
             # `open` still lists both, each row with its own words.
             "open": items[:OPEN_CAP], "n_listed": len(items),
-            "n_open": sum(1 for i in items if i["direction"] != "unconfirmed"),
-            "n_waiting": sum(1 for i in items if i["direction"] == "unconfirmed"),
-            "n_you_owe": sum(1 for i in items if i["direction"] == "you_owe"),
-            "n_owed_to_you": sum(1 for i in items if i["direction"] == "owed_to_you"),
+            "n_open": sum(1 for i in live if i["direction"] != "unconfirmed"),
+            "n_waiting": sum(1 for i in live if i["direction"] == "unconfirmed"),
+            "n_you_owe": sum(1 for i in live if i["direction"] == "you_owe"),
+            "n_owed_to_you": sum(1 for i in live if i["direction"] == "owed_to_you"),
             "unlinked": unlinked[:OPEN_CAP], "n_unlinked": len(unlinked),
             "starred": pid in stars,
             "lists": lists,

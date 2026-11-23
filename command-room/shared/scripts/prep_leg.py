@@ -449,7 +449,13 @@ def local_day_floor(now=None, workspace_root=None):
         try:
             from tz import to_local
 
+            from tz import zone_fell_back
+
             local = to_local(now, workspace_path=str(workspace_root))
+            # cr1#1676: with no tz database `to_local` answers in UTC instead
+            # of raising; that is an unloaded zone too, so machine-local.
+            if local is not None and zone_fell_back(local):
+                local = None
         except Exception:  # noqa: BLE001 — fall through to machine-local
             local = None
     if local is None:

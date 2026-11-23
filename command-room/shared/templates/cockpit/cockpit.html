@@ -520,6 +520,13 @@
   .meethead { margin: 12px 0 14px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
   .meethead .mt1 { font: 600 24px/1.15 var(--font-display); letter-spacing: -.015em; }
   .meethead .mwhen { font-size: 13.5px; color: var(--ink-soft); margin-top: 6px; }
+  /* cr1#1632: Attached, a link or a file on a meeting (the design board's E3) */
+  .attach { margin-top: 18px; }
+  .attach .attadd { align-items: center; margin-top: 8px; }
+  .attach .attadd input.when { margin-top: 0; flex: 1; min-width: 160px; }
+  .attach .attrow .title a { color: var(--ink); }
+  label.attfile { display: inline-block; cursor: pointer; border: 1px solid var(--line); border-radius: var(--pill); padding: 5px 13px; font: 500 13px var(--font-sans); color: var(--ink); white-space: nowrap; }
+  label.attfile:focus-visible { outline: 2px solid var(--olive); outline-offset: 2px; }
   .nextcard { display: flex; align-items: center; gap: 20px; background: var(--raise); border-radius: var(--card); padding: 18px 22px; margin: 4px 0 18px; flex-wrap: wrap; }
   .nextcard .cnt { flex: none; min-width: 84px; text-align: center; font-family: var(--font-display); line-height: 1; }
   .nextcard .cnt b { display: block; font-size: 40px; font-weight: 600; letter-spacing: -.03em; color: var(--go-text); }
@@ -645,11 +652,27 @@
   .calline s { color: var(--ink-soft); }
   .calnotebox textarea.draft { width: 100%; box-sizing: border-box; }
   button.chip { font: 500 13px var(--font-sans); padding: 4px 12px; border-radius: var(--pill); border: 1px solid var(--line); background: transparent; color: var(--ink-soft); cursor: pointer; }
+  /* cr1#1632 slice 1: the live prep page, two columns, one on a phone */
+  .mlive { display: grid; grid-template-columns: 1.25fr 1fr; gap: 20px; margin-top: 14px; }
+  @media (max-width: 720px) { .mlive { grid-template-columns: 1fr; } }
+  .mlive .ph { font-weight: 700; font-size: 13px; margin-top: 16px; }
+  .mlive .walk { font-size: 1.05em; margin: 4px 0 12px; }
+  .mlive .dcard { padding: 8px 0; }
+  .mlive .dcard .opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .mlive button.chip.pick[aria-pressed="true"] { background: var(--go-soft, var(--raise)); border-color: var(--go, var(--ink)); color: var(--ink); font-weight: 600; }
+  .mlive .mask { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; }
+  .mlive .mask input[type="text"] { width: 100%; }
+  .mfoot { margin-top: 16px; }
   button.chip.on, button.chip[aria-pressed="true"] { background: var(--raise); color: var(--ink); border-color: var(--ink-soft); font-weight: 600; }
   .calpick { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
   .pmrow { display: flex; gap: 9px; padding: 6px 0; font-size: 13.5px; line-height: 1.35; }
   .pmrow .tm { color: var(--ink-soft); font-size: 12.5px; width: 62px; flex: none; }
   .pmrow .tt { flex: 1; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+  /* cr1#1668: a past meeting's row is one press into its wrap-up */
+  button.pmrow.pmbtn { width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; color: inherit; font: inherit; cursor: pointer; }
+  button.pmrow.pmbtn:hover { background: var(--surface); }
+  .pmrow .pwho { display: block; font-weight: 400; color: var(--ink-soft); font-size: 12.5px; }
+  .pmrow .tag.pst { margin: 3px 0 0; }
   .wkwrap { overflow-x: auto; overflow-y: hidden; margin: 0 0 18px; padding-bottom: 10px; }
   .wk { position: relative; display: grid; grid-template-columns: 28px repeat(7, minmax(96px, 1fr)); }
   .wkh { position: relative; }
@@ -902,10 +925,18 @@
     <div class="dayhead"><div class="daysent" id="daysentence" hidden></div><span id="daytip"></span></div>
     <div class="daysub" id="daysub" hidden></div>
     <div id="meetview" hidden>
-      <button class="backlink" id="meetBack" type="button">&larr; Back</button>
+      <button class="backlink" id="meetBack" type="button">&larr; Back to Today</button>
       <div class="meethead" id="meethead"></div>
       <div id="meettools"></div>
       <div id="meetings"></div>
+      <!-- cr1#1632 slice 1: the live prep page (design E1), from the brief's parts -->
+      <div id="meetlive"></div>
+      <div id="meetattach" class="attach"></div>
+    </div>
+    <!-- cr1#1632 slice 3: a past meeting's wrap-up page (design E2) -->
+    <div id="wrapview" hidden>
+      <button class="backlink" id="wrapBack" type="button">&larr; Back</button>
+      <div id="wraplive"></div>
     </div>
     <div id="todaymid">
     <div id="nextmeeting"></div>
@@ -1936,13 +1967,15 @@
   function undoChoice(id) {
     // Undo before the book has it: the waiting choice is removed, so the next
     // Apply never sees it. After the book has it, Undo is a `reopen` choice.
-    if (!db || !id) return;
+    // cr1#1632 review: answers whether the press is gone (true once deleted).
+    if (!db || !id) return Promise.resolve(false);
     var c0 = S.choices.filter(function (c) { return c.id === id; })[0];
-    if (claimed(c0)) { banner("Apply is writing that one now. Use Undo on the result once it lands.", true); return; }
-    db.collection("choices").doc(id).delete().then(function () {
+    if (claimed(c0)) { banner("Apply is writing that one now. Use Undo on the result once it lands.", true); return Promise.resolve(false); }
+    return db.collection("choices").doc(id).delete().then(function () {
       S.choices = S.choices.filter(function (c) { return c.id !== id; }); renderAll();
       if (typeof unnoteHandled === "function") unnoteHandled(c0);
-    }, function (e) { banner("Could not undo that; try again.", true, errText(e)); });
+      return true;
+    }, function (e) { banner("Could not undo that; try again.", true, errText(e)); return false; });
   }
   function closedHere(cid) {
     // The latest applied close of this row from this page, if no reopen followed it.
@@ -2523,7 +2556,7 @@
         // cr1#679: an open brief stays open when the page redraws.
         // cr1#1283: the prep state reads in words on every row, before any press.
         // A block of the owner's own time (cr1#1293's `solo`) is time, not a meeting: no prep state.
-        var prep = isBlock(m) ? '<span class="tag">Time blocked</span>' : (m.prep && held) ? '<span class="tag ok">Prep ready</span>' + (m.prep_text ? '<button class="act" data-prep="' + i + '" data-prepkey="' + esc(pk) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide prep" : "Open prep") + "</button>" : "") : '<span class="tag">No prep yet</span>';
+        var prep = isBlock(m) ? '<span class="tag">Time blocked</span>' : (m.prep && held) ? '<span class="tag ok">Prep ready</span>' + (m.prep_text && !m.prep_parts ? '<button class="act" data-prep="' + i + '" data-prepkey="' + esc(pk) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide prep" : "Open prep") + "</button>" : "") : '<span class="tag">No prep yet</span>';
         var when = m.all_day ? "All day" : fmtWhen(m.start);
         var ended = i === endedAt;
         h += '<div class="row' + (ended ? " ended" : "") + riseClass("m" + (m.start || "") + m.title) + '" style="animation-delay:' + (i * 90) + 'ms"><span class="tm">' + esc(m.all_day ? "All day" : fmtTime(m.start)) + '</span><div class="main"><div class="title">' + (ended ? "Just ended: " : "") + esc(showTitle(m.title, { kind: "meeting" })) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + calendarTag(m) + '</div><div class="sub">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + meetingWith(m) + "</div></div><div class=\"acts\">" + prep + calendarActs(m, ended) + "</div></div>"
@@ -2643,6 +2676,54 @@
           : ' <button class="act undo" type="button" data-cact="reopen" data-cid="' + esc(c.n) + '" title="Open this commitment again">Undo</button>') + "</div></div>";
     });
     if (list.length > CLOSE_CHANGES_N) h += '<div class="calch"><div class="calline"><button class="act" type="button" data-goto="plate">' + (list.length - CLOSE_CHANGES_N) + " more closed, on Commitments</button></div></div>";
+    return h;
+  }
+  // cr1#1657: a Later on something someone owes the owner (the board's Move
+  // to, Snooze, a plan) hides it until a day and keeps their date; the Week
+  // board draws it on that day, marked "check back". Changes says so, one
+  // short line each ("Hidden until Tue"): with its Undo while it waits for
+  // Apply, and for a day after Apply carried it, unless a newer read shows
+  // the item back on the board as it was.
+  var HIDE_CHANGES_N = 5, ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+  function boardCardById(cid) {
+    var ds = S.board && S.board.days ? S.board.days : [];
+    for (var i = 0; i < ds.length; i++) { var cs = ds[i].due || []; for (var j = 0; j < cs.length; j++) if (String(cs[j].id) === String(cid)) return cs[j]; }
+    return null;
+  }
+  function owedHere(cid) {
+    var card = boardCardById(cid); if (card) return card.direction === "owed_to_you";
+    var r = typeof plateRowOf === "function" ? plateRowOf(cid) : null;
+    return !!(r && (r.bucket === "owed_to_you" || r.direction === "owed_to_you"));
+  }
+  // The day a press hides an item they owe until: the Apply run's own answer
+  // once it ran (`check_back`), the day pressed while it waits.
+  function hideDay(c) {
+    if (c.applied) return c.result && c.result.outcome === "applied" && ISO_DAY.test(String(c.result.check_back || "")) ? String(c.result.check_back) : "";
+    return ISO_DAY.test(String(c.input || "")) && owedHere(c.n) ? String(c.input) : "";
+  }
+  function hideChangesHtml() {
+    var now = Date.now(), list = [], b = S.board;
+    S.choices.forEach(function (c) {
+      if (c.kind !== "commitment" || c.action !== "snooze" || c.plan) return;
+      var day = hideDay(c); if (!day) return;
+      if (c.applied) {
+        var at = new Date(c.applied_at || c.created_at || "").getTime();
+        if (isNaN(at) || now - at >= 24 * 60 * 60 * 1000) return;
+        // a newer board shows it back as it was (put back, or moved again): the line is over
+        var card = boardCardById(c.n);
+        if (card && card.check_back !== day && b && b.generated_at && after(b.generated_at, c.applied_at || c.created_at)) return;
+      }
+      list.push({ c: c, day: day });
+    });
+    list.sort(function (x, y) { return String(y.c.created_at || "").localeCompare(String(x.c.created_at || "")); });
+    var h = "";
+    list.slice(0, HIDE_CHANGES_N).forEach(function (e) {
+      var c = e.c, when = typeof checkBackDay === "function" ? checkBackDay(e.day, b && (b.today || b.generated_at)) : fmtDate(e.day);
+      var more = "Their date is kept. It is off your lists until " + when + ", and on the Week board on " + when + " to check back.";
+      h += '<div class="calch" data-hidech="' + esc(c.n) + '"><div class="calline">Hidden until ' + esc(when) + ": " + esc(showTitle(c.title || titleOf(c.n), { empty: "an item" })) + "."
+        + (typeof calTip === "function" ? calTip("hide:" + c.id, more) : "")
+        + (c.applied ? "" : waitTag(c, "waiting for Apply") + undoBtn(c, "Take this back before it reaches your book")) + "</div></div>";
+    });
     return h;
   }
   function renderLane(el, rows, empty) {
@@ -4788,9 +4869,21 @@
   // An open item's line on a person's card: its words (their name left out),
   // its direction, its day, and "late" by the row's own `overdue`, the same
   // test the Next line reads, so every row is marked late by one rule.
+  // cr1#1657: a row a Later hid until a day, with their date kept, stays on
+  // the card and says when to check back ("check back Tue").
   function openItemLine(o, name) {
     return esc(showTitle(nameDropped(o.title, name))) + (o.direction_words ? " · " + esc(o.direction_words) : "") + (o.due ? " · " + esc(fmtDate(o.due)) : "")
+      + (o.check_back ? " · check back " + esc(typeof checkBackDay === "function" ? checkBackDay(o.check_back, typeof S !== "undefined" && S.people ? S.people.generated_at : "") : fmtDate(o.check_back)) : "")
       + (o.overdue ? ' · <span class="late">late</span>' : "");
+  }
+  // A check-back day as a weekday ("Tue") within the week from `since` (the
+  // feed's own day or read time, never the clock), else its date.
+  function checkBackDay(iso, since) {
+    var noonOf = function (x) { var s = String(x || ""), d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + "T12:00:00") : new Date(s); if (!isNaN(d)) d.setHours(12, 0, 0, 0); return d; };
+    var d = noonOf(iso), from = noonOf(since);
+    if (isNaN(d)) return String(iso || "");
+    var ahead = isNaN(from) ? -1 : Math.round((d.getTime() - from.getTime()) / 86400000);
+    return ahead >= 0 && ahead < 7 ? d.toLocaleDateString([], { weekday: "short" }) : fmtDate(iso);
   }
   // The open item the Next line names, so the list never repeats it: by its
   // id when the feed carries one, else by its words, day and direction.
@@ -4831,7 +4924,13 @@
     if (them) parts.push("they owe you " + them);
     if (rest) parts.push(rest + (parts.length ? " other open" : " open"));
     if (nw) parts.push(nw + " waiting for your yes");
-    return parts.length ? cap1(parts.join(" · ")) : "Nothing open";
+    if (parts.length) return cap1(parts.join(" · "));
+    // cr1#1657 (coordinator, reversible): rows hidden until a day stay in
+    // What is open, so a card holding only those never says "Nothing open".
+    var backs = (p.open || []).filter(function (o) { return o && o.check_back; }).map(function (o) { return String(o.check_back); }).sort();
+    if (!backs.length) return "Nothing open";
+    var on = typeof checkBackDay === "function" ? checkBackDay(backs[0], typeof S !== "undefined" && S.people ? S.people.generated_at : "") : fmtDate(backs[0]);
+    return "Nothing due now · " + backs.length + (backs.length === 1 ? " back on " : " back, the first on ") + on;
   }
   function pEdStays(n, f) {
     // An edit stays on the card while its box is open, or its newest press
@@ -5858,13 +5957,18 @@
     // A move names its day; a snooze typed on the list as days from today
     // keeps the list's own words.
     var isDay = function (x) { return /^\d{4}-\d{2}-\d{2}$/.test(String(x && x.input || "")); };
+    // cr1#1657: a move of something they owe you keeps their date and hides it
+    // until that day, so it reads "Check back", never "Moved to"
+    var owed = c.direction === "owed_to_you", moveWord = function (iso) { return (owed ? "Check back " : "Moved to ") + boardDayName(iso, days); };
     // cr1#1644 (the owner: "row or card"): a waiting press folds the card to one line, what was chosen (a move names its day) and its Undo
-    var bverb = w && typeof pressVerb === "function" && typeof chosenLine === "function" ? (w.action === "snooze" && isDay(w) ? "Moved to " + boardDayName(w.input, days) : pressVerb(w)) : "";
+    var bverb = w && typeof pressVerb === "function" && typeof chosenLine === "function" ? (w.action === "snooze" && isDay(w) ? moveWord(w.input) : pressVerb(w)) : "";
     if (bverb) return '<div class="card chosencard' + (c.late ? " late" : "") + '" data-card="' + esc(cid) + '">' + chosenLine(bverb, showTitle(c.title), "", undoBtn(w, "Take this back before it reaches your book")) + "</div>";
-    if (w) tag = waitTag(w, w.action === "snooze" ? (isDay(w) ? "move to " + boardDayName(w.input, days) + " waiting" : "snooze waiting") : (w.action === "context" ? "note waiting" : w.action + " waiting"));
-    else if (res && res.action === "snooze" && res.result && res.result.outcome === "applied" && isDay(res)) tag = '<span class="tag ok">' + esc("Moved to " + boardDayName(res.input, days)) + "</span>";
+    if (w) tag = waitTag(w, w.action === "snooze" ? (isDay(w) ? (owed ? "check back " : "move to ") + boardDayName(w.input, days) + " waiting" : "snooze waiting") : (w.action === "context" ? "note waiting" : w.action + " waiting"));
+    // a card the feed already draws on that day as a check-back says it once, in its line
+    else if (res && res.action === "snooze" && res.result && res.result.outcome === "applied" && isDay(res)) tag = c.check_back && c.check_back === res.input ? "" : '<span class="tag ok">' + esc(moveWord(res.input)) + "</span>";
     else tag = resultTag(res);
-    var sub = [c.thread, c.late ? "late" : "", c.direction === "owed_to_you" ? "they owe you" : ""].filter(Boolean).join(" · ");
+    // cr1#1657: a card the feed draws on its check-back day says so, and is never late
+    var sub = [c.thread, c.late ? "late" : "", owed ? "they owe you" : "", c.check_back ? "check back " + boardWeekday(c.check_back) : ""].filter(Boolean).join(" · ");
     var acts = "", menu = "", full = !!(S.boardFull && S.boardFull[cid]);
     // cr1#1591 review: a waiting or closed card has no menu, so its own More
     // only opens the rest of its text (a phone has no hover title).
@@ -5876,7 +5980,8 @@
       acts = '<button class="act" data-bmore="' + esc(cid) + '" aria-expanded="' + (open ? "true" : "false") + '" aria-label="More for ' + esc(showTitle(c.title)) + '">More</button>';
       if (open) {
         menu = '<div class="cmenu" role="group" aria-label="Move or close this">';
-        days.forEach(function (d) { if (d.date !== here || c.late) menu += '<button class="act" data-bmove="' + esc(d.date) + '" data-bcid="' + esc(cid) + '">Move to ' + esc(d.name || fmtDate(d.date)) + "</button>"; });
+        // cr1#1657: a check-back moves only later (Apply refuses a nearer day)
+        days.forEach(function (d) { if ((d.date !== here || c.late) && !(c.check_back && d.date <= c.check_back)) menu += '<button class="act" data-bmove="' + esc(d.date) + '" data-bcid="' + esc(cid) + '">Move to ' + esc(d.name || fmtDate(d.date)) + "</button>"; });
         menu += '<button class="act primary" data-bact="done" data-bcid="' + esc(cid) + '">Done</button>'
           + '<button class="act" data-bact="drop" data-bcid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>'
           // cr1#1216: Jump in, as on a Plan row: a new chat naming the item and
@@ -7363,18 +7468,45 @@
   function renderPast(model) {
     var el = $("pastmeetings"); if (!el) return;
     var h = "", n = 0;
-    (model ? model.past : []).forEach(function (it) { h += railLine(it, fmtTime(it.m.start)); n += 1; });
+    // review of #1669, item 7: a meeting that ended within the hour is one
+    // press into its wrap-up too; a personal one is never counted (item 4)
+    (model ? model.past : []).forEach(function (it) {
+      var line = railLine(it, fmtTime(it.m.start));
+      // its row still opens the meeting; the wrap-up is one press beside it, as Prep is on the list
+      h += it.m.wrap && it.m.meeting_id ? '<div class="nx">' + line + '<button class="act nxgo" type="button" data-wrap="' + esc(wrapKey(it.m)) + '">' + (pastState(it.m) === "done" ? "Wrapped up" : "Wrap up") + "</button></div>" : line;
+      // only a pressable row not done counts: never a personal, solo, id-less or wrapped one (round 2, item 7)
+      if (it.m.wrap && it.m.meeting_id && pastState(it.m) !== "done") n += 1;
+    });
     // cr1#1539: the rest of the day's ended meetings, which the feed keeps
     // apart (`past`), newest first. A personal one shows its tag, as above.
     var seenPast = {}; (model ? model.past : []).forEach(function (it) { seenPast[(it.m.meeting_id || "") + "|" + (it.m.start || "")] = true; });
-    var day = hubDay();
-    (S.today && Array.isArray(S.today.past) ? S.today.past : []).slice().reverse().forEach(function (m) {
-      if (!m || !m.start || seenPast[(m.meeting_id || "") + "|" + m.start] || sentDay(m.start) !== day) return;
-      h += '<div class="pmrow"><span class="tm">' + esc(fmtTime(m.start)) + '</span><span class="tt">' + esc(showTitle(m.title, { kind: "meeting" })) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + "</span></div>";
-      n += 1;
+    var day = hubDay(), week = !!(S.today && S.today.past_days);
+    // cr1#1668: with the feed's last seven days (`past_days`), every ended
+    // meeting is a row: its day and time, its calendar title, who was there,
+    // where it stands, and one press into its wrap-up page. Not done first,
+    // newest first within; only the not-done ones count.
+    var ended = (S.today && Array.isArray(S.today.past) ? S.today.past : []).filter(function (m) {
+      return m && m.start && !seenPast[(m.meeting_id || "") + "|" + m.start] && !isBlock(m) && (week || sentDay(m.start) === day);
+    }).map(function (m, i) { return { m: m, st: pastState(m), i: i }; });
+    // what needs him first: a pressable row not done; a done one, or one with no press (personal), after
+    var later = function (x) { return x.st === "done" || !x.m.wrap ? 1 : 0; };
+    ended.sort(function (a, b) { return later(a) - later(b) || b.i - a.i; });
+    ended.forEach(function (x) {
+      h += pastRow(x.m, x.st, day);
+      // only a row that can be pressed counts (a personal one, or one with no id, cannot)
+      if (x.m.wrap && x.m.meeting_id && x.st !== "done") n += 1;
     });
+    if (week && num(S.today.past_more) > 0) h += '<div class="railnote">' + esc(num(S.today.past_more) + " older not shown.") + "</div>";
     var c = S.plate && S.plate.done && S.plate.done.kinds ? S.plate.done.kinds.meetings : null;
     var rows = c && c.rows ? c.rows : [];   // newest first, as the feed sorts them
+    if (week) {
+      // with the week listed, a captured record is its calendar meeting's row:
+      // only one with its own title that no listed meeting carries (a call
+      // with no calendar event) is listed apart, and it adds nothing to the count
+      var named = {}; ended.forEach(function (x) { named[titleNorm(x.m.title)] = true; });
+      rows = rows.filter(function (r) { return !r.untitled && r.title && !named[titleNorm(r.title)]; });
+      c = null;
+    }
     rows.slice(0, PAST_SHOW).forEach(function (r) {
       h += "<details><summary>" + esc(showTitle(r.title)) + "</summary>" + doneRowLine(r) + "</details>";
     });
@@ -7404,13 +7536,598 @@
     var at = meetIndex();
     if (at < 0) S.meetOpen = null;
     box.hidden = at < 0; mid.hidden = at >= 0;
-    if (at < 0) return;
+    if (at < 0) { if (typeof renderMeetAttach === "function") renderMeetAttach(); return; }   // cr1#1632
     // one row per meeting in feed order, each followed by its prep box when it has one
     var kids = list.children, n = -1;
     for (var k = 0; k < kids.length; k++) { if (kids[k].classList.contains("row")) n += 1; kids[k].hidden = n !== at; }
     var m = S.today.meetings[at];
+    // cr1#1632 slice 1: a brief with parts opens as the live prep page; its prose box stays shut.
+    if (m.prep_parts) for (var q = 0; q < kids.length; q++) if (kids[q].classList.contains("prepbox")) kids[q].hidden = true;
+    renderMeetLive(m);
     var when = m.all_day ? "All day" : fmtWhen(m.start) + (m.end ? " to " + fmtTime(m.end) : "");
     $("meethead").innerHTML = '<div class="mt1">' + (at === SEQ.endedAt ? "Just ended: " : "") + esc(showTitle(m.title, { kind: "meeting" })) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + calendarTag(m) + '</div><div class="mwhen">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + meetingWith(m) + "</div>";
+    // cr1#1632 slice 2: Attached, drawn last so slice 1's place is filled after it is drawn
+    if (typeof renderMeetAttach === "function") renderMeetAttach();
+  }
+  // ---- Attached (cr1#1632, slice 2; the design board's E3) ---------------
+  // A link or a file on a meeting. A press is saved in the page's own store
+  // and reaches the book only through Apply, where hub_edit's `meeting_edit`
+  // writes it, the off-limits wall judged first. A file's bytes go to the
+  // page's own file store (`assets`) on the press; only its name, size, type
+  // and store id travel with it. Remove takes one back: Undo while the press
+  // waits, a remove press once it landed. `attPut(el, m)` draws the block for
+  // any meeting into any element; the Today meeting view calls it.
+  var ATT_KIND = "meeting_edit", ATT_NAME_CAP = 160, ATT_LINK_CAP = 2000, ATT_SIZE_CAP = 20 * 1024 * 1024;
+  var ATT_TYPES = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+    txt: "text/plain", csv: "text/csv", md: "text/markdown", json: "application/json", mp4: "video/mp4", webm: "video/webm" };
+  var ATT_ACCEPT = ".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.md,.json,.mp4,.webm";
+  var ATT_EMPTY = "Nothing attached yet. What you attach shows in the brief and stays with the meeting.";
+  var ATT_TIP = "A link, or a PDF, picture, text file or video of up to 20 MB. It reaches your book when you press Apply, shows in the next brief and stays with the meeting.";
+  var ATT_TIP_LINK = "A link. It reaches your book when you press Apply, shows in the next brief and stays with the meeting.";
+  var ATT_FILE_OFF = "Attaching a file is not switched on for this page; paste a link.";
+  var ATT_UNREAD = "The attachments could not be checked against the people you keep off limits, so none are listed.";
+  var ATT_TWICE = "That file is already attached to this meeting.";
+  var ATT_BAD_LINK = "A link starts with http:// or https://.";
+  var ATT_BAD_TYPE = "The Hub keeps a PDF, a picture, a text or CSV file, or a video. Save it as a PDF, or paste a link to it.";
+  var ATT_BIG = "That file is over 20 MB. Paste a link to it instead.";
+  var ATT_FAIL = "That file was not kept; try again, or paste a link.";
+  // The page's own file store: "pending" until the view answers, then "on"
+  // (`assets` resolved) or "off" (a view, or an older or refused declaration,
+  // with none: a link only, said once).
+  var assets = null, assetsState = "pending";
+  function attState() { if (!S.att) S.att = { link: {}, note: {}, busy: {}, gone: {} }; return S.att; }
+  function attLinkOk(u) { u = String(u || ""); return u.length <= ATT_LINK_CAP && /^https?:\/\/[^\s<>"'\\\/?#]+[^\s<>"'\\]*$/i.test(u); }
+  function attAssetOk(a) { return /^[0-9a-f]{32}$/.test(String(a || "")); }
+  function attLinkName(u) {
+    var rest = String(u || "").split("://")[1] || "", host = rest.split(/[\/?#]/)[0];
+    var path = rest.slice(host.length).split("?")[0].split("#")[0].split("/").filter(Boolean);
+    return (host + (path.length ? "/" + path[path.length - 1] : "")).slice(0, ATT_NAME_CAP);
+  }
+  function attType(f) {
+    var t = String(f && f.type || "").toLowerCase().split(";")[0].trim(), ext = String(f && f.name || "").toLowerCase().split(".").pop();
+    for (var k in ATT_TYPES) if (ATT_TYPES[k] === t) return t;
+    return Object.prototype.hasOwnProperty.call(ATT_TYPES, ext) ? ATT_TYPES[ext] : "";
+  }
+  function attSize(n) { n = Number(n) || 0; if (n < 1) return ""; return n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB"; }
+  function attPresses(mid) { return (S.choices || []).filter(function (c) { return c.kind === ATT_KIND && c.action === "attach" && String(c.n || "") === String(mid); }); }
+  function attRemoveOf(id) {
+    var best = null;
+    (S.choices || []).forEach(function (c) { if (c.kind === ATT_KIND && c.action === "undo" && c.input && c.input.press === id && (!best || (c.created_at || "") > (best.created_at || ""))) best = c; });
+    return best;
+  }
+  function attRemoved(id) { var u = attRemoveOf(id); return !!u && !!u.applied && !!u.result && (u.result.outcome === "applied" || u.result.outcome === "already"); }
+  function attOf(c) { var i = c.input || {}; return { id: c.id, kind: i.kind, name: i.kind === "link" ? (i.name || attLinkName(i.url)) : i.name, url: i.url, asset: i.asset, size: i.size, gone: !!c.asset_gone }; }
+  function attLanded(c) { return !!c && !!c.applied && !!c.result && c.result.outcome === "applied"; }
+  // A press that did not land: refused, or the same one already attached.
+  function attMissed(c) { return !!c && !!c.applied && !!c.result && (c.result.outcome === "refused" || c.result.outcome === "already"); }
+  function attItem(a) {
+    var name = esc(String(a.name || "").slice(0, ATT_NAME_CAP));
+    if (a.kind === "link" && attLinkOk(a.url)) return '<a href="' + esc(a.url) + '" target="_blank" rel="noopener">' + name + "</a>";
+    if (a.kind === "file" && !a.gone && attAssetOk(a.asset)) return '<a href="/_blob/' + esc(a.asset) + '" target="_blank" rel="noopener">' + name + "</a>";
+    return name;
+  }
+  function attRow(a, acts) {
+    return '<div class="row attrow" data-att="' + esc(a.id || "") + '"><div class="main"><div class="title">' + attItem(a) + '</div><div class="sub">' + esc(a.kind === "link" ? "link" : attSize(a.size)) + '</div></div><div class="acts">' + acts + "</div></div>";
+  }
+  // A landed one: Remove, a Remove waiting with its Undo, or nothing once removed.
+  function attRemoveActs(mid, id) {
+    var u = attRemoveOf(id);
+    var rm = '<button class="act" type="button" data-attact="remove" data-attmid="' + esc(mid) + '" data-attid="' + esc(id) + '" title="Take it off this meeting; it is done when you press Apply">Remove</button>';
+    if (!u) return rm;
+    if (!u.applied) return waitTag(u, "remove waiting") + undoBtn(u, "Keep it: take the Remove back before it reaches your book");
+    if (attRemoved(id)) return null;
+    return resultTag(u) + rm;
+  }
+  // What the book holds for the meeting (`feed/mine`'s `attached`, which
+  // Apply refreshes right after a press lands), newest first; and whether
+  // the feed could not check them against the wall.
+  function attBook(mid) { var a = S.mine && S.mine.attached && typeof S.mine.attached === "object" ? S.mine.attached[mid] : null; return Array.isArray(a) ? a : []; }
+  function attBookUnread() { return !!(S.mine && Array.isArray(S.mine.errors) && S.mine.errors.indexOf("attached") >= 0); }
+  // The same file (by name and size, as the book judges it) already on the
+  // meeting, waiting or landed, and not removed.
+  function attHasFile(mid, name, size) {
+    var key = String(name || "").toLowerCase() + "|" + Number(size || 0), hit = false;
+    attPresses(mid).forEach(function (c) { var i = c.input || {}; if (i.kind === "file" && !attMissed(c) && !attRemoved(c.id) && String(i.name || "").toLowerCase() + "|" + Number(i.size || 0) === key) hit = true; });
+    attBook(mid).forEach(function (a) { if (a && a.kind === "file" && !attRemoved(a.id) && String(a.name || "").toLowerCase() + "|" + Number(a.size || 0) === key) hit = true; });
+    return hit;
+  }
+  // The block's words and presses for one meeting, without its heading.
+  function attachedCore(m) {
+    if (!m || !m.meeting_id || m.calendar === "personal" || m.personal) return "";
+    var mid = String(m.meeting_id), st = attState(), h = "", seen = {}, start = esc(m.start || "");
+    attPresses(mid).sort(function (a, b) { return (a.created_at || "") < (b.created_at || "") ? -1 : 1; }).forEach(function (c) {
+      var a = attOf(c), acts; seen[c.id] = true;
+      if (!c.applied) acts = waitTag(c, "attach waiting") + '<button class="act undo" type="button" data-attact="drop" data-attid="' + esc(c.id) + '" title="Take this back before it reaches your book">Undo</button>';
+      else if (!attLanded(c)) acts = resultTag(c) + '<button class="act" type="button" data-attact="drop" data-attid="' + esc(c.id) + '" title="Clear this line">Clear</button>';
+      else acts = attRemoveActs(mid, c.id);
+      if (acts !== null) h += attRow(a, acts);
+    });
+    attBook(mid).forEach(function (a) {
+      if (!a || !a.id || seen[a.id]) return;
+      var acts = attRemoveActs(mid, a.id); if (acts !== null) h += attRow(a, acts);
+    });
+    var busy = st.busy[mid] || 0;
+    // "Nothing attached yet" only when the book's list is here whole: not
+    // when feed/mine is missing or its listener failed, nor when the feed
+    // says its cap or budget left rows out (review round 2, should-fix 3).
+    var whole = !!(S.mine && !S.mineErr && !S.mine.attached_cut);
+    var head = attBookUnread() ? '<div class="quiet">' + esc(ATT_UNREAD) + "</div>" : (h || !whole ? "" : '<div class="quiet">' + esc(ATT_EMPTY) + "</div>");
+    return head + h
+      + '<div class="parts attadd">'
+      + (assetsState === "on" ? '<label class="attfile" tabindex="0" role="button" title="Pick one or more files; each stays with this meeting and reaches your book when you press Apply">' + (busy ? "Keeping " + busy + (busy === 1 ? " file" : " files") : "Attach a file")
+        + '<input type="file" multiple hidden data-attfile="' + esc(mid) + '" data-attstart="' + start + '" accept="' + ATT_ACCEPT + '"></label>' : "")
+      + '<input class="when" data-attlink="' + esc(mid) + '" maxlength="' + ATT_LINK_CAP + '" aria-label="Or paste a link" placeholder="Or paste a link" value="' + esc(st.link[mid] || "") + '">'
+      + '<button class="act" type="button" data-attact="link" data-attmid="' + esc(mid) + '" data-attstart="' + start + '" title="Attach this link; it reaches your book when you press Apply">Attach</button></div>'
+      + (assetsState === "off" ? '<div class="quiet attoff">' + esc(ATT_FILE_OFF) + "</div>" : "")
+      + (st.note[mid] ? noteRow({ kind: "fail", text: st.note[mid] }) : "");
+  }
+  function attachedHtml(m) {
+    var core = attachedCore(m);
+    return core ? '<div class="hhead"><h2>Attached</h2>' + infoTip("Attached", esc(assetsState === "on" ? ATT_TIP : ATT_TIP_LINK)) + "</div>" + core : "";
+  }
+  // Drawn only when its words changed (the info icon's id is new on every
+  // draw), and a link being typed keeps its focus.
+  function attPut(el, m, bare) {
+    if (!el) return;
+    var core = m ? attachedCore(m) : "";
+    if (el.attCore === core) return;
+    var act = typeof document !== "undefined" ? document.activeElement : null, back = act && act.getAttribute && act.getAttribute("data-attlink");
+    if (bare && el.classList) el.classList.remove("quiet");
+    el.attCore = core; el.innerHTML = core ? (bare ? core : attachedHtml(m)) : "";
+    if (back) { var again = el.querySelector("input[data-attlink]"); if (again && again.focus) again.focus(); }
+  }
+  // A meeting the feeds carry, by its id: today's, then the week's.
+  function attMeeting(mid) {
+    var t = S.today, hit = null;
+    ((t && t.meetings) || []).forEach(function (m) { if (!hit && m && String(m.meeting_id) === String(mid)) hit = m; });
+    (((t && t.week) || {}).days || []).forEach(function (d) { (d.meetings || []).forEach(function (m) { if (!hit && m && String(m.meeting_id) === String(mid)) hit = m; }); });
+    return hit;
+  }
+  // The Today meeting view's block, and every other place that asks for one
+  // (cr1#1632 review: slice 1's meeting page). A container
+  // `<div data-meetattach="<meeting id>" data-meetstart="..">` is drawn on
+  // every redraw; a meeting the feeds do not carry is drawn from its own
+  // attributes (`data-meetpersonal="true"` holds the personal wall).
+  function renderMeetAttach() {
+    attForget();
+    var at = typeof meetIndex === "function" ? meetIndex() : -1, open = at >= 0 && S.today && S.today.meetings ? S.today.meetings[at] : null;
+    // Slice 1's live page keeps its own place, `data-meet-attached="<id>|<start>"`
+    // under its own "Attached" heading (#1651): the block goes there bare,
+    // and the view's own #meetattach stays shut.
+    var live = $("meetlive"), own = live && live.querySelector ? live.querySelector("[data-meet-attached]") : null, ma = $("meetattach");
+    if (ma) ma.hidden = !!own;
+    attPut(ma, own ? null : open);
+    if (own) {
+      var v = own.getAttribute("data-meet-attached") || "", cut = v.lastIndexOf("|");
+      var oid = cut >= 0 ? v.slice(0, cut) : v, ost = cut >= 0 ? v.slice(cut + 1) : "";
+      var om = open && typeof meetId === "function" && meetId(open) === v ? open : (oid ? attMeeting(oid) : null);
+      attPut(own, om || (oid ? { meeting_id: oid, start: ost } : null), true);
+      // slice 1's heading keeps its icon; its words say what can be attached here
+      var hs = live.querySelectorAll(".ph");
+      for (var hi = 0; hi < hs.length; hi++) {
+        var isAtt = (hs[hi].textContent || "").indexOf("Attached") === 0, pop = isAtt ? hs[hi].querySelector(".tippop") : null;
+        if (isAtt) hs[hi].hidden = !own.attCore;   // review round 3: no heading over an empty place
+        if (pop && own.attCore) pop.innerHTML = esc(assetsState === "on" ? ATT_TIP : ATT_TIP_LINK);
+      }
+    }
+    if (typeof document === "undefined" || !document.querySelectorAll) return;
+    var els = document.querySelectorAll("[data-meetattach]");
+    for (var i = 0; i < els.length; i++) {
+      var mid = els[i].getAttribute("data-meetattach") || "";
+      attPut(els[i], mid ? (attMeeting(mid) || { meeting_id: mid, start: els[i].getAttribute("data-meetstart") || "", personal: els[i].getAttribute("data-meetpersonal") === "true" }) : null);
+    }
+  }
+  // A file whose press came back refused, or already attached, is held by
+  // nothing: it leaves the page's file store once, and the press says so.
+  function attForget() {
+    if (!assets || !db) return;
+    var st = attState(), held = {};
+    (S.choices || []).forEach(function (c) { if (c.kind === ATT_KIND && c.action === "attach" && c.input && !attMissed(c)) held[c.input.asset] = true; });
+    if (S.mine && S.mine.attached && typeof S.mine.attached === "object") Object.keys(S.mine.attached).forEach(function (k) { attBook(k).forEach(function (a) { if (a && a.asset) held[a.asset] = true; }); });
+    (S.choices || []).forEach(function (c) {
+      var i = c.input || {};
+      if (c.kind !== ATT_KIND || c.action !== "attach" || i.kind !== "file" || !attMissed(c) || c.asset_gone || st.gone[c.id] || !attAssetOk(i.asset) || held[i.asset]) return;
+      st.gone[c.id] = true;
+      assets.delete(i.asset).then(function () { return db.collection("choices").doc(c.id).update({ asset_gone: true }); }).then(null, function () {});
+    });
+  }
+  function onAttachPress(b) {
+    var act = b.getAttribute("data-attact"), st = attState();
+    if (act === "link") {
+      var mid = b.getAttribute("data-attmid") || "", u = String(st.link[mid] || "").trim();
+      if (!mid || !u) return;
+      if (!attLinkOk(u)) { st.note[mid] = ATT_BAD_LINK; renderMeetAttach(); return; }
+      delete st.note[mid]; delete st.link[mid];
+      var name = attLinkName(u);
+      saveChoice({ kind: ATT_KIND, src: "cockpit", n: mid, action: "attach", input: { kind: "link", url: u, name: name, start: b.getAttribute("data-attstart") || "" }, title: name });
+      return;
+    }
+    var id = b.getAttribute("data-attid") || "", c = (S.choices || []).filter(function (x) { return x.id === id; })[0];
+    if (act === "drop") {
+      // Undo before Apply, or Clear on one that did not go through: the press
+      // goes, and once it is gone a file nothing points at leaves the page's
+      // file store.
+      if (!c) return;
+      if (claimed(c)) { banner("Apply is writing that one now. Use Remove once it lands.", true); return; }
+      var asset = c.input && c.input.kind === "file" && attAssetOk(c.input.asset) && !attLanded(c) && !c.asset_gone && !st.gone[id] ? c.input.asset : "";
+      undoChoice(id).then(function (gone) { if (gone && asset && assets) assets.delete(asset).then(null, function () {}); });
+      return;
+    }
+    if (act === "remove" && id) saveChoice({ kind: ATT_KIND, src: "cockpit", n: b.getAttribute("data-attmid") || "", action: "undo", input: { press: id }, title: "Remove an attachment" });
+  }
+  function onAttachFiles(input) {
+    var mid = input.getAttribute("data-attfile") || "", start = input.getAttribute("data-attstart") || "", st = attState();
+    var files = Array.prototype.slice.call(input.files || []), picked = {};
+    try { input.value = ""; } catch (e) {}
+    if (!mid || !files.length) return;
+    if (!assets) { st.note[mid] = ATT_FILE_OFF; renderMeetAttach(); return; }
+    delete st.note[mid];
+    files.forEach(function (f) {
+      var type = attType(f), name = String(f && f.name || "").split(/[\\\/]/).pop().slice(0, ATT_NAME_CAP);
+      var key = name.toLowerCase() + "|" + Number(f && f.size || 0);
+      if (!type) { st.note[mid] = ATT_BAD_TYPE; return; }
+      if (!(f.size > 0) || f.size > ATT_SIZE_CAP) { st.note[mid] = f.size > ATT_SIZE_CAP ? ATT_BIG : ATT_FAIL; return; }
+      if (picked[key] || attHasFile(mid, name, f.size)) { st.note[mid] = ATT_TWICE; return; }
+      picked[key] = true;
+      st.busy[mid] = (st.busy[mid] || 0) + 1;
+      assets.upload(f, { type: type }).then(function (r) {
+        st.busy[mid] -= 1;
+        if (!r || !attAssetOk(r.id)) { st.note[mid] = ATT_FAIL; renderMeetAttach(); return; }
+        saveChoice({ kind: ATT_KIND, src: "cockpit", n: mid, action: "attach", input: { kind: "file", name: name, asset: r.id, size: f.size, content_type: type, start: start }, title: name })
+          .then(function (row) { if (!row) assets.delete(r.id).then(null, function () {}); renderMeetAttach(); });
+      }, function (e) {
+        st.busy[mid] -= 1;
+        var code = e && e.code;
+        st.note[mid] = code === "too_large" ? ATT_BIG : code === "unsupported_type" ? ATT_BAD_TYPE : ATT_FAIL;
+        renderMeetAttach();
+      });
+    });
+    renderMeetAttach();
+  }
+  document.body.addEventListener("click", function (ev) { var b = ev.target && ev.target.closest && ev.target.closest("button[data-attact]"); if (b) onAttachPress(b); });
+  document.body.addEventListener("input", function (ev) { var k = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-attlink"); if (k) attState().link[k] = String(ev.target.value || ""); });
+  document.body.addEventListener("change", function (ev) { var t = ev.target; if (t && t.getAttribute && t.getAttribute("data-attfile") !== null) onAttachFiles(t); });
+  document.body.addEventListener("keydown", function (ev) {
+    var t = ev.target; if (!t || !t.getAttribute) return;
+    if (ev.key === "Enter" && t.getAttribute("data-attlink") !== null) {
+      ev.preventDefault(); attState().link[t.getAttribute("data-attlink")] = String(t.value || "");
+      var b = t.parentNode && t.parentNode.querySelector('button[data-attact="link"]'); if (b) onAttachPress(b);
+    } else if ((ev.key === "Enter" || ev.key === " ") && t.classList && t.classList.contains("attfile")) {
+      ev.preventDefault(); var f = t.querySelector("input[data-attfile]"); if (f && f.click) f.click();
+    }
+  });
+  // ---- the live prep page (cr1#1632 slice 1, design E1) ----
+  // A meeting whose brief has parts (`prep_parts` on the feed) opens to a page
+  // the owner goes through while the meeting runs. What he picks, ticks and
+  // types lives in the page's own store until "Meeting done, save this", one
+  // choice Apply writes (kind `meeting`), with its Undo. The store is keyed by
+  // the occurrence (the calendar id is shared across a recurring series, so its
+  // start too), hashed; each pick, tick and answer by its item's own words, so
+  // a brief rewritten since never turns an old pick into another decision.
+  var MEET_LIVE_KEYS = ["picks", "ask", "said", "cover", "you", "they", "carried"], MEET_SAID_CAP = 300;
+  function hkey(text) {
+    // FNV-1a over the words, twice with two seeds: a short, stable key
+    var t = String(text || "").replace(/\s+/g, " ").trim().toLowerCase(), h1 = 0x811c9dc5, h2 = 0x01000193 ^ 0x5bd1e995;
+    for (var i = 0; i < t.length; i++) { var c = t.charCodeAt(i); h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0; h2 = Math.imul(h2 ^ c, 0x01000193) >>> 0; }
+    return ("0000000" + h1.toString(16)).slice(-8) + ("0000000" + h2.toString(16)).slice(-8);
+  }
+  function meetId(m) { return String(m.meeting_id || meetKey(m)) + "|" + String(m.start || ""); }
+  function liveDoc(id) { return "meet/" + hkey(id); }
+  function liveOf(m) {
+    var id = meetId(m); S.meetLive = S.meetLive || {};
+    if (!S.meetLive[id]) {
+      var st = S.meetLive[id] = { loaded: !db };
+      MEET_LIVE_KEYS.forEach(function (k) { st[k] = {}; });
+      if (db) db.doc(liveDoc(id)).get().then(function (snap) {
+        if (snap && snap.exists) { var d = snap.data() || {}; MEET_LIVE_KEYS.forEach(function (k) { if (d[k] && typeof d[k] === "object") st[k] = d[k]; }); }
+        st.loaded = true; renderMeetView();
+      }, function () { st.loaded = true; });
+    }
+    return S.meetLive[id];
+  }
+  function liveKeep(m) {
+    var st = liveOf(m); if (!db) return;
+    var data = { at: nowIso() }; MEET_LIVE_KEYS.forEach(function (k) { data[k] = st[k]; });
+    db.doc(liveDoc(meetId(m))).set(data).catch(function (e) { banner("That was not kept on the page; try again.", true, errText(e)); });
+  }
+  function liveClear(m) {
+    // once the save is in the book, the page's own copy has done its job
+    var st = liveOf(m); if (st.cleared) return; st.cleared = true;
+    MEET_LIVE_KEYS.forEach(function (k) { st[k] = {}; });
+    if (db) db.doc(liveDoc(meetId(m))).delete().catch(function () {});
+  }
+  // The one other person's first name, or "" when several (or none) are named.
+  function meetThem(m) { var ps = m.people || []; return ps.length === 1 && ps[0] ? String(ps[0]).split(" ")[0] : ""; }
+  // review of #1651, round 2: a question's own person ("\u2192 Dana: ..."), else the one person on it.
+  var MEET_ARROW = /^\s*(?:\u2192|->)\s*([^:]{1,80}):\s*/;
+  function askWho(q, m) { var a = MEET_ARROW.exec(String(q || "")); return a ? a[1].trim().split(" ")[0] : meetThem(m); }
+  function meetUndoOf(pressId) { return (S.choices || []).filter(function (c) { return c.kind === "meeting" && c.action === "undo" && c.input && c.input.press === pressId; }).sort(edNewest)[0] || null; }
+  function meetDone(c) { return !!c && !!c.applied && !!c.result && (c.result.outcome === "applied" || c.result.outcome === "already"); }
+  // The save is waiting or stands: the page files no second one (review of #1651, round 2).
+  function meetStanding(m) {
+    var press = meetSavePress(m);
+    if (press) return !press.applied || (edLanded(press) && !edUndone(press));
+    return !!m.prep_saved && !meetDone(meetUndoOf(m.prep_saved.press));
+  }
+  // An "already" answer (a second tab pressed after the first saved) is not the save: the standing one is.
+  function meetSavePress(m) { return (S.choices || []).filter(function (c) { return c.kind === "meeting" && c.action === "save" && String(c.n) === String(m.meeting_id) && String((c.input && c.input.start) || "") === String(m.start || "") && !(c.applied && c.result && c.result.outcome === "already"); }).sort(edNewest)[0] || null; }
+  // The pick still among the item's options; anything else is dropped.
+  function livePick(st, d) { var v = st.picks[hkey(d.q)]; return v && (d.opts || []).indexOf(v) >= 0 ? v : ""; }
+  // What the save carries, from the brief's parts and what is ticked.
+  function liveInput(m) {
+    var P = m.prep_parts || {}, st = liveOf(m), inp = { title: m.title || "", start: m.start || "", calendar: m.calendar || "", decide: [], answers: [], asked: [], covered: [], carried: [] };
+    if (Array.isArray(m.people)) inp.others = m.people.length;
+    (P.decide || []).forEach(function (d) { var pk = livePick(st, d); if (pk) inp.decide.push({ q: d.q, pick: pk }); else inp.carried.push(d.q); });
+    (P.ask || []).forEach(function (q) {
+      var k = hkey(q), said = String(st.said[k] || "").replace(/\s+/g, " ").trim().slice(0, MEET_SAID_CAP);
+      if (st.ask[k] && said) inp.answers.push({ q: q, said: said }); else if (st.ask[k]) inp.asked.push(q); else inp.carried.push(q);
+    });
+    (P.cover || []).forEach(function (x) { if (st.cover[hkey(x)]) inp.covered.push(x); else inp.carried.push(x); });
+    (P.you_owe || []).forEach(function (x) { if (st.you[hkey(x)]) inp.covered.push(x); });
+    (P.they_owe || []).forEach(function (x) { if (st.they[hkey(x)]) inp.covered.push(x); });
+    // a point carried from last time, ticked now, is done and carries no more
+    (P.carried || []).forEach(function (x) { if (st.carried[hkey(x)]) inp.covered.push(x); });
+    return inp;
+  }
+  function liveFoot(m) {
+    var P = m.prep_parts || {}, inp = liveInput(m), press = meetSavePress(m);
+    if (press && !press.applied) return waitTag(press, "save waiting") + undoBtn(press, "Take the save back before it reaches your book");
+    var saved = press && edLanded(press) && !edUndone(press) ? press : null;
+    if (saved) { liveClear(m); return resultTag(saved) + edUndoBtn(saved); }
+    var pu = m.prep_saved && !press ? meetUndoOf(m.prep_saved.press) : null;
+    if (pu && !pu.applied) return waitTag(pu, "undo waiting");
+    if (m.prep_saved && !press && !meetDone(pu)) { liveClear(m); return (pu ? resultTag(pu) : "") + '<span class="tag ok">' + esc(m.prep_saved.line || "Saved.") + '</span><button class="act undo" data-mundo="' + esc(m.prep_saved.press) + '" title="Take this save back; it is done when you press Apply">Undo</button>'; }
+    var nd = (P.decide || []).length, ticks = inp.covered.length + inp.asked.length;
+    var line = "Saves " + inp.decide.length + " of " + nd + " decisions, " + ticks + " ticked " + (ticks === 1 ? "item" : "items") + " and " + inp.answers.length + (inp.answers.length === 1 ? " answer" : " answers") + ". What is left carries to the next brief.";
+    var last = press ? (edUndone(press) ? edUndoOf(press) : press) : pu;
+    return (last ? resultTag(last) : "") + '<button class="act primary" data-msave="1">Meeting done, save this</button>' + infoTip("What the save does", esc(line)) + '<div class="frw mline">' + esc("Saves " + inp.decide.length + " of " + nd + " decisions.") + "</div>";
+  }
+  function renderMeetLive(m) {
+    var box = $("meetlive"); if (!box) return;
+    var P = m && m.calendar !== "personal" ? m.prep_parts : null;
+    if (!m || !P) {
+      // Upcoming with no brief: Brief me now, a new chat with the prep asked for.
+      var later = m && !m.prep && !m.prep_text && !m.all_day && m.calendar !== "personal" && new Date(m.end || m.start).getTime() > Date.now();
+      putHtml(box, later && typeof jumpLink === "function" ? '<div class="walk quiet">No brief yet.</div><div class="parts">' + jumpLink(jumpText("prep", m.title, fmtWhen(m.start)), "Brief me now", "primary") + "</div>" + meetAttached(m) : "");
+      if (typeof renderMeetAttach === "function") renderMeetAttach();   // cr1#1632 slice 2
+      return;
+    }
+    var st = liveOf(m), them = meetThem(m), h = '<div class="mlive"><div>';
+    if (P.walk) h += '<div class="ph">Walk out with</div><div class="walk">' + esc(P.walk) + "</div>";
+    if ((P.decide || []).length) {
+      h += '<div class="ph">Decide</div>';
+      P.decide.forEach(function (d) {
+        var pick = livePick(st, d), k = hkey(d.q);
+        h += '<div class="dcard"><b>' + esc(d.q) + '</b><div class="opts">' + (d.opts || []).map(function (o) {
+          return '<button type="button" class="chip pick" data-mpick="' + k + '" data-mopt="' + esc(o) + '" aria-pressed="' + (pick === o ? "true" : "false") + '">' + esc(o) + "</button>";
+        }).join("") + "</div>" + (pick ? '<div class="frw">Recorded as a decision when the meeting ends.</div>' : "") + "</div>";
+      });
+    }
+    if ((P.ask || []).length) {
+      var whos = P.ask.map(function (q) { return askWho(q, m); }), one = whos.every(function (w) { return w && w === whos[0]; }) ? whos[0] : "";
+      h += '<div class="ph">' + (one ? "Ask " + esc(one) : "To ask") + "</div>";
+      P.ask.forEach(function (q, qi) {
+        var k = hkey(q), on = !!st.ask[k], said = whos[qi] ? "What " + whos[qi] + " said" : "What was said";
+        h += '<div class="mask"><input type="checkbox" data-mask="' + k + '"' + (on ? " checked" : "") + ' aria-label="Asked: ' + esc(q) + '"><div style="flex:1"><div>' + esc(q) + "</div>"
+          + (on ? '<input type="text" data-msaid="' + k + '" maxlength="' + MEET_SAID_CAP + '" placeholder="' + esc(said) + '" aria-label="' + esc(said) + '" value="' + esc(st.said[k] || "") + '">' : "") + "</div></div>";
+      });
+    }
+    h += "</div><div>";
+    var ticks = function (list, key) {
+      return (list || []).map(function (x) { var k = hkey(x); return '<label class="mask"><input type="checkbox" data-mtick="' + key + '" data-mi="' + k + '"' + (st[key][k] ? " checked" : "") + "><span>" + esc(x) + "</span></label>"; }).join("");
+    };
+    var fold = function (k, label, body) { return '<details class="wkfold" data-mfold="' + k + '"' + (S.meetFold && S.meetFold[k] ? " open" : "") + "><summary>" + esc(label) + "</summary>" + body + "</details>"; };
+    if ((P.cover || []).length) h += fold("cover", "Cover · " + P.cover.length + (P.cover.length === 1 ? " point" : " points"), ticks(P.cover, "cover"));
+    var yo = (P.you_owe || []).length, to = (P.they_owe || []).length;
+    if (yo || to) h += fold("owe", "Open between you · you owe " + yo + ", " + (them ? them + " owes " : "they owe ") + to,
+      (yo ? '<div class="frw">You owe</div>' + ticks(P.you_owe, "you") : "") + (to ? '<div class="frw">' + (them ? esc(cap1(them)) + " owes" : "They owe") + "</div>" + ticks(P.they_owe, "they") : ""));
+    if ((P.changed || []).length) h += fold("changed", "What changed since you last met · " + P.changed.length + (P.changed.length === 1 ? " thing" : " things"), "<ul>" + P.changed.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul>");
+    if ((P.carried || []).length) h += fold("carried", "Carried from last time · " + P.carried.length, ticks(P.carried, "carried"));
+    // the brief as written, one press away (review of #1651)
+    if (m.prep_text) h += fold("prose", "The brief as written", typeof prepHtml === "function" ? prepHtml(m.prep_text) : esc(m.prep_text));
+    h += meetAttached(m) + '</div></div><div class="mfoot">' + liveFoot(m) + "</div>";
+    // review of #1651, round 2: the cr1#1289 keep-focus pattern, by the answer's own key
+    var ae = document.activeElement, inBox = function (n) { for (; n; n = n.parentNode) if (n === box) return true; return false; };
+    var keepK = ae && ae.getAttribute && inBox(ae) ? ae.getAttribute("data-msaid") : "", pos = keepK ? ae.selectionStart : null;
+    putHtml(box, h);
+    var again = keepK ? box.querySelector('input[data-msaid="' + keepK + '"]') : null;
+    if (again && again !== document.activeElement) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+    if (typeof renderMeetAttach === "function") renderMeetAttach();   // cr1#1632 slice 2
+  }
+  // Attached (design E3): slice 2 fills this; the place is kept on every meeting page.
+  function meetAttached(m) { return '<div class="ph">Attached ' + infoTip("Attached", esc("What you attach shows in the brief and stays with the meeting.")) + '</div><div class="quiet" id="meetattached" data-meet-attached="' + esc(meetId(m)) + '">Nothing attached yet.</div>'; }
+  function meetOpenNow() { var at = meetIndex(); return at >= 0 ? S.today.meetings[at] : null; }
+  function onMeetLive(ev) {
+    var m = meetOpenNow(); if (!m || !m.prep_parts) return false;
+    var t = ev.target, st = liveOf(m);
+    var pk = t.closest && t.closest("button[data-mpick]");
+    if (pk && ev.type === "click") {
+      var i = pk.getAttribute("data-mpick"), o = pk.getAttribute("data-mopt");
+      if (st.picks[i] === o) delete st.picks[i]; else st.picks[i] = o;
+      liveKeep(m); renderMeetLive(m); return true;
+    }
+    if (t.matches && t.matches("input[data-mask]") && ev.type === "change") { var a = t.getAttribute("data-mask"); if (t.checked) st.ask[a] = true; else delete st.ask[a]; liveKeep(m); renderMeetLive(m); return true; }
+    if (t.matches && t.matches("input[data-mtick]") && ev.type === "change") { var key = t.getAttribute("data-mtick"), n = t.getAttribute("data-mi"); if (t.checked) st[key][n] = true; else delete st[key][n]; liveKeep(m); var f = $("meetlive").querySelector(".mfoot"); if (f) f.innerHTML = liveFoot(m); return true; }
+    if (t.matches && t.matches("input[data-msaid]") && (ev.type === "change" || ev.type === "input")) { st.said[t.getAttribute("data-msaid")] = String(t.value || "").slice(0, MEET_SAID_CAP); if (ev.type === "change") { liveKeep(m); var f2 = $("meetlive").querySelector(".mfoot"); if (f2) f2.innerHTML = liveFoot(m); } return true; }
+    S.meetBusy = S.meetBusy || {};
+    var free = function (k) { return function () { delete S.meetBusy[k]; }; };
+    if (ev.type === "click" && t.closest && t.closest("button[data-msave]")) {
+      var sk = "s|" + meetId(m);
+      if (S.meetBusy[sk] || meetStanding(m)) return true;
+      S.meetBusy[sk] = true;
+      saveChoice({ kind: "meeting", src: "cockpit", n: String(m.meeting_id || ""), action: "save", input: liveInput(m), title: m.title || "" }).then(free(sk), free(sk));
+      return true;
+    }
+    var un = ev.type === "click" && t.closest && t.closest("button[data-mundo]");
+    if (un) {
+      var pid = un.getAttribute("data-mundo"), uk = "u|" + pid, waiting = meetUndoOf(pid);
+      if (S.meetBusy[uk] || (waiting && (!waiting.applied || meetDone(waiting)))) return true;
+      S.meetBusy[uk] = true;
+      saveChoice({ kind: "meeting", src: "cockpit", n: String(m.meeting_id || ""), action: "undo", input: { press: pid }, title: m.title || "" }).then(free(uk), free(uk));
+      return true;
+    }
+    return false;
+  }
+  // ---- the wrap-up page (cr1#1632 slice 3, design E2) ----
+  // A past meeting Command Room processed lists what was captured from it:
+  // the decisions, the owner's own promises (Today / This week / Not mine),
+  // theirs (tick to track). What he chooses lives in the page's store
+  // (`wrap/<meeting>`) until "Wrapped up", one choice Apply writes (kind
+  // `meeting`, `wrap`); "Put it back" (`unwrap`) takes each change back.
+  // "Not right" on a decision is a correction: the decision stands.
+  var WRAP_KEYS = ["follow", "place", "track", "wrong"];
+  // cr1#1668: one occurrence of a meeting, as a recurring series shares its id
+  function wrapKey(m) { return String(m.meeting_id || "") + "|" + String(m.start || ""); }
+  function wrapMeeting(id) {
+    // a past meeting, or one that ended within the hour (still on the list)
+    var t = S.today || {}, all = (Array.isArray(t.past) ? t.past : []).concat(Array.isArray(t.meetings) ? t.meetings : []);
+    return all.filter(function (m) { return m && m.wrap && wrapKey(m) === String(id); })[0] || null;
+  }
+  // a title as the feed compares it (hub_meeting._norm): letters and digits, lower case
+  function titleNorm(t) { return String(t || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim(); }
+  // one row of Past meetings: day and time, title, who was there, its state, one press into its wrap-up
+  function pastRow(m, st, day) {
+    var when = sentDay(m.start) === day ? fmtTime(m.start) : fmtWhen(m.start);
+    var title = esc(showTitle(m.title, { kind: "meeting" })) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "");
+    var tag = m.wrap ? '<span class="tag pst' + (st === "done" ? " ok" : "") + '">' + esc(PAST_STATES[st] || "") + "</span>" : "";
+    var line = '<span class="tm">' + esc(when) + '</span><span class="tt">' + title + '<span class="pwho">' + meetingWith(m).replace(/^ · /, "") + "</span>" + tag + "</span>";
+    return m.wrap && m.meeting_id ? '<button type="button" class="pmrow pmbtn" data-wrap="' + esc(wrapKey(m)) + '">' + line + "</button>" : '<div class="pmrow">' + line + "</div>";
+  }
+  var PAST_STATES = { unwritten: "Not written up", follow_up: "Follow-up to send", promises: "Promises open", held: "Could not check", done: "Done" };
+  // Where a past meeting stands: the feed's state, then this page's own
+  // presses on top (a wrap-up waiting is done; a Put it back waiting is not).
+  function pastState(m) {
+    var W = m && m.wrap; if (!W) return "unwritten";
+    var p = wrapPress(m, "wrap"), u = wrapPress(m, "unwrap");
+    var newer = function (a, b) { return String(a.created_at || "") > String(b.created_at || ""); };
+    // round 5, item 2: a press that came back refused is not done; one waiting or landed is
+    if (p && (!p.applied || edLanded(p)) && (!u || newer(p, u))) return "done";
+    if (u && W.wrapped) return !W.processed ? "unwritten" : (W.held ? "held" : (!W.followed ? "follow_up" : ((W.mine || []).length ? "promises" : "done")));
+    return PAST_STATES[W.state] ? W.state : (W.wrapped ? "done" : (W.processed ? "follow_up" : "unwritten"));
+  }
+  function wrapState(m) {
+    var id = wrapKey(m); S.wrapLive = S.wrapLive || {};
+    if (!S.wrapLive[id]) {
+      var st = S.wrapLive[id] = { follow: "", place: {}, track: {}, wrong: {} };
+      if (db) db.doc(liveDoc("w_" + id).replace("meet/", "wrap/")).get().then(function (snap) {
+        if (snap && snap.exists) { var d = snap.data() || {}; WRAP_KEYS.forEach(function (k) { if (d[k] != null) st[k] = d[k]; }); }
+        renderWrapView();
+      }, function () {});
+    }
+    return S.wrapLive[id];
+  }
+  function wrapKeep(m) {
+    var st = wrapState(m); if (!db) return;
+    var data = { at: nowIso() }; WRAP_KEYS.forEach(function (k) { data[k] = st[k]; });
+    db.doc(liveDoc("w_" + wrapKey(m)).replace("meet/", "wrap/")).set(data).catch(function (e) { banner("That was not kept on the page; try again.", true, errText(e)); });
+  }
+  function wrapPress(m, action) {
+    // this occurrence's press: a wrap names its start; a Put it back names the press it takes back
+    var mine = function (c) { return c.kind === "meeting" && String(c.n) === String(m.meeting_id); };
+    var wraps = (S.choices || []).filter(function (c) { return mine(c) && c.action === "wrap" && (!c.input || !c.input.start || !m.start || c.input.start === m.start); });
+    if (action === "wrap") return wraps.sort(edNewest)[0] || null;
+    var own = {}; wraps.forEach(function (c) { own[c.id] = true; }); if (m.wrap && m.wrap.wrapped) own[m.wrap.wrapped.press] = true;
+    return (S.choices || []).filter(function (c) { return mine(c) && c.action === action && c.input && own[c.input.press]; }).sort(edNewest)[0] || null;
+  }
+  function wrapInput(m) {
+    var W = m.wrap || {}, st = wrapState(m), place = {}, track = [], wrong = [];
+    (W.mine || []).forEach(function (r) { if (st.place[r.id]) place[r.id] = st.place[r.id]; });
+    (W.theirs || []).forEach(function (r) { if (st.track[r.id]) track.push(r.id); });
+    (W.decided || []).forEach(function (r) { if (st.wrong[r.id]) wrong.push(r.id); });
+    // round 5, item 1: the listed past occurrences sharing its id or title, so the press claims as the feed did
+    // round 7: the listed meetings with a wrap-up, and the ones the cap hides (`past_hidden`,
+    // bare), sharing its id or title: every sibling the feed's claim ran over
+    var t = S.today || {}, nt = titleNorm(m.title), sib = function (o) { return o && o.start && (String(o.meeting_id) === String(m.meeting_id) || (nt && titleNorm(o.title) === nt)); };
+    var occ = (Array.isArray(t.past) ? t.past : []).concat(Array.isArray(t.meetings) ? t.meetings : [])
+      .filter(function (o) { return o && o.wrap && sib(o); })
+      .concat((Array.isArray(t.past_hidden) ? t.past_hidden : []).filter(sib))
+      .map(function (o) { return { meeting_id: String(o.meeting_id || ""), title: o.title || "", start: o.start }; });
+    return { title: m.title || "", start: m.start || "", next_start: m.next_start || "", ref: W.ref || "", occ: occ, follow: st.follow || "", place: place, track: track, wrong: wrong, carried: [] };
+  }
+  function wrapParts(m) {
+    var W = m.wrap || {}, st = wrapState(m), mine = W.mine || [], theirs = W.theirs || [];
+    var placed = mine.filter(function (r) { return st.place[r.id]; }).length, tracked = theirs.filter(function (r) { return st.track[r.id]; }).length;
+    var fu = ["Follow-up", st.follow ? ({ sent: "Sent", drafts: "In your drafts", none: "None needed" })[st.follow] : "Not settled", !!st.follow];
+    // ruling 66: promises that could not be read are never shown as settled
+    if (W.held) return [fu, ["Your promises", "Could not check", false], ["Their promises", "Could not check", false]];
+    return [fu, ["Your promises", placed + " of " + mine.length + " placed", placed === mine.length],
+            ["Their promises", tracked + " of " + theirs.length + " tracked", tracked === theirs.length]];
+  }
+  function wrapFoot(m) {
+    var press = wrapPress(m, "wrap"), back = wrapPress(m, "unwrap"), W = m.wrap || {};
+    if (back && !back.applied) return waitTag(back, "put back waiting") + undoBtn(back, "Keep it wrapped up: take this back before it reaches your book");
+    if (press && !press.applied) return waitTag(press, "wrap-up waiting") + undoBtn(press, "Take this back before it reaches your book");
+    var standing = W.wrapped && (!back || !back.applied) ? W.wrapped.press : (press && edLanded(press) && !(back && back.applied) ? press.id : "");
+    // round 6, item 4: a press that came back refused or failed says why, as the attach rows do
+    var said = !standing && press && press.applied && !edLanded(press) ? resultTag(press) : "";
+    if (standing) return '<div class="frw">&#10003; Wrapped up. It is out of the queue.</div><button class="act undo" data-unwrap="' + esc(standing) + '">Put it back</button>';
+    // ruling 69: a meeting whose promises could not be checked cannot be wrapped up yet
+    if (W.held) return said + '<div class="frw">This can be wrapped up once its promises can be checked; it stays in the queue until then.</div>';
+    var open = wrapParts(m).filter(function (x) { return !x[2]; }).map(function (x) { return x[0]; });
+    return said + '<button class="act primary" data-dowrap="1">Wrapped up</button><div class="frw">' + esc(open.length ? "Not settled yet: " + open.join(", ") + ". You can still wrap it up." : "All are settled.") + "</div>";
+  }
+  // the wrap-up's Attached: the place the attach block fills (renderMeetAttach), as every page but slice 1's has it
+  function wrapAttached(m) {
+    return '<div class="ph">Attached ' + infoTip("Attached", esc("What you attach shows in the brief and stays with the meeting.")) + '</div>'
+      + '<div data-meetattach="' + esc(m.meeting_id || "") + '" data-meetstart="' + esc(m.start || "") + '"></div>';
+  }
+  function renderWrapView() {
+    var box = $("wrapview"), mid = $("todaymid"), meet = $("meetview"), body = $("wraplive"); if (!box || !body) return;
+    var m = S.wrapOpen ? wrapMeeting(S.wrapOpen) : null;
+    if (!m) { if (S.wrapOpen) S.wrapOpen = null; box.hidden = true; return; }
+    box.hidden = false; if (mid) mid.hidden = true; if (meet) meet.hidden = true;
+    var W = m.wrap || {}, st = wrapState(m), when = fmtWhen(m.start) + (m.end ? " to " + fmtTime(m.end) : "");
+    var h = '<div class="meethead"><div class="frw">Wrap-up</div><div class="mt1">' + esc(showTitle(m.title, { kind: "meeting" })) + '</div><div class="mwhen">' + esc(when) + "</div></div>";
+    if (!W.processed) {
+      h += '<div class="walk quiet">The notes are not written yet.</div><div class="parts">'
+        + (typeof jumpLink === "function" ? jumpLink(jumpText("wrap", m.title, fmtWhen(m.start)), "Write it up now", "primary") : "")
+        + '<button class="act" data-dowrap="none">Nothing to follow up</button></div>' + wrapAttached(m) + '<div class="mfoot">' + wrapFoot(m) + "</div>";
+      putHtml(body, h); if (typeof renderMeetAttach === "function") renderMeetAttach(); return;
+    }
+    h += '<div class="chips wparts">' + wrapParts(m).map(function (x) { return '<span class="tag' + (x[2] ? " ok" : "") + '">' + (x[2] ? "&#10003; " : "") + esc(x[0] + ": " + x[1]) + "</span>"; }).join("") + "</div>";
+    h += '<div class="mlive"><div><div class="ph">Follow-up</div><div class="parts">'
+      + (typeof jumpLink === "function" ? jumpLink(jumpText("past", m.title, fmtWhen(m.start)), "Write the follow-up") : "") + "</div><div class=\"opts\">"
+      + [["sent", "Sent"], ["drafts", "In your drafts"], ["none", "No follow-up needed"]].map(function (o) { return '<button type="button" class="chip" data-wfollow="' + o[0] + '" aria-pressed="' + (st.follow === o[0] ? "true" : "false") + '">' + esc(o[1]) + "</button>"; }).join("") + "</div>";
+    if ((W.decided || []).length) {
+      h += '<div class="ph">Decided</div>';
+      W.decided.forEach(function (d) { var bad = !!st.wrong[d.id]; h += '<div class="mask"><span style="flex:1' + (bad ? ";text-decoration:line-through" : "") + '">' + esc(d.text) + '</span><button type="button" class="chip" data-wwrong="' + esc(d.id) + '">' + (bad ? "Put back" : "Not right") + "</button></div>"; });
+    }
+    h += "</div><div>";
+    if ((W.mine || []).length) {
+      h += '<div class="ph">You said you would</div>';
+      W.mine.forEach(function (r) { h += '<div class="dcard"><div>' + esc(showTitle(r.title)) + '</div><div class="opts">' + [["today", "Today"], ["week", "This week"], ["notmine", "Not mine"]].map(function (o) {
+        return '<button type="button" class="chip" data-wplace="' + esc(r.id) + '" data-wopt="' + o[0] + '" aria-pressed="' + (st.place[r.id] === o[0] ? "true" : "false") + '">' + esc(o[1]) + "</button>"; }).join("") + "</div></div>"; });
+    }
+    if ((W.theirs || []).length) {
+      h += '<div class="ph">' + esc(cap1(meetThem(m))) + " said they would</div>";
+      W.theirs.forEach(function (r) { var on = !!st.track[r.id]; h += '<label class="mask"><input type="checkbox" data-wtrack="' + esc(r.id) + '"' + (on ? " checked" : "") + "><span>" + esc(showTitle(r.title)) + ' <span class="frw">' + (on ? "Tracked" : "Tick to track") + "</span></span></label>"; });
+    }
+    // ruling 66: when its promises could not be checked, it says so instead of "nothing captured"
+    if (W.held) h += '<div class="quiet">I could not check this meeting\'s promises just now, so none are listed. It stays in the queue.</div>';
+    else if (!(W.decided || []).length && !(W.mine || []).length && !(W.theirs || []).length) h += '<div class="quiet">Nothing was captured from this meeting to place.</div>';
+    h += wrapAttached(m) + '</div></div><div class="mfoot">' + wrapFoot(m) + "</div>";
+    putHtml(body, h);
+    if (typeof renderMeetAttach === "function") renderMeetAttach();   // round 5, item 3: the block fills its place
+  }
+  function openWrap(id) { S.wrapOpen = id; renderTodayParts(); var b = $("wrapBack"); if (b) b.focus(); }
+  function closeWrap() { S.wrapOpen = null; var mid = $("todaymid"); if (mid) mid.hidden = false; renderTodayParts(); }
+  function onWrap(ev) {
+    var t = ev.target;
+    var ow = t.closest && t.closest("button[data-wrap]"); if (ow && ev.type === "click") { openWrap(ow.getAttribute("data-wrap")); return true; }
+    if (t.closest && t.closest("#wrapBack") && ev.type === "click") { closeWrap(); return true; }
+    var m = S.wrapOpen ? wrapMeeting(S.wrapOpen) : null; if (!m) return false;
+    var st = wrapState(m), b;
+    if (ev.type === "click" && (b = t.closest("button[data-wfollow]"))) { var f = b.getAttribute("data-wfollow"); st.follow = st.follow === f ? "" : f; wrapKeep(m); renderWrapView(); return true; }
+    if (ev.type === "click" && (b = t.closest("button[data-wplace]"))) { var c = b.getAttribute("data-wplace"), o = b.getAttribute("data-wopt"); if (st.place[c] === o) delete st.place[c]; else st.place[c] = o; wrapKeep(m); renderWrapView(); return true; }
+    if (ev.type === "click" && (b = t.closest("button[data-wwrong]"))) { var d = b.getAttribute("data-wwrong"); if (st.wrong[d]) delete st.wrong[d]; else st.wrong[d] = true; wrapKeep(m); renderWrapView(); return true; }
+    if (ev.type === "change" && t.matches && t.matches("input[data-wtrack]")) { var k = t.getAttribute("data-wtrack"); if (t.checked) st.track[k] = true; else delete st.track[k]; wrapKeep(m); renderWrapView(); return true; }
+    if (ev.type === "click" && (b = t.closest("button[data-dowrap]"))) {
+      var inp = wrapInput(m); if (b.getAttribute("data-dowrap") === "none") inp.follow = "none";
+      saveChoice({ kind: "meeting", src: "cockpit", n: String(m.meeting_id), action: "wrap", input: inp, title: m.title || "" });
+      return true;
+    }
+    if (ev.type === "click" && (b = t.closest("button[data-unwrap]"))) { saveChoice({ kind: "meeting", src: "cockpit", n: String(m.meeting_id), action: "unwrap", input: { press: b.getAttribute("data-unwrap") }, title: m.title || "" }); return true; }
+    return false;
   }
   // ---- Focus ----
   // The next meeting, with a countdown.
@@ -7586,7 +8303,7 @@
     var live = $("waitingLive"), w = $("waiting");
     if (live && w && live.textContent !== w.textContent) live.textContent = w.textContent;
   }
-  function renderTodayParts() { renderRail(); renderMeetView(); renderNext(); renderFocus(); waitingLive(); if (typeof renderCalParts === "function") renderCalParts(); }
+  function renderTodayParts() { renderRail(); renderMeetView(); if (typeof renderWrapView === "function") renderWrapView(); renderNext(); renderFocus(); waitingLive(); if (typeof renderCalParts === "function") renderCalParts(); }
   // ---- the masthead's status line ----
   function renderBeat(view, maint) {
     var dot = $("beatDot"); if (!dot) return;
@@ -7693,7 +8410,13 @@
   $("tab-work").addEventListener("toggle", function (ev) { var k = ev.target.getAttribute && ev.target.getAttribute("data-tdfold"); if (k) tdState().open[k] = !!ev.target.open; }, true);
   $("tab-work").addEventListener("change", function (ev) { var sel = ev.target.closest && ev.target.closest("select[data-tdstream]"); if (sel) { tdState().stream = String(sel.value || ""); renderTidy(); } });
   $("tab-today").addEventListener("toggle", function (ev) { if (ev.target && ev.target.id === "nxmore") S.nxMoreOpen = !!ev.target.open; }, true);
+  // cr1#1632 slice 1: the live prep page's picks, ticks, answers, folds and save
+  $("tab-today").addEventListener("change", function (ev) { if (ev.target.closest && ev.target.closest("#meetlive")) onMeetLive(ev); else if (ev.target.closest && ev.target.closest("#wrapview")) onWrap(ev); });
+  $("tab-today").addEventListener("input", function (ev) { if (ev.target.closest && ev.target.closest("#meetlive")) onMeetLive(ev); });
+  $("tab-today").addEventListener("toggle", function (ev) { var k = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-mfold"); if (k) { S.meetFold = S.meetFold || {}; S.meetFold[k] = !!ev.target.open; } }, true);
   $("tab-today").addEventListener("click", function (ev) {
+    if (ev.target.closest && ev.target.closest("#meetlive") && onMeetLive(ev)) return;
+    if (ev.target.closest && (ev.target.closest("#wrapview") || ev.target.closest("button[data-wrap]")) && onWrap(ev)) return;
     var tv = ev.target.closest("button[data-tview]"); if (tv) { setTodayMid(tv.getAttribute("data-tview")); return; }
     // cr1#1539: the click that follows a drop is the drop's, not a press on the meeting
     var mb = ev.target.closest("button[data-meet]"); if (mb) { if (typeof calJustDropped === "function" && calJustDropped()) return; openMeeting(mb.getAttribute("data-meet")); return; }
@@ -7718,6 +8441,8 @@
   $("scrim").addEventListener("click", closeDrawer);
   document.body.addEventListener("click", function (ev) { if (ev.target.closest("[data-drawer-close]")) closeDrawer(); });
   document.addEventListener("keydown", function (ev) { if (ev.key === "Escape" && S.drawer) { ev.preventDefault(); closeDrawer(); } });
+  // The popup's mark, read through one check (HUBTOPBAR1 pins the cr1#1591 handler's own fence).
+  function escSpent(ev) { return !!(ev.defaultPrevented || ev.tipClosed); }
   // cr1#1537 UAT, fixed under cr1#1591: Escape closes Run details, and the Ask
   // panel, and puts the focus back on the press that opened it, as it does a
   // side panel. Only with no side panel open and nothing else answering it:
@@ -7734,6 +8459,10 @@
     if (ask && !ask.hidden && at("missbox", "missBtn")) { ev.preventDefault(); setAsk(false); if ($("missBtn")) $("missBtn").focus(); return; }
     if (rd && rd.hasAttribute("open") && at("rundetails", "beatBtn")) { ev.preventDefault(); setRunDetails(false); if ($("beatBtn")) $("beatBtn").focus(); }
   });
+  // review of #1651: Escape closes an open meeting page, last: a drawer, a
+  // popup, Run details or the Ask panel over it closes first (round 3: added
+  // after the cr1#1591 handler, so its press is spent before this one reads it)
+  document.addEventListener("keydown", function (ev) { if (ev.key !== "Escape" || escSpent(ev)) return; if (!S.drawer && S.meetOpen && !(ev.target && ev.target.closest && ev.target.closest("input, textarea"))) { ev.preventDefault(); closeMeeting(); } });
   // Tab stays inside the open panel: past its last control it goes to the first, and back.
   document.addEventListener("keydown", function (ev) {
     if (ev.key !== "Tab" || !S.drawer) return;
@@ -8429,6 +9158,8 @@
     });
     // cr1#1636 item 8: a commitment closed from this page, one line each with its Undo
     if (typeof closeChangesHtml === "function") h += closeChangesHtml();
+    // cr1#1657: something they owe you, hidden until a day, said here with that day
+    if (typeof hideChangesHtml === "function") h += hideChangesHtml();
     // a change that did not go through: its line stays here until the owner presses again
     var listed = calEvents();
     Object.keys(S.cal.lines).forEach(function (id) {
@@ -9627,7 +10358,9 @@
   function fire(t) { return call("fire_trigger", { trigger_id: t.id }); }
   function markRunning(legs) {
     if (!db) return Promise.resolve();
-    var at = nowIso(); var ps = legs.map(function (leg) { S.status[leg] = { leg: leg, state: "running", line: "Started.", at: at, by_page: true }; return db.doc("status/" + leg).set(S.status[leg]); });
+    // cr1#1638: each press names its run, so the run the page fired knows the
+    // running light as its own and a second refresh never takes it over.
+    var at = nowIso(); var ps = legs.map(function (leg) { S.status[leg] = { leg: leg, state: "running", line: "Started.", at: at, by_page: true, run_id: "page-" + leg + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) }; return db.doc("status/" + leg).set(S.status[leg]); });
     renderLights(); return Promise.all(ps);
   }
   function fireLeg(leg, stamp) {
@@ -10499,8 +11232,27 @@
   // with Clear them, under the thread's own key, so the next run's copy of
   // the same message stays cleared.
   function landedClearKey(it) { return "T:" + (it.thread_id || ikey(it)); }
+  // cr1#1657 (cr1#1292's second comment): Later or Cleared pressed on a mail
+  // while it was a new arrival holds when the Inbox run lands the same mail
+  // as a row: the arrival's own key ("L:mail:" and its thread, or its
+  // message), for that message and no newer one, as `hubState` reads it.
+  function landedLiveKey(it) {
+    var keys = [];
+    if (it.thread_id) keys.push("L:mail:" + it.thread_id);
+    if (it.message_id) keys.push("L:mail:" + it.message_id);
+    for (var i = 0; i < keys.length; i++) if (hubState(keys[i], it.message_ts)) return keys[i];
+    return "";
+  }
+  // The key a landed row's Hub press stands under: Clear them on a row that
+  // needs nothing, else a press made on its arrival.
+  function landedHubKey(it) {
+    var own = landedClearKey(it);
+    if (it.needs === false && hubState(own, it.message_ts)) return own;
+    return landedLiveKey(it) || own;
+  }
   function landedLine(it, ib) {
     var calm = it.needs === false, hub = calm ? hubState(landedClearKey(it), it.message_ts) : null, addr = senderOf(it);
+    if (!hub && typeof landedLiveKey === "function") { var lk = landedLiveKey(it); if (lk) hub = hubState(lk, it.message_ts); }
     // cr1#1644: a Drop or Snooze waiting for Apply has set the line aside: it
     // no longer needs the owner, so it leaves Needs you (and the tab's count)
     var aside = inboxChoice(it), said = typeof pressWords === "function" ? pressWords(aside) : "";
@@ -10831,6 +11583,8 @@
   function onLiveAct(btn) {
     var act = btn.getAttribute("data-lact"), it = inboxItem(btn.getAttribute("data-n"));
     // cr1#1635: a landed row cleared with Clear them is put back on its own.
+    // cr1#1657: a landed row set aside by a press on its arrival is put back under that press's key
+    if (it && !it.live && act === "unclear" && typeof landedHubKey === "function" && landedHubKey(it) !== landedClearKey(it)) { var hk = landedHubKey(it); hubDropKey(hubState(hk, it.message_ts), hk); return; }
     if (it && !it.live && act === "unclear") { var lk = landedClearKey(it); hubDropKey(hubState(lk, it.message_ts), lk); return; }
     if (!it || !it.live) return;
     var k = ikey(it);
@@ -10873,7 +11627,7 @@
       db.doc("feed/week").onSnapshot(function (snap) { S.week = snap.exists ? snap.data() : null; renderWeek(); }, onErr);
       db.doc("feed/review").onSnapshot(function (snap) { S.review = snap.exists ? snap.data() : null; renderReview(); renderBrief(); }, onErr);
       db.doc("feed/settings").onSnapshot(function (snap) { S.settings = snap.exists ? snap.data() : null; renderSettings(); renderUpdate(); }, onErr);
-      db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? snap.data() : null; renderToday(); }, onErr);
+      db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? snap.data() : null; S.mineErr = false; renderToday(); }, function (e) { S.mineErr = true; renderToday(); onErr(e); });
       db.doc("feed/mail_rules").onSnapshot(function (snap) { S.mailrules = snap.exists ? snap.data() : null; liveWallMoved(); renderInbox(); liveKick(); }, onErr);
       db.doc("feed/people").onSnapshot(function (snap) { S.people = snap.exists ? snap.data() : null; renderPeople(); renderInboxLive(); }, onErr);
       db.doc("feed/board").onSnapshot(function (snap) { S.board = snap.exists ? snap.data() : null; renderBoard(); if (typeof renderCalParts === "function") renderCalParts(); }, onErr);
@@ -10902,6 +11656,12 @@
     var samp = window.claude.use("sample");
     if (samp && samp.then) samp.then(function (ask) { askClaude = ask && typeof ask.json === "function" ? ask : null; }, function () { askClaude = null; });
     // cr1#1538 UAT: reads the viewer's leave for that read, never asks for it.
+    // cr1#1632: the page's own file store, where a file attached to a meeting
+    // is kept; null where this view has none, and the meeting offers a link only.
+    var ast = window.claude.use("assets");
+    if (ast && ast.then) ast.then(function (a) { assets = a && typeof a.upload === "function" ? a : null; assetsState = assets ? "on" : "off"; renderMeetAttach(); },
+      function () { assets = null; assetsState = "off"; renderMeetAttach(); });
+    else { assetsState = "off"; }
     var pm = window.claude.use("permissions");
     if (pm && pm.then) pm.then(function (p) { perms = p && typeof p.state === "function" ? p : null; }, function () { perms = null; });
   } else {

@@ -224,7 +224,7 @@ PARK_EVIDENCE_LINE = "Parked: still open, off your working list."
 PILE_VERB_LINE = "That press does not belong to a pile on your Work tab; nothing was written."
 PILE_UNREADABLE_LINE = "The pile could not be checked just now, so nothing was written. Press Go, then try again."
 PILE_LEFT_LINE = "That one is no longer in that pile, so it was left as it is; nothing was written."
-PILE_DAY_LINE = "That day has passed, so it was left as it is; nothing was written."
+PILE_DAY_LINE = "That day is today or already past, so it was left as it is; nothing was written."
 #: cr1#1541: planning on the Week. A planned item is moved by the one
 #: move-to-a-day press (a snooze to that date) with the time of day it was put
 #: at (`at`, "HH:MM", and `mins`) and the plan it belongs to (`plan`); the
@@ -1037,7 +1037,8 @@ def capabilities(server: str, mail: Optional[Dict[str, Any]] = None,
                  calendar: Optional[Dict[str, Any]] = None,
                  chat: Optional[Dict[str, Any]] = None, *,
                  ask: bool = True, chat_server: bool = True,
-                 calendar_actions: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 calendar_actions: Optional[Dict[str, Any]] = None,
+                 files: bool = True) -> Dict[str, Any]:
     """The runtime capabilities the published page declares. The database
     rule: everything in it, feeds, status, config and choices, is readable
     and writable by the artifact's owner alone (plan item 2: the page shows
@@ -1056,7 +1057,11 @@ def capabilities(server: str, mail: Optional[Dict[str, Any]] = None,
     adds the calendar tools the page books, moves and cancels a meeting
     with (cr1#1539), on the calendar connector's own entry; left out (None),
     the declaration is what it was before, and the page's three buttons say
-    they are not allowed yet."""
+    they are not allowed yet. `assets` (cr1#1632, Attached) is the page's own
+    file store, where a file the owner attaches to a meeting is kept: the
+    owner alone uploads (the capability's default, Editors and up, on a page
+    never shared); `files=False` leaves it out, for an account whose publish
+    refuses it, and the page then offers a link only."""
     server = connector_display_name(server)
     servers = [{"server": str(server),
                 "tools": ["list_triggers", "update_trigger", "fire_trigger"]}]
@@ -1100,6 +1105,8 @@ def capabilities(server: str, mail: Optional[Dict[str, Any]] = None,
     }
     if ask:
         out["sample"] = {}
+    if files:
+        out["assets"] = {}
     return out
 
 
@@ -1232,13 +1239,16 @@ def render_page_file(workspace_root=None, *, server: str = "Claude Code Remote",
             # and cancel (the page's three buttons then say they are not
             # allowed yet); `all_new` leaves out every part added since
             # cr1#1537, which is the declaration a seat already allowed.
+            # cr1#1632: `assets` leaves out the file store (the meeting page
+            # then attaches a link only).
             "capabilities_without": {
                 "sample": capabilities(server, mail, calendar, chat, ask=False, calendar_actions=cal_actions),
                 "chat": capabilities(server, mail, calendar, chat, chat_server=False, calendar_actions=cal_actions),
                 "sample_and_chat": capabilities(server, mail, calendar, chat, ask=False, chat_server=False,
                                                 calendar_actions=cal_actions),
                 "calendar_actions": capabilities(server, mail, calendar, chat),
-                "all_new": capabilities(server, mail, calendar, chat, ask=False, chat_server=False)},
+                "assets": capabilities(server, mail, calendar, chat, calendar_actions=cal_actions, files=False),
+                "all_new": capabilities(server, mail, calendar, chat, ask=False, chat_server=False, files=False)},
             "template": str(TEMPLATE_REL).replace("\\", "/")}
     if recipe:
         out.pop("html")
@@ -1415,6 +1425,10 @@ def settle_statuses(workspace_root=None, docs: Optional[List[Dict[str, Any]]] = 
     now = _now(now_iso)
     for doc in docs or []:
         if not isinstance(doc, dict):
+            continue
+        # review of #1664 (item 6): a light of a leg this version does not
+        # know is left alone, never a ValueError out of status_doc
+        if str(doc.get("leg") or "").strip() not in LEGS and str(doc.get("leg") or "").strip() != "maintenance":
             continue
         minutes = RUNNING_TIMEOUT_BY_LEG.get(str(doc.get("leg") or ""), RUNNING_TIMEOUT_MINUTES)
         if running_timed_out(doc, now_iso=now_iso, minutes=minutes):
@@ -1999,6 +2013,39 @@ def prep_text(workspace_root, artifact: str, cap: int = PREP_TEXT_CAP) -> Option
     return "\n".join(out).strip() or None
 
 
+#: cr1#1632 slice 1: the parts of a brief the live prep page reads, and how
+#: many of each travel on the feed.
+PREP_PART_KEYS = ("walk", "decide", "ask", "cover", "you_owe", "they_owe", "changed", "carried")
+
+
+def prep_parts(workspace_root, artifact: str) -> Optional[Dict[str, Any]]:
+    """cr1#1632 slice 1: a brief's parts as lists (`prep_pipeline.prep_parts`,
+    saved beside the document by the brief writer), or None for a brief that
+    has none (written before, or by a writer that keeps none): the page then
+    shows the prose as before. Never raises; never writes."""
+    try:
+        from prep_pipeline import PARTS_LIST_CAP, PARTS_TEXT_CAP, parts_path
+
+        path = _prep_path(workspace_root, parts_path(artifact))
+        if path is None:
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no parts: the prose stands
+        return None
+    if not isinstance(raw, dict):
+        return None
+    txt = lambda x: " ".join(str(x or "").split())[:PARTS_TEXT_CAP]
+    out: Dict[str, Any] = {"walk": txt(raw.get("walk"))}
+    for k in PREP_PART_KEYS[1:]:
+        items = raw.get(k) if isinstance(raw.get(k), list) else []
+        if k == "decide":
+            out[k] = [{"q": txt(d.get("q")), "opts": [txt(o)[:60] for o in (d.get("opts") or [])[:5] if txt(o)]}
+                      for d in items[:PARTS_LIST_CAP] if isinstance(d, dict) and txt(d.get("q"))]
+        else:
+            out[k] = [txt(x) for x in items[:PARTS_LIST_CAP] if txt(x)]
+    return out if any(out.get(k) for k in PREP_PART_KEYS) else None
+
+
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -2087,7 +2134,12 @@ MEETING_PEOPLE_CAP = 12
 #: list would let through whoever was cut).
 MEETING_PEOPLE_READ = 200
 #: The day's ended meetings kept for "Past meetings".
-PAST_MEETINGS_CAP = 30
+PAST_MEETINGS_CAP = 40
+# the most hidden wrap-up meetings the feed names for the press's claim (round 7)
+PAST_HIDDEN_CAP = 200
+# cr1#1668: Past meetings lists the meetings of the last seven days, which the
+# prep run's calendar read starts that many days before today to cover
+PAST_DAYS = 7
 #: Working hours when the seat sets none (`workspace.working_hours`), and
 #: the shortest gap worth offering.
 WORK_HOURS = (7, 17)
@@ -2256,6 +2308,20 @@ def _free_slots(busy: List[tuple], lo: _dt.datetime, hi: _dt.datetime) -> List[D
 
 def _week_dates(today: _dt.date) -> List[_dt.date]:
     return [today + _dt.timedelta(days=i) for i in range(WEEK_DAYS)]
+
+
+def week_end(today: _dt.date) -> _dt.date:
+    """THE last day of "this week" on the Hub (cr1#1657): one definition for
+    the Week board and the Work tab's late pile (`hub_work.week_day`). A week
+    runs Monday to Sunday, as the plate reads one (`plate_view.horizon_of`).
+    On a Saturday or a Sunday that week has no working day left, so "this
+    week" is the one ahead, as far as the board's seven days reach: their
+    last day (Friday from a Saturday, Saturday from a Sunday). So the day is
+    always one of the board's days (`_week_dates`) and never today: a move
+    to the end of the week never lands on the day it was made."""
+    if today.weekday() >= 5:
+        return _week_dates(today)[-1]
+    return today + _dt.timedelta(days=6 - today.weekday())
 
 
 def _day_name(d: _dt.date, today: _dt.date) -> str:
@@ -2618,6 +2684,8 @@ def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     past its date sits on today, marked `late`. The meetings come from the
     Today feed's `week` (the calendar read is the prep run's); the page joins
     them by date. An item on no thread names the seat's word ("No thread").
+    cr1#1657: an item someone owes the owner that a Later hid until a day
+    is drawn on that day, marked `check_back` (that day), never late.
     Never writes. No money anywhere."""
     import thread_cards as tc
     import words as _w
@@ -2646,8 +2714,17 @@ def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         moved = workspace_moved_ids(root, _iso(now), events=ledger)
     except Exception:  # noqa: BLE001 - no read: the board shows what the lists show
         moved = set()
+    # cr1#1657: an item someone owes the owner that a Later hid until a day
+    # keeps their date, so the board draws it on that day, marked
+    # `check_back`, never as late, instead of losing it until then.
     try:
-        opens, today, _n, _from_log = tc._open_by_thread(root, _iso(now), keep_ids=moved)
+        from mute_ledger import workspace_check_backs
+        back: Dict[str, str] = workspace_check_backs(root, _iso(now), events=ledger)
+    except Exception:  # noqa: BLE001 - no read: the board shows what the lists show
+        back = {}
+    keep = set(moved) | set(back)
+    try:
+        opens, today, _n, _from_log = tc._open_by_thread(root, _iso(now), keep_ids=keep)
     except Exception:  # noqa: BLE001 - an unread open list leaves the board empty and says so
         out["errors"].append("open")
         opens, today = {}, now.astimezone(_workspace_tz(workspace_root)).date()
@@ -2662,6 +2739,22 @@ def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     on_day: Dict[str, List[Dict[str, Any]]] = {d.isoformat(): [] for d in dates}
     seen = set()
     on_threads: Dict[str, set] = {}
+
+    def place(cid: str, due: str) -> Optional[tuple]:
+        """`(day, late, check_back)` for a card, or None when it is not on
+        the board: a check-back on its day (cr1#1657), never late; anything
+        else on its due date, a late one on today."""
+        try:
+            d = _dt.date.fromisoformat(back.get(cid) or due)
+        except ValueError:
+            return None
+        if d > last:
+            return None
+        if back.get(cid):
+            d = max(d, today)
+            return d, False, d.isoformat()
+        return (today, True, "") if d < today else (d, False, "")
+
     for tid, v in opens.items():
         for direction in ("you_owe", "owed_to_you"):
             for r in v.get(direction) or []:
@@ -2669,27 +2762,26 @@ def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
                 if cid and tid:
                     on_threads.setdefault(cid, set()).add(str(tid))
                 due = str(r.get("due") or "")[:10]
-                if not cid or cid in seen or not due:
+                if not cid or cid in seen or not (due or back.get(cid)):
                     continue
-                try:
-                    d = _dt.date.fromisoformat(due)
-                except ValueError:
-                    continue
-                if d > last:
+                spot = place(cid, due)
+                if spot is None:
                     continue
                 seen.add(cid)
-                late = d < today
-                on_day[(today if late else d).isoformat()].append({
+                card = {
                     "id": cid, "title": str(r.get("title") or "")[:240], "due": due,
-                    "direction": direction, "late": late, "thread_id": str(tid or ""),
+                    "direction": direction, "late": spot[1], "thread_id": str(tid or ""),
                     "thread": (names.get(str(tid)) or no_home)[:160] if tid else no_home,
-                })
+                }
+                if spot[2]:
+                    card["check_back"] = spot[2]
+                on_day[spot[0].isoformat()].append(card)
     # The items on no thread are not in the per-thread open list: they come
     # from the loose-ends list's unfiled kind, the same read as the Work
     # streams tab's "No home yet", confirmed promises only, like the rest.
     try:
         import loose_ends as le
-        view = le.loose_ends_view(root, _iso(now), kind=le.KIND_UNFILED, keep_ids=moved)
+        view = le.loose_ends_view(root, _iso(now), kind=le.KIND_UNFILED, keep_ids=keep)
     except Exception:  # noqa: BLE001 - the homeless items stay off, and it says so
         out["errors"].append("no_home")
         view = {}
@@ -2697,20 +2789,18 @@ def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         cid = str(r.get("id") or "")
         direction = str(r.get("direction") or "")
         due = str(r.get("due") or "")[:10]
-        if (not cid or cid in seen or not due or direction not in ("you_owe", "owed_to_you")
+        if (not cid or cid in seen or not (due or back.get(cid)) or direction not in ("you_owe", "owed_to_you")
                 or "unconfirmed" in (r.get("kinds") or [])):
             continue
-        try:
-            d = _dt.date.fromisoformat(due)
-        except ValueError:
-            continue
-        if d > last:
+        spot = place(cid, due)
+        if spot is None:
             continue
         seen.add(cid)
-        late = d < today
-        on_day[(today if late else d).isoformat()].append({
-            "id": cid, "title": str(r.get("title") or "")[:240], "due": due, "direction": direction,
-            "late": late, "thread_id": "", "thread": no_home})
+        card = {"id": cid, "title": str(r.get("title") or "")[:240], "due": due, "direction": direction,
+                "late": spot[1], "thread_id": "", "thread": no_home}
+        if spot[2]:
+            card["check_back"] = spot[2]
+        on_day[spot[0].isoformat()].append(card)
     order = {"you_owe": 0, "owed_to_you": 1}
     all_cards: List[Dict[str, Any]] = []
     for d in dates:
@@ -2824,6 +2914,36 @@ def _week_prep(workspace_root, week: Dict[str, Any], rows: List[Dict[str, Any]],
             r["prep_shown_until"] = _iso(end + hold)
 
 
+def _occurrence_receipt(recs: List[Dict[str, Any]], start: Any, tz: Any = None) -> Optional[Dict[str, Any]]:
+    """cr1#1632 review rounds 2 and 3: the newest `prep_brief` receipt
+    (oldest first in `recs`) whose `meeting_start` is empty or names this
+    row's start, the day read in the workspace's zone `tz`; None when none
+    does (the series' briefs are all for other dates)."""
+    import hub_meeting
+
+    for rec in reversed(recs):
+        data = (rec.get("raw") or {}).get("data") if isinstance(rec.get("raw"), dict) else None
+        ms = (data or {}).get("meeting_start") if isinstance(data, dict) else None
+        if ms and not hub_meeting._same_start(ms, start, tz):
+            continue
+        return rec
+    return None
+
+
+def _brief_rel(workspace_root, art: Any) -> Optional[str]:
+    """A receipt's brief, folder-relative where it is found on disk."""
+    if not (isinstance(art, str) and art.strip()):
+        return None
+    rel = art.strip().replace("\\", "/")
+    found_path = _prep_path(workspace_root, rel)
+    if found_path is not None:
+        try:
+            rel = found_path.relative_to(Path(str(workspace_root))).as_posix()
+        except ValueError:
+            pass
+    return rel
+
+
 def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
                *, now_iso=None, device_workspace: Optional[str] = None) -> Dict[str, Any]:
     """The Today feed: the next 24 hours of meetings as the run read them
@@ -2875,13 +2995,18 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
                     tzinfo = tzinfo or _workspace_tz(workspace_root)
                     day_start = now.astimezone(tzinfo).replace(hour=0, minute=0, second=0, microsecond=0)
                 ended.add(id(m))
-                if start >= day_start:
+                # cr1#1668: the last PAST_DAYS days, which the read now covers
+                if start >= day_start - _dt.timedelta(days=PAST_DAYS):
                     gone = {"meeting_id": str(m.get("meeting_id") or "").strip(),
                             "title": str(m.get("title") or "").strip()[:200],
                             "start": _iso(start), "end": _iso(end), "solo": _no_one_else(m)}
                     # a personal one says so, as a row does; any other names no calendar
                     if str(m.get("calendar") or "").lower() == "personal":
                         gone["calendar"] = "personal"
+                    # who was there, as the read named them (an off-limits name never)
+                    people = _meeting_extras(m, wall).get("people")
+                    if people:
+                        gone["people"] = people
                     past.append(gone)
                 continue
             if start > horizon:
@@ -2899,38 +3024,103 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
         if not all_day:
             rows[-1].update(_meeting_extras(m, wall))
     ids = [r["meeting_id"] for r in rows if r["meeting_id"]]
+    # cr1#1632: ONE read of the log, for the receipts and the saved meeting
+    # pages both (the one-call refresh reads it once, HUBONECALL1).
+    log: Optional[List[dict]] = None
+    if rows or past:   # cr1#1668: the past rows' wrap-ups read it too
+        try:
+            from receipts import ledger_events
+
+            log = ledger_events(workspace_root)
+        except Exception:  # noqa: BLE001 - each reader then reads for itself, or not at all
+            log = None
     if ids:
         try:
             from receipts import prep_receipts
 
-            found = prep_receipts(workspace_root, meeting_ids=ids)
+            found = prep_receipts(workspace_root, meeting_ids=ids, events=log)
         except Exception:  # noqa: BLE001 - a bad book leaves the rows without prep
             found = []
         newest: Dict[str, Dict[str, Any]] = {}
+        series: Dict[str, List[Dict[str, Any]]] = {}
         for rec in found:
             newest[rec["meeting_id"]] = rec  # oldest first, so the last wins
+            series.setdefault(rec["meeting_id"], []).append(rec)
+        ws_tz = _workspace_tz(workspace_root)
         for r in rows:
             rec = newest.get(r["meeting_id"])
             if not rec:
                 continue
-            art = rec.get("artifact")
-            if isinstance(art, str) and art.strip():
-                rel = art.strip().replace("\\", "/")
-                found_path = _prep_path(workspace_root, rel)
-                if found_path is not None:
-                    try:
-                        rel = found_path.relative_to(Path(str(workspace_root))).as_posix()
-                    except ValueError:
-                        pass
+            # cr1#1632 review rounds 2 and 3: THIS occurrence's brief when the
+            # series has one (a recurring series shares one id; another date's
+            # brief would show its prose beside this one's parts, and save its
+            # decisions and carry with nobody on them). With none for this
+            # date, the series' newest stands for the prose, as before, and
+            # there are no parts.
+            own = _occurrence_receipt(series.get(r["meeting_id"]) or [], r.get("start"), ws_tz)
+            rec = own or rec
+            rel = _brief_rel(workspace_root, rec.get("artifact"))
+            if rel:
                 r["prep"] = rel
                 # cr1#655: the brief itself, so the page opens it in place
                 r["prep_text"] = prep_text(workspace_root, rel)
+                # cr1#1632 slice 1: its parts as lists, for the live prep page
+                parts = prep_parts(workspace_root, rel) if own and r.get("calendar") != "personal" else None
+                if parts:
+                    r["prep_parts"] = parts
                 if device_workspace:
                     r["prep_on_pc"] = str(device_workspace).rstrip("/\\") + "/" + rel
             if rec.get("dt"):
                 r["prep_at"] = _iso(rec["dt"])
     rows.sort(key=lambda r: r["start"])
     past.sort(key=lambda r: r["start"])
+    # cr1#1632 slice 1: a meeting whose live prep page was saved says so, with
+    # the press its Undo names.
+    try:
+        import hub_meeting
+
+        _evs = log or []
+        _tzw = _workspace_tz(workspace_root) if rows else None
+        for r in rows:
+            sv = hub_meeting.saved_for(_evs, r["meeting_id"], r.get("start"), _tzw) if r.get("meeting_id") else None
+            if sv:
+                r["prep_saved"] = sv
+        # cr1#1632 slice 3: what a past meeting's wrap-up page shows: the
+        # decisions and open promises captured from it, and its wrap-up
+        # review of #1669, item 7: a meeting that ended within the hour is
+        # still on `meetings`; it gets its wrap-up too
+        just = [r for r in rows if not r.get("all_day") and r.get("end") and (_parse(r["end"]) or now) <= now]
+        if past or just:
+            if not _evs:
+                from events_io import load_events_owner_scoped
+
+                _evs = load_events_owner_scoped(str(workspace_root))[0]
+            _owner = _owner_id(workspace_root)
+            _root = Path(str(workspace_root))
+            _pers = hub_meeting.personal_fence(workspace_root)           # the one fence, once per feed (round 3, item 1)
+            _off = _pers["off"] if _pers else None
+            _tz = hub_meeting._ws_tz(_root)
+            _open = hub_meeting.open_projection(workspace_root, _evs)   # once per feed (item 10)
+            _idx = hub_meeting.index_by_ref(_evs)                        # once per feed (round 2, note 9)
+            # round 2, item 2: only the rows that get a wrap-up claim notes
+            # (a personal or solo copy of a meeting never takes its notes)
+            ended_all = sorted([r for r in past + just if r.get("meeting_id") and not r.get("solo")
+                                and r.get("calendar") != "personal"], key=lambda r: r["start"])
+            # cr1#1668: each occurrence of a series ends where the next begins
+            nxt: Dict[str, str] = {}
+            for r in reversed(ended_all):
+                if r.get("meeting_id"):
+                    if r["meeting_id"] in nxt:
+                        r["next_start"] = nxt[r["meeting_id"]]
+                    nxt[r["meeting_id"]] = r["start"]
+            # item 3: each receipt claimed by the one listed meeting it followed
+            claims = hub_meeting.claim_receipts(_evs, ended_all)
+            for i, r in enumerate(ended_all):
+                r["wrap"] = hub_meeting.wrap_for(workspace_root, r, _evs, owner_id=_owner, off=_off,
+                                                 ref=claims.get(i, ""), open_rows=_open, tz=_tz,
+                                                 personal=_pers, index=_idx)
+    except Exception:  # noqa: BLE001 - an unread log leaves the page as unsaved
+        pass
     try:
         # The week keeps the read it always had: a meeting that ended more
         # than the hold ago is in `past`, and is no row and no clash here.
@@ -2944,7 +3134,14 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
     return _with_words(workspace_root, {"generated_at": _iso(now), "meetings": rows,
             "n_meetings": sum(1 for r in rows if not r["solo"]), "n_prepped": sum(1 for r in rows if r["prep"]),
             "week": week, "about": _today_about(workspace_root, now),
-            "past": past[-PAST_MEETINGS_CAP:]})
+            "past": past[-PAST_MEETINGS_CAP:], "past_days": PAST_DAYS,
+            # review of #1669, note 12: how many older ones the cap left out
+            "past_more": max(0, len(past) - PAST_MEETINGS_CAP),
+            # review of #1669 round 7: the wrap-up meetings the cap leaves off the
+            # list, bare, so a press still claims over its hidden siblings (one list,
+            # not one per row: a per-row list grows with the square of a title's count)
+            "past_hidden": [{"meeting_id": r.get("meeting_id") or "", "title": r.get("title") or "", "start": r["start"]}
+                            for r in past[:-PAST_MEETINGS_CAP] if r.get("wrap")][-PAST_HIDDEN_CAP:]})
 
 
 def _today_about(workspace_root, now: _dt.datetime) -> Optional[Dict[str, Any]]:
@@ -3300,8 +3497,10 @@ def _done_for_you(workspace_root, now: _dt.datetime, days: int = DONE_DAYS) -> D
             rows["drafted"].append({"ts": _iso(at), "source": _src(ev, d),
                                     "title": str(d.get("subject") or d.get("title") or "A reply")[:240]})
         else:
-            rows["meetings"].append({"ts": _iso(at), "source": _src(ev, d),
-                                     "title": str(d.get("title") or d.get("meeting_title") or "A meeting")[:240]})
+            named = str(d.get("title") or d.get("meeting_title") or "").strip()
+            rows["meetings"].append({"ts": _iso(at), "source": _src(ev, d), "title": (named or "A meeting")[:240]})
+            if not named:   # cr1#1668: the page lists such a record by its calendar meeting instead
+                rows["meetings"][-1]["untitled"] = True
     kinds: Dict[str, Any] = {}
     for key, words in DONE_KINDS.items():
         if key == "filtered":
@@ -6612,7 +6811,7 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     from plate_view import plate_data_view
 
     now = _now(now_iso)
-    dv = plate_data_view(str(workspace_root), now_iso=_iso(now),
+    dv = plate_data_view(str(workspace_root), now_iso=_iso(now), measure_pages=False,
                          source_skill=COMMITMENT_SRC)
     rows = _plate_rows(dv)
     # cr1#725: each row's own record, read once, from the same open set the
@@ -7794,6 +7993,16 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             settings.append({"id": cid, "n": str(raw.get("n") or ""), "action": verb,
                              "input": str(typed.get("text") or "")[:NOTE_CAP],
                              "title": str(raw.get("title") or "")[:200]})
+        elif kind == "meeting":
+            # cr1#1632 slice 1: a meeting's live prep page, saved (or the save
+            # taken back), written by apply_hub_choices through hub_meeting.
+            if verb not in MEETING_VERBS:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            hub.append({"id": cid, "kind": kind, "action": verb, "n": str(raw.get("n") or "")[:512],
+                        "input": raw.get("input") if isinstance(raw.get("input"), dict) else {},
+                        "title": str(raw.get("title") or "")[:200]})
         elif kind in ("reminder", "todo", "miss") or kind in EDIT_KINDS:
             # cr1#662: the Today page's own lists, written by apply_hub_choices;
             # cr1#1017: the header's "Missed something?", answered there too;
@@ -8083,7 +8292,9 @@ REMINDER_VERBS = frozenset({"add", "done", "push", "delete"})  # delete: cr1#122
 TODO_VERBS = frozenset({"add"})
 #: cr1#1383 part 2: add, rename and undo of a work stream, a person and a
 #: priority from the Hub, each through its owning writer (`hub_edit`).
-EDIT_KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit")
+EDIT_KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit", "meeting_edit")
+#: cr1#1632 slice 1: a meeting's live prep page, saved or taken back.
+MEETING_VERBS = frozenset({"save", "undo", "wrap", "unwrap"})  # slice 3: wrap, unwrap
 EDIT_VERBS = frozenset({"add", "rename", "set", "undo"})  # set: cr1#1433
 #: cr1#1383 slice 4: a commitment's wording is edited (`rename`) or that edit
 #: taken back; a commitment is never added here. cr1#1383 Add context: a
@@ -8102,6 +8313,9 @@ CONTEXT_EDIT_VERBS = EDIT_VERBS | {"context"}
 #: (`order` and `star`, on `priority_edit` only). `hub_edit` writes each.
 STREAM_EDIT_VERBS = CONTEXT_EDIT_VERBS | {"update"}
 PRIORITY_EDIT_VERBS = EDIT_VERBS | {"order", "star"}
+#: cr1#1632, Attached: a link or a file on a meeting (`attach`) and its
+#: Remove (`undo`), written by `hub_edit` (the press's own row is the record).
+MEETING_EDIT_VERBS = frozenset({"attach", "undo"})
 
 
 def _edit_verbs(kind: str) -> frozenset:
@@ -8113,11 +8327,17 @@ def _edit_verbs(kind: str) -> frozenset:
         return STREAM_EDIT_VERBS
     if kind == "priority_edit":
         return PRIORITY_EDIT_VERBS
+    if kind == "meeting_edit":
+        return MEETING_EDIT_VERBS
     return CONTEXT_EDIT_VERBS if kind in CONTEXT_EDIT_KINDS else EDIT_VERBS
 TODO_SOURCE = "hub_todo"
 TODO_REF_SCHEME = "user:hub_todo"
 PRIORITY_NAMES = {1: "High", 2: "Medium", 3: "Low"}
 MINE_CAP = 60
+#: cr1#1632: the most attachments `feed/mine` carries, newest first, and the
+#: most characters they take (review: well under `REFRESH_DOC_LIMIT`).
+ATTACHED_CAP = 200
+ATTACHED_BUDGET = 60_000
 REMINDER_NEEDS_TEXT_LINE = "A reminder needs a few words."
 #: cr1#1221: a Delete press, applied. The undo is the owner's own word.
 REMINDER_DELETED_LINE = "Deleted. Say undo in a chat to bring it back."
@@ -8222,7 +8442,19 @@ def feed_mine(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     first (`_reminder_rank`), and the open
     to-dos the owner added on the page (`data.source == TODO_SOURCE`), highest
     priority first, then oldest first. Never writes; a missing book answers
-    two empty lists."""
+    two empty lists.
+
+    cr1#1632, Attached: `attached` is what the owner attached to a meeting
+    on the Hub and did not remove, `{meeting id: [attachment, ...]}`, newest
+    first, at most `ATTACHED_CAP` in all and `ATTACHED_BUDGET` characters
+    (`meeting_attach.by_meeting`: a
+    name naming someone off limits or personal left out; when the wall
+    cannot be read, none at all and `attached` named in `errors`). It rides
+    this feed because Apply refreshes it right after a Hub press lands, so a
+    landed attachment shows on its meeting at once, whatever calendar the
+    page is showing. `attached_cut` is True when the cap or the budget left
+    a row out (the page then says no meeting has nothing attached). New and
+    optional: an older page reads none of it."""
     now = _now(now_iso)
     root = Path(str(workspace_root))
     today = None
@@ -8277,9 +8509,22 @@ def feed_mine(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         _todo_last_actions(root, todos[:MINE_CAP], todo_evs)
     except Exception:  # noqa: BLE001 - an unread last action leaves the line off, never the list
         pass
+    attached: Dict[str, List[Dict[str, Any]]] = {}
+    attached_cut = False
+    try:
+        import meeting_attach
+
+        got = meeting_attach.by_meeting_cut(root, cap=ATTACHED_CAP, budget=ATTACHED_BUDGET)
+        if got is None:
+            errors.append("attached")
+        else:
+            attached, attached_cut = got
+    except Exception:  # noqa: BLE001 - the lists never fail for this
+        errors.append("attached")
     return _with_words(workspace_root, {"generated_at": _iso(now), "today": today.isoformat(),
             "reminders": reminders_out, "todos": todos[:MINE_CAP],
-            "n_todos": len(todos), "n_reminders": n_reminders, "errors": errors})
+            "n_todos": len(todos), "n_reminders": n_reminders, "errors": errors, "attached": attached,
+            "attached_cut": attached_cut})
 
 
 def _todo_threads(root: Path, evs: List[Dict[str, Any]]) -> Dict[int, str]:
@@ -9131,6 +9376,10 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
         through `commitment_state.add_commitment_note`, with Take back):
         `hub_edit.apply_one`, through each record's own writer, judged
         before any write;
+      * meeting_edit `attach` / `undo` (cr1#1632, Attached): a link or a
+        file on a meeting, and its Remove, through `hub_edit.apply_one`,
+        whose own row is the record; a name or address naming someone off
+        limits or personal is refused before any write;
       * miss `tell` (cr1#1017): the header's "Missed something?". The book is
         searched for the item (`_miss_find`); the answer says what was found
         and why the Hub did not show it; an item with no live row is filed as
@@ -9246,7 +9495,11 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                         r.update(outcome="applied", line=f"Moved to {when}.")
             elif kind == "miss" and verb == "tell":
                 r.update(_apply_miss(root, c, actor, now, answered, live, inbox))
-            elif kind in EDIT_KINDS and (verb in EDIT_VERBS or (verb == "context" and verb in _edit_verbs(kind))
+            elif kind == "meeting" and verb in MEETING_VERBS:
+                import hub_meeting
+
+                r.update(hub_meeting.apply_one(root, c, actor))
+            elif kind in EDIT_KINDS and (verb in EDIT_VERBS or (verb in ("context", "attach") and verb in _edit_verbs(kind))
                                          or (verb in ("update", "order", "star") and verb in _edit_verbs(kind))):
                 import hub_edit
 
@@ -10217,7 +10470,10 @@ def _pile_gate(workspace_root, c: Dict[str, Any], cid: str, verb: str, now: _dt.
 
         when = cs.parse_later_when(str(c.get("input") or "")[:80], _iso(now), workspace_path=str(workspace_root))
         day = cs._now_calendar_day(_iso(now), workspace_path=str(workspace_root))
-        if not when or not day or str(when)[:10] < day.isoformat():
+        # Review of #1663 (item 1): a pile's move goes to a day after today. A
+        # move to today, from a feed read on an earlier day, would leave the
+        # items late again tomorrow, so it is refused like a day gone by.
+        if not when or not day or str(when)[:10] <= day.isoformat():
             return "", ("refused", PILE_DAY_LINE, {"status": "refused", "error": "pile_day"})
     done.add((kind, cid))
     return kind, None
@@ -10779,6 +11035,11 @@ def _apply_commitment_choices_run(workspace_root, choices, *, resolved_by, now_i
                     if st in ("deferred", "snoozed"):
                         r.update(outcome="applied",
                                  line=str((handler or {}).get("ack") or f"Moved to {when}."))
+                        # cr1#1657: an item the owner does not owe is hidden
+                        # until that day with its date kept: the page names
+                        # the day in Changes ("Hidden until Tue").
+                        if st == "snoozed":
+                            r["check_back"] = str(when)[:10]
                         # Each copy carries its own audit entry and its own undo.
                         for copy in full.get("copies") or []:
                             audit.append({"n": copy["id"], "action": "snooze", "handler_result": copy["result"],
@@ -11693,7 +11954,13 @@ REFRESH_READS: Tuple[Tuple[str, str], ...] = (
 REFRESH_PLATE_FAILED_LINE = "The plate could not be read, so the Hub was not refreshed."
 #: Every document a refresh may write, and no other (never another task's light).
 REFRESH_DOCS: Tuple[str, ...] = (("feed/plate",) + tuple(d for d, _n in REFRESH_READS)
-                                 + ("feed/week", "status/maintenance"))
+                                 + ("feed/week", "status/maintenance", "status/refresh"))
+#: cr1#1638: the refresh's own light is one of its documents (sorted last, so
+#: it lands after every feed); a second refresh that finds it held by a live
+#: run stops instead of taking it over.
+REFRESH_BUSY_LINE = "Another refresh is running now; this one stopped without changing anything."
+REFRESH_CLAIM_MINUTES = RUNNING_TIMEOUT_MINUTES
+REFRESH_BATCH_MAX = 50
 #: cr1#1603: the scheduled Prep and Inbox runs build their documents the same
 #: way, each task in its own scratch folder, handed back by the same part
 #: reader. The documents each task may hand back, and no other.
@@ -11887,8 +12154,11 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
               if str(d.get("leg") or "") != "refresh"]
     prune = plan_prune_choices(workspace_root, list(choices or []), now_iso=now_s)
 
-    _run("feed/plate", lambda: feed_plate(workspace_root, now_iso=now_s))
     with _one_log_read():
+        # cr1#1638: the plate is built inside the one log read too. Its own
+        # writes (display numbers) change the file, and the read is keyed on
+        # the file's size and time, so what it reads after a write is new.
+        _run("feed/plate", lambda: feed_plate(workspace_root, now_iso=now_s))
         for doc, name in REFRESH_READS:
             _run(doc, lambda name=name: globals()[name](workspace_root, now_iso=now_s))
 
@@ -11928,14 +12198,11 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
                 if clean is not None:
                     row["scrubbed"] = True
 
-    try:
-        token, sizes = _keep_built(workspace_root, "refresh", report, built)
-    except OSError as exc:
-        return {"ok": False, "line": "The refresh could not keep its answers on this computer.",
-                "error": type(exc).__name__, "pages": report}
-
     plate = built.get("feed/plate")
-    plate_ok = any(d == "feed/plate" for d, _n in sizes)
+    # The plate counts as built when it is kept by the same rule `_keep_built`
+    # applies (built, and small enough to pull), decided before keeping so the
+    # light can be kept with the documents (cr1#1638).
+    plate_ok = plate is not None and len(json.dumps(plate, separators=(",", ":"), default=str)) <= REFRESH_DOC_LIMIT
     counts: Dict[str, Any] = {}
     if plate_ok and plate is not None:
         day_ago = now - _dt.timedelta(hours=24)
@@ -11947,13 +12214,23 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
             except Exception:  # noqa: BLE001 - an undated close is not counted
                 pass
         counts = {"plate": int(plate.get("n_rows") or 0), "closed": closed}
-        line = f"{counts['plate']} on the plate, {closed} closed overnight."
+        # cr1#1638: the real window, never "overnight".
+        line = f"{counts['plate']} on the plate, {closed} closed in the last day."
         state = "done"
     else:
         line = REFRESH_PLATE_FAILED_LINE
         state = "error"
     light = status_doc(workspace_root, "refresh", state, line, now_iso=now_s, run_id=run_id,
                        stop_reason=line if state == "error" else None)
+    # cr1#1638: the light rides with the documents, so the finish is the same
+    # batch as the feeds (sorted last) and nothing is retyped from an answer.
+    built["status/refresh"] = light
+    report.append({"doc": "status/refresh", "ok": True, "seconds": 0.0})
+    try:
+        token, sizes = _keep_built(workspace_root, "refresh", report, built)
+    except OSError as exc:
+        return {"ok": False, "line": "The refresh could not keep its answers on this computer.",
+                "error": type(exc).__name__, "pages": report, "light": light}
     return {
         "ok": plate_ok,
         "token": token,
@@ -11967,6 +12244,113 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
         "seconds": round(time.monotonic() - started, 2),
         "line": line,
     }
+
+
+def _saved_docs(reads_dir: str, coll: str) -> List[Tuple[str, Dict[str, Any], Optional[int]]]:
+    """Every document a page read saved under `<reads_dir>/<coll>/` (a
+    `get`, `list` or `query` with `out_dir`): `(doc_id, fields, version)`."""
+    out: List[Tuple[str, Dict[str, Any], Optional[int]]] = []
+    folder = Path(reads_dir) / coll
+    if not folder.is_dir():
+        return out
+    for f in sorted(folder.glob("*.json")):
+        try:
+            raw = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        fields = dict(raw["data"]) if isinstance(raw.get("data"), dict) else dict(raw)
+        version = _saved_version(reads_dir, coll, f.stem)
+        out.append((f.stem, fields, version))
+    return out
+
+
+def refresh_start(reads_dir: str, out_dir: str, *, now_iso=None) -> Dict[str, Any]:
+    """cr1#1638: the refresh's page-side start, run where the page's database
+    tool runs, from the page's own reads saved as files (`list` on `status`
+    and `query` on applied `choices`, each with `out_dir`), so no page
+    document passes through the run's typing. Every time is this code's clock.
+
+    Answers `{ok, stop, run_id, line, batches}`. `stop: true` when this task's
+    light is held by a live refresh (claimed by another run, inside the
+    timeout): nothing is to be written. Otherwise `batches[0]` is the claim of
+    this task's light, alone, pinned to the version read (a page press left
+    it running with the page's run id: that id is this run's; else a new
+    id), and the batches after it settle the lights a dead run left and clear
+    the old applied choices, every entry pinned to its version. A refused
+    claim means another refresh claimed first: stop."""
+    now = _now(now_iso)
+    now_s = _iso(now)
+    statuses = _saved_docs(reads_dir, "status")
+    choices = _saved_docs(reads_dir, "choices")
+    own = next(((f, v) for d, f, v in statuses if d == "refresh"), (None, None))
+    light, light_v = own
+    run_id = ""
+    if isinstance(light, dict) and str(light.get("state") or "") == "running" \
+            and not running_timed_out(light, now_iso=now_s, minutes=REFRESH_CLAIM_MINUTES):
+        if light.get("claimed_by"):
+            return {"ok": True, "stop": True, "run_id": "", "line": REFRESH_BUSY_LINE, "batches": []}
+        if light.get("by_page") and light.get("run_id"):
+            run_id = str(light["run_id"])
+    run_id = run_id or "refresh-" + secrets.token_hex(6)
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    claim = status_doc(None, "refresh", "running", "", now_iso=now_s, run_id=run_id)
+    # Review of #1664 (item 1): the claim never carries `by_page`. On the page
+    # that flag means a press not yet started, and 8 minutes on (NO_START_MS)
+    # the page would say the task did not start and let Go fire a second run.
+    claim["claimed_by"] = run_id
+    claim_file = out / "status__refresh.json"
+    claim_file.write_text(json.dumps(claim, separators=(",", ":")), encoding="utf-8")
+    first: Dict[str, Any] = {"op": "set", "collection": "status", "doc_id": "refresh", "file_path": str(claim_file)}
+    if light_v is not None:
+        first["if_version"] = light_v
+    rest: List[Dict[str, Any]] = []
+    versions = {d: v for d, _f, v in statuses}
+    for doc in settle_statuses(None, [dict(f, leg=f.get("leg") or d) for d, f, _v in statuses if d != "refresh"],
+                               now_iso=now_s):
+        leg = str(doc.get("leg") or "")
+        target = out / f"status__{leg}.json"
+        target.write_text(json.dumps(doc, separators=(",", ":")), encoding="utf-8")
+        w: Dict[str, Any] = {"op": "set", "collection": "status", "doc_id": leg, "file_path": str(target)}
+        if versions.get(leg) is not None:
+            w["if_version"] = versions[leg]
+        rest.append(w)
+    cversions = {d: v for d, _f, v in choices}
+    prune = plan_prune_choices(None, [dict(f, id=f.get("id") or d) for d, f, _v in choices], now_iso=now_s)
+    for w in prune["writes"]:
+        w = dict(w)
+        if cversions.get(w["doc_id"]) is not None:
+            w["if_version"] = cversions[w["doc_id"]]
+        rest.append(w)
+    batches = [[first]] + [rest[i:i + REFRESH_BATCH_MAX] for i in range(0, len(rest), REFRESH_BATCH_MAX)]
+    return {"ok": True, "stop": False, "run_id": run_id, "line": "", "batches": batches,
+            "n_settle": len(rest) - len(prune["writes"]), "n_prune": len(prune["writes"])}
+
+
+def _refresh_start_cli(argv: List[str]) -> int:
+    reads = out = ""
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--reads" and i + 1 < len(argv):
+            reads = argv[i + 1]
+            i += 2
+        elif argv[i] == "--out" and i + 1 < len(argv):
+            out = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+    if not reads or not out:
+        print(json.dumps({"ok": False, "line": "usage: cockpit_helpers.py refresh-start --reads <dir> --out <dir>"}))
+        return 2
+    try:
+        ans = refresh_start(reads, out)
+    except Exception as exc:  # noqa: BLE001 - review of #1664 (item 6): one JSON line, never a traceback
+        print(json.dumps({"ok": False, "line": f"The refresh could not start: {type(exc).__name__}."}))
+        return 1
+    print(json.dumps(ans))
+    return 0
 
 
 def refresh_part(workspace_root=None, token: str = "", part: int = 0,
@@ -12251,6 +12635,19 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
         for doc, body in ans["pages"].items():
             if isinstance(body, dict) and str(doc) in PULL_DOCS:
                 docs[str(doc)] = body
+    # cr1#666, moved here by cr1#1638 (the page's own read is here): an
+    # `idle` Maintenance answer over a page that says `done` is a read that
+    # failed; the page keeps what it has.
+    if versions_dir and str((docs.get("status/maintenance") or {}).get("state") or "") == "idle":
+        page_m = next((f for d, f, _v in _saved_docs(versions_dir, "status") if d == "maintenance"), None)
+        if isinstance(page_m, dict) and str(page_m.get("state") or "") == "done":
+            # Review of #1664 (item 2, cr1#1489): the page keeps its copy, but a
+            # copy from before the hide goes back scrubbed, pinned to its version.
+            clean = scrub_chats_note(page_m)
+            if clean:
+                docs["status/maintenance"] = clean
+            else:
+                del docs["status/maintenance"]
     if not docs:
         return {"ok": False, "line": "No refresh answer was found in those files."}
     out = Path(out_dir)
@@ -12344,6 +12741,7 @@ __all__ = [
     "render_from_recipe", "RECIPE_MISMATCH_LINE", "RECIPE_UNREADABLE_LINE",
     "refresh_all", "refresh_part", "unpack_refresh", "REFRESH_READS", "REFRESH_PART_BUDGET",
     "REFRESH_DOC_LIMIT", "REFRESH_BATCH_BUDGET", "REFRESH_PLATE_FAILED_LINE", "REFRESH_DOCS",
+    "refresh_start", "REFRESH_BUSY_LINE", "REFRESH_BATCH_MAX",
     "prep_all", "inbox_all", "ONE_CALL_DOCS", "PULL_DOCS", "PREP_ALL_FAILED_LINE", "INBOX_FEED_FAILED_LINE",
     "PREP_FEED_FAILED_LINE", "ONE_CALL_KEEP_FAILED_LINE", "ONE_CALL_GONE_LINES",
 ]
@@ -12355,5 +12753,7 @@ if __name__ == "__main__":  # pragma: no cover - the chat's own render, cr1#925
         _sys.exit(_render_recipe_cli(_sys.argv[2:]))
     if len(_sys.argv) >= 2 and _sys.argv[1] == "unpack-refresh":  # cr1#1530
         _sys.exit(_unpack_refresh_cli(_sys.argv[2:]))
+    if len(_sys.argv) >= 2 and _sys.argv[1] == "refresh-start":  # cr1#1638
+        _sys.exit(_refresh_start_cli(_sys.argv[2:]))
     print(json.dumps({"ok": False, "line": "usage: cockpit_helpers.py render-recipe <answer.json> <out.html>"}))
     _sys.exit(2)

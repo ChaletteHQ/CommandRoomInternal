@@ -276,7 +276,11 @@ refusal that names a calendar tool that creates, changes or deletes an event
 (cr1#1539) is published once more with the `calendar_actions` entry (`all_new`
 when `sample` or the chat connector was named too), and the line is "Booking,
 moving and cancelling a meeting are not switched on for the Hub on this
-account." Any other refusal is said as it is and nothing is published.
+account." A refusal that names the file store (`assets`, cr1#1632) is
+published once more with the `assets` entry (`all_new` when another part
+was named too), and the line is "Attaching a file to a meeting is not
+switched on for the Hub on this account." Any other refusal is said as it is
+and nothing is published.
 
 Then record the address:
 
