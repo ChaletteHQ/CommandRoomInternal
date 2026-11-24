@@ -191,7 +191,7 @@ TASKS: Dict[str, Dict[str, Any]] = {
         ("feeds", (_CH + "feed_plate", _CH + "feed_projects", _CH + "feed_board", _CH + "feed_mine",
                    _CH + "feed_mail_rules", _CH + "feed_people", _CH + "feed_brief", _CH + "feed_review",
                    "friday_wrap_helpers:week_sections", _CH + "feed_week", _CH + "feed_settings",
-                   _CH + "maintenance_status")),
+                   _CH + "feed_stillyours", _CH + "maintenance_status")),
     ]),
     "morning-brief": {
         "opener": ("morning_brief_helpers:lateness", None), "lead": (),

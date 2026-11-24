@@ -781,6 +781,14 @@ def run_open_list_job(ws, *, apply: bool = False, fired_via=None) -> dict:
         return {"ran": True, "applied": False, "refused": None,
                 "rows": len(build_rows(ws))}
     out = rebuild(ws)
+    # cr1#1706: the "Still yours?" review's own document, at most once a
+    # workspace day, read from the list just written (never inside the plate).
+    try:
+        import still_yours
+
+        out["still_yours"] = still_yours.build_if_due(ws)
+    except Exception as exc:  # noqa: BLE001 - the list landed; the review keeps its last copy
+        out["still_yours"] = {"built": False, "error": type(exc).__name__}
     duration = int((_time.perf_counter() - t0) * 1000)
     from receipts import log_receipt
     log_receipt(ws, JOB_ID, receipt_type="pack_run", fired_via=via,

@@ -47,7 +47,7 @@ Its answer carries `token` and `next`. Then each next part with that token, `rea
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"run_id": "<step 3's run_id>", "stage": "<the answer's next>", "token": "<the plate's token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_all"}'
 ```
 
-A part that answers `not_finished` (it ran past its time and stopped itself, keeping nothing), or a `reads` or `review` call that fails, times out or answers `ok: false`, is NOT retried: go on to the next part, with the token its answer or the plate's carries; the `record` call names what did not finish on the light. The `record` answer is the run's: `token` and `parts` (what to pull next), `pages` (each document, whether it was built, its size and its seconds), `failed` (the documents left out), `counts` and `line`. This task's own light is one of its documents, so the finish lands with the feeds. A `plate` call that fails with no `token`, or a `record` call that fails with no `token`, is "When a call says no".
+A part that answers `not_finished` (it ran past its time and stopped itself, keeping nothing), or a `reads` or `review` call that fails, times out or answers `ok: false`, is NOT retried: go on to the next part, with the token its answer or the plate's carries; the `record` call names what did not finish on the light. The `record` answer is the run's: `token` and `parts` (what to pull next), `pages` (each document, whether it was built, its size and its seconds), `failed` (the documents left out), `counts` and `line`. This task's own light is one of its documents, so the finish lands with the feeds. A `record` call that fails or times out with no `token` is called once more, with the plate's token (review of #1733): on a run that has finished it answers that run's `parts` and light again, so the retry still publishes. A `plate` call, or that second `record` call, that fails with no `token` is "When a call says no".
 
 ## 5. Pull each part, one call per part
 
@@ -81,7 +81,7 @@ The final response is the answer's `line`, one line, and nothing else. A documen
 
 ## When a call says no
 
-The `record` call answering `ok: false` with a `token` (a part that did not finish, a document that did not update, or a `record` that answers `not_finished`, past its own time) still sends its parts as above: its light is the error light with its sentence, naming what did not land. A `plate` answer with no `token`, or a `plate` or `record` call that fails, writes the error light through this one call, then the receipt, and the final response is that line:
+The `record` call answering `ok: false` with a `token` (a part that did not finish, a document that did not update, or a `record` that answers `not_finished`, past its own time) still sends its parts as above: its light is the error light with its sentence, naming what did not land. A `plate` or `record` call that fails with no `token` (cr1#1727: the same words as step 4) writes the error light through this one call, then the receipt, and the final response is that line:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"leg": "refresh", "line": "<the answer's line, or the reason the call failed>", "run_id": "<step 3's run_id>", "state": "error", "stop_reason": "<the same line>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:status_doc"}'
@@ -186,6 +186,14 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 ```
 
 `set` the answer on `feed/settings` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
+**Then the Still yours? review (cr1#1706).** The review's own small document, read as its writers left it (it is built by Maintenance once a day and by the review's own presses, never here), one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_stillyours"}'
+```
+
+`set` the answer on `feed/stillyours` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
 **Then the Maintenance record (cr1#666).** When the Maintenance chat last finished, each job's last completion and how many hours it is behind, one read beside the data:
 

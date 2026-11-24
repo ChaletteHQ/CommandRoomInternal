@@ -2340,7 +2340,8 @@ def silence_candidates(workspace_root, *, now_iso=None, events=None,
     now_dt = _parse_now(now_iso)
     now_iso_s = now_dt.isoformat().replace("+00:00", "Z")
     rail_parks = rail_park_map(events)
-    out = {"park": [], "let_go": [], "n_open": len(opens), "n_protected": 0,
+    late_touch = _late_leg_touches(events)
+    out = {"park": [], "let_go": [], "review": [], "n_open": len(opens), "n_protected": 0,
            "n_undateable": 0, "n_dated": 0, "n_parked_already": 0,
            # R-1: of the let-go rows, how many were already resting. On a
            # seat that fires daily this is ALL of them after the first run.
@@ -2381,6 +2382,21 @@ def silence_candidates(workspace_root, *, now_iso=None, events=None,
             out["n_dated"] += 1
             if is_overdue(due, now_iso_s) or _due_within(due, now_dt, 7):
                 out["n_protected"] += 1
+            # cr1#1729: a LATE row nobody has touched for `park_days` is
+            # offered too, but only for the owner to answer: it goes on the
+            # `review` list, which the "Still yours?" review reads. Silence
+            # never rests, lets go or closes a dated row (the pass below
+            # writes nothing for this list).
+            if is_overdue(due, now_iso_s):
+                seen_late = _newer(activity.get(cid), late_touch.get(cid))
+                if seen_late is not None:
+                    quiet_late = int((now_dt - seen_late).total_seconds() // 86400)
+                    if quiet_late >= park_days:
+                        out["review"].append(
+                            {"commitment_id": cid, "title": str(d.get("title") or ""),
+                             "primary_thread_id": ev.get("primary_thread_id") or "",
+                             "days_quiet": quiet_late, "due": str(due),
+                             "last_activity": seen_late.isoformat().replace("+00:00", "Z")})
             continue
         seen = activity.get(cid)
         if seen is None:
@@ -2396,7 +2412,57 @@ def silence_candidates(workspace_root, *, now_iso=None, events=None,
         (out["let_go"] if quiet >= let_go_days else out["park"]).append(row)
     out["park"].sort(key=lambda r: r["days_quiet"], reverse=True)
     out["let_go"].sort(key=lambda r: r["days_quiet"], reverse=True)
+    out["review"].sort(key=lambda r: r["days_quiet"], reverse=True)
     return out
+
+
+def _newer(a, b):
+    """The later of two instants, either of which may be None."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a if a >= b else b
+
+
+def _late_leg_touches(events) -> dict:
+    """cr1#1729 review (NOTE 4): `{commitment id: newest instant}` of the
+    touches that count as movement for the late leg ONLY: a note the owner
+    added to the item (`commitment_state.add_commitment_note`, type `note`)
+    and the slipped block asking about it (`commitment_updated` with
+    `asked_set`). Elsewhere both stay bookkeeping (commitment_activity), so
+    no other surface's quiet clock changes. Never raises."""
+    from cru_match import _parse_ts
+
+    out: dict = {}
+    for e in events or []:
+        if not isinstance(e, dict):
+            continue
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        cid = str(d.get("commitment_id") or "")
+        if not cid:
+            continue
+        if not (e.get("type") == "note" or (e.get("type") == "commitment_updated" and d.get("asked_set"))):
+            continue
+        at = _parse_ts(e.get("ts"))
+        if at is not None:
+            out[cid] = _newer(out.get(cid), at)
+    return out
+
+
+def _review_wait(workspace_root, now_iso=None) -> int:
+    """cr1#1729 review (MUST 1): how many late items the "Still yours?"
+    review LISTS as late and quiet, after its wall, snoozes and Keep notes:
+    the count the line may claim. A review that cannot be read claims none."""
+    try:
+        import still_yours
+
+        rv = still_yours.review(workspace_root, now_iso)
+        if not rv.get("ok"):
+            return 0
+        return sum(1 for r in rv.get("rows") or [] if r.get("why") == "late_quiet")
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _parse_now(now_iso=None):
@@ -2425,6 +2491,15 @@ def let_go_wrap_line(n: int) -> str:
             "back on the resting list.")
 
 
+def review_wait_line(n: int) -> str:
+    """cr1#1729: the one line for late items silence offered to the owner."""
+    if n <= 0:
+        return ""
+    return (f"{n} late item{'' if n == 1 else 's'} nobody has touched in six weeks "
+            f"{'is' if n == 1 else 'are'} waiting for you in Still yours? on the Hub's Work tab; "
+            "nothing was closed.")
+
+
 def park_receipt_line(n: int) -> str:
     if n <= 0:
         return ""
@@ -2449,6 +2524,10 @@ def run_silence_pass(workspace_root, *, apply: bool = False, now_iso=None,
     out.update({"enabled": silence_age_out_enabled(workspace_root),
                 "n_parked": 0, "n_let_go": 0, "park_batch_id": None,
                 "let_go_batch_id": None, "receipt_line": "", "wrap_line": ""})
+    # cr1#1729: late rows silence offers wait for the owner in the review;
+    # nothing is written for them here. The count is the review's own list.
+    out["n_to_review"] = _review_wait(workspace_root, now_iso) if out.get("review") else 0
+    out["review_line"] = review_wait_line(out["n_to_review"])
     if not apply:
         return out
     if not out["enabled"]:
@@ -2954,6 +3033,10 @@ def run_exit_doors_job(workspace_root, *, apply: bool = False, now_iso=None,
         line = (leg or {}).get("receipt_line") if isinstance(leg, dict) else ""
         if line:
             out["receipt_lines"].append(line)
+    # cr1#1729 review: the late items waiting for the owner, said too.
+    rline = (out["silence"] or {}).get("review_line") if isinstance(out["silence"], dict) else ""
+    if rline:
+        out["receipt_lines"].append(rline)
     out["wrap_line"] = (out["silence"] or {}).get("wrap_line", "") \
         if isinstance(out["silence"], dict) else ""
     if apply:
@@ -2992,6 +3075,9 @@ def _log_job_receipt(workspace_root, out: dict, *, fired_via: str) -> None:
                 "n_parked": int(sil.get("n_parked") or 0),
                 "n_let_go": int(sil.get("n_let_go") or 0),
                 "silence_enabled": sil.get("enabled"),
+                # cr1#1729: late items waiting in the Still yours? review
+                "n_to_review": int(sil.get("n_to_review") or 0),
+                "review_line": sil.get("review_line") or "",
                 "proof_census": fact.get("proof_census"),
                 "receipt_lines": out.get("receipt_lines"),
                 "wrap_line": out.get("wrap_line"),

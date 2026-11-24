@@ -164,6 +164,108 @@ def fence(workspace_root) -> Optional[Dict[str, set]]:
         return None
 
 
+
+#: A name shorter than this is never matched on its own (an initial, a typo).
+HIDDEN_NAME_MIN = 2
+
+
+def _full_forms(rec: Dict[str, Any]) -> set:
+    """A person's whole names only (full name and aliases), lower case."""
+    out = set()
+    for v in [rec.get("canonical_name"), rec.get("name")] + list(rec.get("aliases") or []):
+        v = str(v or "").strip().lower()
+        if len(v) >= HIDDEN_NAME_MIN:
+            out.add(v)
+    return out
+
+
+def _name_forms(rec: Dict[str, Any]) -> set:
+    """Every way a person's record is written: the full name, the first name
+    and each alias, lower case."""
+    out = set()
+    for v in [rec.get("canonical_name"), rec.get("name")] + list(rec.get("aliases") or []):
+        v = str(v or "").strip().lower()
+        if len(v) >= HIDDEN_NAME_MIN:
+            out.add(v)
+            first = v.split()[0] if v.split() else ""
+            if len(first) >= HIDDEN_NAME_MIN:
+                out.add(first)
+    return out
+
+
+def hidden_people(workspace_root) -> Dict[str, Any]:
+    """The one rule for naming people on the Hub (cr1#1717, cr1#1721, cr1#1738):
+    nobody off limits (the fence's `off`) and nobody tied to the personal side
+    (`hub_meeting._tie_ids`) is ever named. Answers `{unread, ids, names,
+    all_names}`: `ids` the hidden people, `names` every way their records are
+    written (full name, first name, aliases, lower case), `all_names` the same
+    for everyone on file but the owner. `unread` is True when the ties or the
+    fence cannot be read: then nobody is named at all, so a caller hides every
+    name it knows (`all_names`)."""
+    root = Path(str(workspace_root))
+    shut = {"unread": True, "ids": frozenset(), "names": frozenset(), "all_names": frozenset(),
+            "full_names": frozenset(), "all_full": frozenset(), "shown_full": frozenset()}
+    try:
+        import hub_meeting
+        from personal_leak import people_records
+
+        people = people_records(root)
+        ties = hub_meeting._tie_ids(root)
+        wall = fence(root)
+    except Exception:  # noqa: BLE001 - fail closed: nobody is named
+        return shut
+    everyone: set = set()
+    # the owner, by the one resolver (G34), is never one of the hidden
+    try:
+        from primary_user import resolve_primary_user
+        owner = str(resolve_primary_user(root) or "")
+    except Exception:  # noqa: BLE001 - no owner known: nobody is set apart
+        owner = ""
+    everyone_full: set = set()
+    for rec in people or []:
+        if isinstance(rec, dict) and str(rec.get("id") or "") != owner:
+            everyone |= _name_forms(rec)
+            everyone_full |= _full_forms(rec)
+    shut["all_names"] = frozenset(everyone)
+    shut["all_full"] = frozenset(everyone_full)
+    if people is None or ties is None or wall is None:
+        return shut
+    ids = (frozenset(str(i) for i in ties) | frozenset(str(i) for i in (wall.get("off") or ()))) - {owner}
+    names: set = set()
+    full: set = set()
+    shown: set = set()
+    for rec in people:
+        if not isinstance(rec, dict) or str(rec.get("id") or "") == owner:
+            continue
+        if str(rec.get("id") or "") in ids:
+            names |= _name_forms(rec)
+            full |= _full_forms(rec)
+        else:
+            shown |= _full_forms(rec)
+    return {"unread": False, "ids": ids, "names": frozenset(names), "all_names": frozenset(everyone),
+            "full_names": frozenset(full), "all_full": frozenset(everyone_full),
+            # review of #1733 round 2, item 3: someone on file who is not hidden
+            "shown_full": frozenset(shown - full)}
+
+
+def name_is_hidden(text, hp: Dict[str, Any]) -> bool:
+    """True when `text` names someone `hidden_people` hides: the whole text,
+    or any word of it, is one of their names (a first name alone counts). On
+    an unread fence every known name is hidden."""
+    value = str(text or "").strip().lower()
+    if not value:
+        return False
+    # review of #1733 round 2, item 3: the whole name of someone on file who
+    # is not hidden ("Bo Sample") is theirs, never a hidden person's alias
+    if not hp.get("unread") and value in (hp.get("shown_full") or frozenset()):
+        return False
+    names = hp.get("all_names") if hp.get("unread") else hp.get("names")
+    names = names or frozenset()
+    if value in names:
+        return True
+    words = [w.strip(".,;:()'\"") for w in value.replace("-", " ").split()]
+    return any(w in names for w in words if len(w) >= HIDDEN_NAME_MIN)
+
 def _rules_readable(root: Path) -> bool:
     """Whether the mail rules store, where onboarding's off-limits answers
     live, can be told apart from an empty one: missing is empty (nobody was
@@ -318,6 +420,18 @@ def pile_sets(workspace_root, now_iso=None) -> Dict[str, Any]:
     return out
 
 
+def due_today(rows: List[Dict[str, Any]], today: str) -> Dict[str, Any]:
+    """cr1#1706: `{n, by_direction}`, the open-list rows due on `today` (the
+    workspace's own calendar day, as `open_list.query` answered it). An item
+    waiting on something is not counted, as the late count leaves it out.
+    Pure."""
+    import open_list as ol
+
+    due = [r for r in rows if str(r.get("due") or "") == str(today or "-") and not r.get("waiting_on")]
+    by_dir = {d: sum(1 for r in due if (r.get("direction") or "unowned") == d) for d in ol.DIRECTIONS}
+    return {"n": len(due), "by_direction": by_dir}
+
+
 def work_block(workspace_root, now_iso=None) -> Dict[str, Any]:
     """READ. The plate feed's optional `work` block: the open list's counts
     by direction and by age, and the ids each pile may hold. An older page
@@ -327,7 +441,8 @@ def work_block(workspace_root, now_iso=None) -> Dict[str, Any]:
 
     root = Path(str(workspace_root))
     now = ch._now(now_iso)
-    rows = ol.query(root, now_iso=_iso(now))["rows"]
+    listed = ol.query(root, now_iso=_iso(now))
+    rows = listed["rows"]
     counts = {"open": len(rows)}
     for d in ol.DIRECTIONS:
         counts[d] = sum(1 for r in rows if (r.get("direction") or "unowned") == d)
@@ -341,6 +456,9 @@ def work_block(workspace_root, now_iso=None) -> Dict[str, Any]:
         ages[sum(1 for edge in AGE_EDGES if age >= edge)] += 1
     sets = pile_sets(root, _iso(now))
     return {"ok": bool(sets["ok"]), "counts": counts, "ages": ages, "n_no_age": n_undated,
+            # cr1#1706: what the Work badge counts, in place of the lifetime
+            # late total: the listed items due on the workspace's own today.
+            "due_today": due_today(rows, listed["today"]),
             "piles": {k: sorted(sets["piles"][k]) for k in PILES} if sets["ok"] else {},
             # the review row each Looks done item is pressed through
             "looks": {cid: it["id"] for cid, it in sorted(sets["looks"].items())} if sets["ok"] else {},

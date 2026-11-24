@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.10.0 (2026-11-24)
+
+Late items now gather in one Still yours? review, where you keep, finish or drop each one with an Undo, instead of closing quietly. Today leads with your next real meeting, Record is laid out by day, and each section says how fresh it is. People who are off limits or personal stay off every Hub surface and every draft. A later Go only refreshes, and Maintenance lives in Settings. After updating, say "update my hub".
+
 ## v6.9.0 (2026-11-24)
 
 Every item on the Hub has one Move / Make menu: day buttons, move to another project, and make a to-do, a reminder or a meeting from a message, a person or a meeting, with anyone off limits always left out. Bring things in from a folder or an export through one door with a preview and Undo. The Hub's Refresh now finishes on a large book, so the page stays current through the day, and the Hub reads cleaner throughout. After updating, say "update my hub".

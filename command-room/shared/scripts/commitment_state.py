@@ -6878,6 +6878,87 @@ def reopen_commitment(
     return {"status": "reopened", "commitment_id": cid, "event": ev}
 
 
+def reopen_commitments_one_write(
+    workspace_root,
+    commitment_ids,
+    *,
+    reopened_by: str,
+    reason: str,
+    source_skill: str,
+    user_confirmed: bool = False,
+    extra_data: Optional[dict] = None,
+) -> list:
+    """N reopens in ONE locked write (cr1#1706, the reopen twin of cr1#1608's
+    `close_commitments_one_write`).
+
+    The "Still yours?" review's Undo of a 200-item project press reopened
+    one item per lock span, each reading the whole log, and took over a
+    minute on a long book. This takes the lock once, reads the index once and
+    decides each id in the order given exactly as `reopen_commitment` decides
+    one: an unknown id answers `{"status": "error", "error":
+    "CommitmentIdError"}`, an item that is not closed (or was already reopened
+    earlier in this same call) answers `already_open`, and every other id gets
+    the one `commitment_reopened` row `reopen_commitment` would write, with
+    the same fields, actor stamp and pointer. Every row lands in one append.
+    Answers one result per id, in order, shaped as `reopen_commitment`
+    answers. Nothing is written when no id reopens.
+
+    What it does NOT take that `reopen_commitment` does: `source_ref` and
+    `mint_now_iso` (every row gets the pointer minted for `source_skill` now,
+    as `reopen_commitment` mints one when none is passed) and `actor` (the
+    actor is `reopened_by`, stamped by `resolve_actor` exactly as there). A
+    caller that needs any of those per row uses `reopen_commitment`."""
+    pointer_fields = _close_pointer_fields(None, mint_for=source_skill, now_iso=None)
+    from event_types import ACTOR_KIND_KEY as _AKK
+    from event_types import resolve_actor as _resolve_actor
+    who, _actor_kind = _resolve_actor(reopened_by, source_skill=source_skill, user_confirmed=user_confirmed)
+    from pathlib import Path as _Path
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    out: list = []
+    evs: list = []
+    with events_writer_lock(events_path, holder=f"reopen_commitments:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        done: set = set()
+        for raw in commitment_ids or []:
+            try:
+                cid = normalize_commitment_id(raw, index)
+            except CommitmentIdError as exc:
+                out.append({"status": "error", "commitment_id": str(raw), "error": "CommitmentIdError",
+                            "detail": str(exc)[:200]})
+                continue
+            target = index["by_id"][cid]
+            if cid in done or not _currently_closed(index, cid, target.get("seq")):
+                out.append({"status": "already_open", "commitment_id": cid})
+                continue
+            done.add(cid)
+            ev = {
+                "type": "commitment_reopened",
+                "source_skill": source_skill,
+                "primary_thread_id": target.get("primary_thread_id") or "",
+                "data": {
+                    **(extra_data or {}),
+                    "commitment_id": cid,
+                    "reopened_by": who,
+                    _AKK: _actor_kind,
+                    "reason": (reason or "")[:200],
+                    **pointer_fields,
+                },
+            }
+            evs.append(ev)
+            out.append({"status": "reopened", "commitment_id": cid, "event": ev})
+        if evs:
+            from event_gate import append_event
+            landed = append_event(events_path, evs, holder=source_skill)
+            # the rows as stamped (`seq` included), in the order given
+            if isinstance(landed, list) and len(landed) == len(evs):
+                it = iter(landed)
+                for row in out:
+                    if row.get("status") == "reopened":
+                        row["event"] = next(it)
+    return out
+
+
 def promote_task_to_commitment(
     workspace_root,
     commitment_id,

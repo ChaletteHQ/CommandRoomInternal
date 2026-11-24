@@ -424,6 +424,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_review",  # cr1#779 - the Review tab's rows
     "cockpit_helpers:feed_week",  # cr1#780 - the Done tab's rows
     "cockpit_helpers:feed_settings",  # cr1#781 - the Settings tab: what was learned and every setting, read only
+    "cockpit_helpers:feed_stillyours",  # cr1#1706 - the Still yours? review's own document, as its writers left it, read only
     "usage_guide:guide",  # cr1#187 - the habits and phrases: the Settings section and the typed "how do I use this", read only
     "cockpit_helpers:feed_mine",  # cr1#662 - the Today page's priorities and reminders, read only
     "cockpit_helpers:feed_mail_rules",  # cr1#1020 - the Inbox tab's mail rules and dropped threads, read only
@@ -559,6 +560,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # both write nothing
     "bring_in:sources",
     "bring_in:plan",
+    "still_yours:review",  # cr1#1706 - the Still yours? review list (reads only)
     # KEEP THIS NAME LAST, directly above the closing brace.
     # `run_access1_test`'s B-1 removal proof anchors on the exact two-line
     # string `"workspace_root:find_workspace_root",` + `})` and puts the
@@ -796,6 +798,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "project_folder:create_project",  # cr1#1582 - see the writer table row
     "project_folder:make_project_folders",  # cr1#1582 - see the writer table row
     "project_folder:undo_create_project",  # cr1#1582 - see the writer table row
+    "still_yours:review_apply",  # cr1#1706 - the Still yours? review's presses and their Undos; see the writer table row
     # KEEP THIS NAME LAST, directly above the closing brace - the same anchor
     # discipline as `RUN_HELPER_ALLOWLIST`: removal proofs and later lanes
     # (ORCH2 adds entries) anchor on the two-line string

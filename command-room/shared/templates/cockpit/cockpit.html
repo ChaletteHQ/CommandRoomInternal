@@ -288,6 +288,9 @@
   details.recmore[open] > summary .rt { white-space: normal; overflow-wrap: anywhere; }
   details.recmore .sub { margin-top: 3px; }
   #weekmonth .recrow, details.secfold > .recrow { margin-top: 8px; }
+  /* cr1#1710: Record by day, each row's type before its title */
+  #weekmonth h3.recday { margin: 16px 0 2px; font-size: inherit; font-weight: 600; }
+  .recrow .title .rtype { flex: none; color: var(--ink-soft); }
   details.recmore > summary:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; border-radius: 4px; }
   .changed { margin-top: 14px; font-size: 13px; color: var(--ink-soft); border-top: 1px solid var(--rule); padding-top: 12px; }
   .changed:empty { display: none; }
@@ -359,6 +362,11 @@
   nav.tabs .count.info { display: none; }
   .workseg .count.info { display: none; }
   nav.tabs .count.late { color: var(--need-text); font-weight: 600; }
+  /* cr1#1732: how fresh each feed-built section is, beside its heading */
+  .asof { font-family: var(--font-sans); font-size: 12px; font-weight: 400; color: var(--ink-soft); margin-left: 8px; letter-spacing: 0; text-transform: none; white-space: nowrap; }
+  .asof.stale { color: var(--need-text); font-weight: 600; }
+  /* cr1#1706: the Work badge counts what is due today; seen, never hidden as an info count is */
+  nav.tabs .count.due { font-weight: 600; }
   nav.tabs .count:empty { display: none; }
   button.beat { background: none; border: 0; padding: 4px 2px; font-size: 13px; color: var(--ink-soft); display: flex; align-items: center; gap: 7px; text-align: left; max-width: 260px; min-width: 0; }
   button.beat:hover { color: var(--ink); }
@@ -902,7 +910,7 @@
   <button role="tab" aria-selected="false" aria-controls="tab-record" tabindex="-1" data-tab="record">Record</button>
   </nav>
   <span class="mastsp"></span>
-  <span class="beatrow"><button class="beat" id="beatBtn" type="button" aria-expanded="false" aria-controls="rundetails" title="How the day's run stands. Press for Run details: the lights and any note."><span class="beatdot" id="beatDot"></span><span class="dayline" id="dayline" aria-live="polite">Loading the day.</span></button><span class="beattip" id="beatTip" hidden></span><!-- cr1#1389, cr1#1645 item 11: shown only when the installed plugin is newer than this page; one chip inside the status line's row (review round 1: so it wraps with it at every width). The link opens a chat with "finish update" typed in; nothing runs until the owner sends it. --><span class="updwrap" id="updatebar" hidden><a class="updchip" id="finishUpdate" href="#" target="_blank" rel="noopener" title="Open a chat with finish update typed in. Nothing runs until you send it."><span id="updatetext"></span></a></span></span>
+  <span class="beatrow"><button class="beat" id="beatBtn" type="button" aria-expanded="false" aria-controls="rundetails" title="How the day's run stands. Press for Run details: each part's light."><span class="beatdot" id="beatDot"></span><span class="dayline" id="dayline" aria-live="polite">Loading the day.</span></button><span class="beattip" id="beatTip" hidden></span><!-- cr1#1730: the one status line offers Try again when the day could not update --><button class="act" id="retryBtn" type="button" hidden title="Refresh the day again">Try again</button><!-- cr1#1389, cr1#1645 item 11: shown only when the installed plugin is newer than this page; one chip inside the status line's row (review round 1: so it wraps with it at every width). The link opens a chat with "finish update" typed in; nothing runs until the owner sends it. --><span class="updwrap" id="updatebar" hidden><a class="updchip" id="finishUpdate" href="#" target="_blank" rel="noopener" title="Open a chat with finish update typed in. Nothing runs until you send it."><span id="updatetext"></span></a></span></span>
   <div class="ringwrap idle" id="ringwrap">
     <span class="halo"></span>
     <svg aria-hidden="true" focusable="false">
@@ -931,9 +939,6 @@
     <div class="lights" id="lights"></div>
     <!-- cr1#1645 item 7: the Inbox tab has one Check now; the full inbox read runs from here. -->
     <div class="parts runacts"><button class="act" data-part="inbox" disabled title="Run the whole inbox read again in the background">Run the inbox read</button></div>
-    <div class="maintnote" id="oknote" hidden></div>
-    <div class="maintnote" id="maintnote" hidden></div>
-    <div class="maintnote" id="holdernote" hidden></div>
   </div>
 </div>
 </details>
@@ -1018,7 +1023,7 @@
       <details class="addfold" id="todoFold"><summary title="Add a to-do">+ Add</summary><div class="addrow"><input class="when" id="todoText" placeholder="Add a to-do" aria-label="Add a to-do"><label class="prio-label" for="todoPrio">Importance</label><select class="prio" id="todoPrio" title="How much this matters; it sets no date"><option value="1">High</option><option value="2" selected>Medium</option><option value="3">Low</option></select><button class="act primary" id="todoAdd" type="button">Add</button></div></details>
       <div id="todos"></div>
     </div>
-    <div class="col hubblock">
+    <div class="col hubblock" id="remBlock">
       <div class="hhead"><h2>Reminders</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-sec-reminders" aria-label="About Reminders"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-sec-reminders" hidden>Things to bring back to you on the day you pick</span></span></div>
       <details class="addfold" id="remFold"><summary title="Add a reminder">+ Reminder</summary><div class="addrow"><input class="when" id="remText" placeholder="Remind me to" aria-label="Remind me to"><input class="when" id="remDate" type="date" aria-label="Day"><button class="act primary" id="remAdd" type="button">Add</button></div></details>
       <div id="reminders"></div>
@@ -1088,6 +1093,8 @@
 <div class="workview" id="tab-triage">
   <div class="tabtip"><h2 class="tabh" data-work="triage">Triage</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-triage" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-triage" hidden>Everything you have open: the big piles to clear in one press each, then the rest by what each one wants next.</span></span></div>
   <div id="wkplate"></div>
+  <!-- cr1#1706: the one-time Still yours? review of every open item over 30 days old (feed/stillyours) -->
+  <div id="wkstill"></div>
   <div id="wkpiles"></div>
   <div id="wklanes"></div>
 </div>
@@ -1170,6 +1177,12 @@
   <div class="quiet" id="settingsapply" hidden>Close Settings and press Apply.</div>
   <!-- cr1#1591 (Part A 11): the look, moved here from the top bar; it changes this browser only, at once, with no Apply. -->
   <div class="row lookrow"><div class="main"><div class="title">Look</div></div><div class="acts"><div class="viewseg" id="lookrow" role="group" aria-label="Look"><button type="button" data-look="day" aria-pressed="false">Day</button><button type="button" data-look="evening" aria-pressed="true">Evening</button></div></div></div>
+  <!-- cr1#1730: Maintenance speaks here only, and only when it needs the owner -->
+  <div class="col" id="maintset" hidden><h2 class="sethead">Maintenance</h2>
+    <div class="maintnote" id="oknote" hidden></div>
+    <div class="maintnote" id="maintnote" hidden></div>
+    <div class="maintnote" id="holdernote" hidden></div>
+  </div>
   <div id="settingshead" class="quiet"></div>
   <div id="settingsrows" class="col"></div>
   <div id="settingsguide" class="col"></div>
@@ -1782,11 +1795,31 @@
   // cr1#1585 review round 1: a few words as the row ("All OK", "Needs a look:
   // Inbound Mail", "3 wait for a yes"), the full answer behind the info mark.
   function okNote(eo) {
+    // cr1#1736: a record nothing has rewritten for a day says that instead.
+    var quiet = maintQuiet(S.status.maintenance);
+    if (quiet) return quietNote(quiet);
     if (!eo || typeof eo !== "object" || !eo.line) return [];
     var go = /^[a-z]+$/.test(String(eo.goto || "")) ? String(eo.goto) : "";
     var few = String(eo.short || "") || String(eo.line);
     return [{ kind: eo.ok ? "info" : "look", text: few, why: few === String(eo.line) ? "" : String(eo.line),
       act: go ? '<button class="act" type="button" data-goto="' + go + '">' + esc(String(eo.goto_label || "Open")) + "</button>" : "" }];
+  }
+  // cr1#1736: the Maintenance record is written by the runs it describes, so
+  // when every scheduled task stops, its last answer ("All OK") stays on the
+  // page. The page reads the record's age on its own clock, from the newer of
+  // the heartbeat's finish and the receipt's fire (a lost heartbeat is not a
+  // stop). Past MAINT_QUIET_HOURS (a once-a-day schedule plus margin, so a
+  // moved Maintenance never trips it) the answer becomes one row saying so.
+  var MAINT_QUIET_HOURS = 26;
+  function maintQuiet(mt) {
+    var t = Math.max.apply(null, [mt && mt.finished_at, mt && mt.fired_at].map(function (v) { var d = v ? new Date(v) : null; return d && !isNaN(d) ? d.getTime() : 0; }));
+    if (!t || Date.now() - t < MAINT_QUIET_HOURS * 3600000) return "";
+    var d = new Date(t);
+    return Date.now() - t >= 6 * 86400000 ? fmtDay(d) : (fmtWhen(d.toISOString()) || d.toISOString());
+  }
+  function quietNote(when) {
+    return [{ kind: "look", text: "Not updated since " + when,
+      why: "Maintenance last finished " + when + " and nothing has run since, so this page may be out of date. Is Claude open on the computer that runs your scheduled tasks?" }];
   }
   function drawNotes(id, rows) {
     var el = $(id); if (!el) return;
@@ -1821,6 +1854,11 @@
     // cr1#1590: its few words, the health check's sentence behind the icon.
     var mt = S.status.maintenance || {}, held = (mt.holder && mt.holder.line) || "", hshort = (mt.holder && mt.holder.short) || "";
     drawNotes("holdernote", held ? [{ kind: "info", text: hshort || held, why: hshort ? held : "" }] : []);
+    // cr1#1730: the Settings section shows only when one of its notes does.
+    // review of #1734: only for a finding, or an everything-OK answer that is not OK; never "All OK" or the holder alone
+    var eo = (S.status.maintenance || {}).everything_ok, ms = $("maintset");
+    // fix check of #1734: and when the record is stale (#1737's "Not updated since"), answer or no answer
+    if (ms) ms.hidden = !(said || maintQuiet(S.status.maintenance) || (eo && typeof eo === "object" && eo.line && eo.ok === false));
     var view = ringView(), anyRunning = view.anyRunning, allDone = view.allDone;
     var sb = $("startBtn"), wrap = $("ringwrap");
     // "starting" only while Start's own calls are in flight; a run that ended
@@ -1838,16 +1876,25 @@
     sb.textContent = view.label;
     // cr1#1284: the day's first press is the morning; every later one refreshes.
     var later = dayStarted();
-    sb.title = later ? "Refresh the day and prep your next meetings" : (anyRunning ? "Running. Press twice to start over." : "Start the day: switch every task on and run the morning");
+    sb.title = later ? "Refresh the day" : (anyRunning ? "Running. Press twice to start over." : "Start the day: switch every task on and run the morning");
     var parts = document.querySelectorAll("button[data-part]");
     for (var k = 0; k < parts.length; k++) {
       var p = parts[k].getAttribute("data-part");
       parts[k].disabled = !wired || SEQ.starting || (BLOCKS[p] || PARTS[p]).some(isRunning);
     }
     if (allDone) morningReady();
-    $("dayline").textContent = statusLine(view, said);
-    // cr1#1537: the masthead's dot beside that line.
-    if (typeof renderBeat === "function") renderBeat(view, said);
+    // cr1#1732: each feed-built heading says how fresh its feed is
+    renderAsOf();
+    var line = statusLine(view);
+    if ($("dayline").textContent !== line) $("dayline").textContent = line;
+    // cr1#1730: Try again beside a day that could not update, or changes that could not be saved.
+    var rb = $("retryBtn"); if (rb) { rb.hidden = !lineTrouble(line); rb.disabled = !wired || SEQ.starting;
+      rb.setAttribute("data-retry", line.indexOf(COULDNT_SAVE) === 0 ? "apply" : "refresh");
+      // fix check of #1734: the hover says what the press does (the day's first press runs the morning)
+      rb.setAttribute("title", line.indexOf(COULDNT_SAVE) === 0 ? "Send your changes to your book again"
+        : (dayStarted() ? "Refresh the day again" : "Start the day: switch every task on and run the morning")); }
+    // cr1#1537: the masthead's dot beside that line (cr1#1730: Maintenance's state is in Settings).
+    if (typeof renderBeat === "function") renderBeat(view, "");
   }
   // cr1#1285 item 1: the olive band is gone; what it said once a Start run
   // finished becomes the status line, and the ring settles after 9 seconds.
@@ -1861,40 +1908,123 @@
     SEQ.readyLine = "Morning ready" + (bits.length ? " · " + bits.join(" · ") : "") + ".";
     setTimeout(function () { SEQ.settled = true; renderLights(); }, 9000);
   }
-  // cr1#1285 item 3: the run's status in one line. The lights and any
-  // maintenance note sit under Run details, and the line is the press that
-  // opens it. cr1#1591: a few words, Go beside it: "Not run yet", "Ran 10:05
-  // AM", or what needs a look ("Inbox, Maintenance need a look"), which takes
-  // the place of the run's time; a run under way keeps its words before it.
-  function statusLine(view, maint) {
-    var legs = LEGS.map(function (l) { return { name: l[1], st: legState(l[0]) }; });
-    var pick = function (fn) { return legs.filter(fn).map(function (x) { return x.name; }); };
-    var run = pick(function (x) { return x.st.state === "running"; });
-    var look = pick(function (x) { return x.st.state === "error" || x.st.state === "no_answer"; });
-    // cr1#1394: a failing Hub Apply alone is named as itself; any finding of
-    // Maintenance's own (with or without the Apply) keeps Maintenance's words.
-    if (maint) {
-      // cr1#1464: a Hub inbox run that built no page is named as itself.
-      var found = maintFindings(S.status.maintenance), hub = [];
-      if (found.apply) hub.push("Hub Apply");
-      if (found.inbox) hub.push("Hub Inbox");
-      if (!found.own && hub.length) look = look.concat(hub); else look.push("Maintenance");
+  // cr1#1730: the run's status in one line, of three kinds: "Updated 2:15 PM"
+  // (the newest part that finished), "Updating…" while anything runs, or
+  // "Couldn't update: <reason>" (with Try again beside it) when a part failed
+  // after the last good update. Maintenance is not on it: its state is in
+  // Settings, and only when it needs the owner. The line is still the press
+  // that opens Run details.
+  var COULDNT_UPDATE = "Couldn't update: ";
+  var COULDNT_SAVE = "Couldn't save ";
+  // review of #1734: the reason as the line says it, never "Press Go" beside Try again
+  function lineReason(st, fallback) {
+    var r = String((st && st.line) || "").replace(/\s*Press Go[^.]*\.?$/i, "").replace(/\.$/, "").trim();
+    return r || fallback;
+  }
+  function legBad(st) { return st.state === "error" || st.state === "no_answer"; }
+  // The page is updated by the refresh: "Updated" is the last good refresh.
+  // "Couldn't update" when the newest refresh failed, or another part failed
+  // after the last good one (a tie counts as the failure). An Apply that
+  // failed after its last good run says how many changes it could not save
+  // (ruling of review of #1734, item 5). Maintenance is not on the line.
+  function statusLine(view) {
+    if (SEQ.starting || (view && view.anyRunning) || refreshArmed) return "Updating…";
+    var ap = legState("apply");
+    if (legBad(ap)) {
+      var m = /(\d+) of (\d+)/.exec(String(ap.line || ""));
+      return COULDNT_SAVE + (m ? m[1] + " of your changes" : "your changes");
     }
-    var trouble = look.length ? look.join(", ") + (look.length === 1 ? " needs" : " need") + " a look" : "";
-    // cr1#1635: what runs is a count ("Running 2"), never a list cut off
-    // mid-word; the names are behind the icon beside the line (renderBeat).
-    // A trouble comes first, so its mark sits beside the words that name it.
-    var busy = "";
-    if (SEQ.starting) busy = "Starting the morning";
-    else if (run.length) busy = "Running " + run.length;
-    else if (view.allDone && SEQ.readyLine && !SEQ.settled) busy = SEQ.readyLine;
-    if (busy) return trouble ? trouble + " · " + busy.replace(/\.$/, "") : busy;
-    if (trouble) return trouble;
-    var last = "";
-    legs.forEach(function (x) { if (x.st.state !== "idle" && x.st.at && (!last || after(x.st.at, last))) last = x.st.at; });
-    if (!last) return "Not run yet";
-    var at = new Date(last);
-    return "Ran " + (!isNaN(at) && dayKey(at) === dayKey(new Date()) ? fmtTime(last) : (fmtWhen(last) || last));
+    var r = legState("refresh"), ok = r.state === "done" && r.at ? r.at : "";
+    var worst = null;
+    LEGS.forEach(function (l) {
+      var st = legState(l[0]);
+      if (legBad(st) && (!ok || !after(ok, st.at)) && (!worst || after(st.at, worst.at))) worst = st;
+    });
+    if (worst) return COULDNT_UPDATE + lineReason(worst, "a part did not finish");
+    if (!ok) return "Not updated yet";
+    var at = new Date(ok);
+    return "Updated " + (!isNaN(at) && dayKey(at) === dayKey(new Date()) ? fmtTime(ok) : (fmtWhen(ok) || ok));
+  }
+  function lineTrouble(line) { return String(line || "").indexOf(COULDNT_UPDATE) === 0 || String(line || "").indexOf(COULDNT_SAVE) === 0; }
+
+  // cr1#1732: "as of 2:15 PM" beside each section heading a feed builds, read
+  // from that feed's own `generated_at`, on the workspace's clock (the zone the
+  // board, today or brief feed names; the browser's when none does). Another
+  // day says "yesterday" or its date. A section is marked (the warning colour,
+  // with ", not updated" for a screen reader) only when its own task ran after
+  // the feed was built and did not update it (ruling 106): the refresh for
+  // most, prep for Today's Next, the inbox run for Inbox; a task with no light
+  // marks nothing. A feed with no `generated_at` shows nothing. The headings
+  // are the page's own markup and are never written: the time is a span after
+  // each heading and its help icon, in the heading's row, set only when it
+  // changes.
+  var AS_OF = [
+    [".tcal .hhead h2", "today", "prep"], ["#tab-inbox h2.tabh", "inbox", "inbox"], ["#tab-week h2.tabh", "board", "refresh"],
+    ["#tab-people h2.tabh", "people", "refresh"], ['h2.tabh[data-work="triage"]', "plate", "refresh"], ['h2.tabh[data-work="plate"]', "plate", "refresh"],
+    ['h2.tabh[data-work="priorities"]', "projects", "refresh"], ['h2.tabh[data-work="projects"]', "projects", "refresh"],
+    ['h2.tabh[data-work="updates"]', "projects", "refresh"], ["#tab-record h2.tabh", "week", "refresh"]];
+  //: the run's own build time: a feed built this long before its task's light is that run's own
+  var AS_OF_RUN_SLACK_MS = 30 * 60 * 1000;
+  //: a feed dated past now (a skewed clock) is compared as now, at most this far ahead; its own time is shown
+  var AS_OF_FUTURE_MS = 5 * 60 * 1000;
+  function asOfFeed(k) { return k === "today" ? (S.todayFeed || S.today) : S[k]; }
+  function asOfAt(k, now) {
+    var f = asOfFeed(k), g = f && f.generated_at, t = g ? new Date(g) : null;
+    return t && !isNaN(t) ? t : null;
+  }
+  // ruling 106: the section's own task ran after its feed was built and did not update it
+  // (fix check of #1735: the light as the page reads it, so a run with no answer past its time counts as stopped)
+  function asOfStale(t, leg, now) {
+    var d = legState(leg), at = d && d.at ? new Date(d.at) : null;
+    if (!at || isNaN(at) || ["done", "error", "no_answer"].indexOf(String(d.state || "")) < 0) return false;
+    var seen = Math.min(t.getTime(), now.getTime() + AS_OF_FUTURE_MS);
+    return at.getTime() - seen > AS_OF_RUN_SLACK_MS;
+  }
+  function asOfZone() {
+    var tz = (S.board && S.board.tz) || (S.today && S.today.week && S.today.week.tz) || (S.brief && S.brief.tz) || null;
+    try { if (tz) new Intl.DateTimeFormat("en-US", { timeZone: tz }); return tz; } catch (e) { return null; }
+  }
+  function asOfDay(d, tz) {
+    try {
+      var v = {}; new Intl.DateTimeFormat("en-CA", tz ? { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" } : { year: "numeric", month: "2-digit", day: "2-digit" })
+        .formatToParts(d).forEach(function (x) { v[x.type] = x.value; });
+      return v.year + "-" + v.month + "-" + v.day;
+    } catch (e) { return dayKey(d); }
+  }
+  // whole calendar days from one YYYY-MM-DD to another, as the Record tab counts them
+  function asOfDays(from, to) {
+    var a = Date.UTC(+from.slice(0, 4), +from.slice(5, 7) - 1, +from.slice(8, 10)), b = Date.UTC(+to.slice(0, 4), +to.slice(5, 7) - 1, +to.slice(8, 10));
+    return isNaN(a) || isNaN(b) ? null : Math.round((b - a) / 86400000);
+  }
+  function asOfWords(t, now) {
+    var tz = asOfZone(), o = { hour: "numeric", minute: "2-digit" };
+    if (tz) o.timeZone = tz;
+    var time = t.toLocaleTimeString([], o), gap = asOfDays(asOfDay(t, tz), asOfDay(now, tz));
+    if (gap === 0) return time;
+    if (gap === 1) return "yesterday " + time;
+    var d = { weekday: "short", month: "short", day: "numeric" }; if (tz) d.timeZone = tz;
+    return t.toLocaleDateString([], d) + " " + time;
+  }
+  function renderAsOf() {
+    if (typeof document === "undefined" || !document.querySelector) return;
+    var now = new Date();
+    AS_OF.forEach(function (a) {
+      // the time sits after the heading and its help icon, in the heading's
+      // own row, never inside the heading: its words stay its owner's
+      var h = document.querySelector(a[0]), host = h && h.parentNode; if (!host || !host.querySelector) return;
+      var sp = host.querySelector(".asof"), t = asOfAt(a[1], now);
+      if (!t) { if (sp && !sp.hidden) { sp.hidden = true; sp.innerHTML = ""; sp.removeAttribute("data-said"); } return; }
+      if (!sp) { sp = document.createElement("span"); host.appendChild(sp); }
+      var stale = asOfStale(t, a[2], now), words = "as of " + asOfWords(t, now);
+      var said = (stale ? "stale:" : "") + words;
+      if (sp.getAttribute("data-said") !== said) {
+        sp.setAttribute("data-said", said);
+        sp.setAttribute("class", "asof" + (stale ? " stale" : ""));
+        sp.innerHTML = esc(words) + (stale ? '<span class="srlive">, not updated</span>' : "");
+        if (stale) sp.setAttribute("title", "Its task ran since and did not update this part"); else sp.removeAttribute("title");
+      }
+      if (sp.hidden) sp.hidden = false;
+    });
   }
 
   // ---- choices -------------------------------------------------------------
@@ -2138,8 +2268,9 @@
       var names = focus.slice(0, 2).map(function (r) { return showTitle(r.title, { empty: "" }); }).filter(Boolean);
       bits.push(focus.length + " to move today" + (names.length ? ": " + names.join(", ") + (focus.length > 2 ? " and more" : "") : ""));
     }
-    var ms = t && t.meetings ? t.meetings.filter(function (m) { return !isBlock(m); }) : [];
-    var bs = t && t.meetings ? t.meetings.filter(isBlock) : [];
+    // cr1#1707: real meetings only; an all-day row or time away is no meeting ahead
+    var ms = t && t.meetings ? t.meetings.filter(realMeeting) : [];
+    var bs = t && t.meetings ? t.meetings.filter(function (m) { return isBlock(m) && !isAway(m); }) : [];
     if (ms.length) {
       var prepped = ms.filter(function (m) { return m.prep; }).length;
       bits.push(ms.length + (ms.length === 1 ? " meeting" : " meetings") + " ahead" + (prepped ? ", " + (prepped === ms.length ? "all" : prepped) + " prepped" : ""));
@@ -2412,6 +2543,11 @@
   // the calendar read says has nobody else on it (the feed's `solo`) is the
   // owner's own time: shown as hours blocked, never counted as a meeting.
   function isBlock(m) { return !!(m && m.solo === true && !m.all_day); }
+  // cr1#1707: time away, the owner's or someone else's (the feed's `away`,
+  // #1641's rule), is no meeting: not on Today, nor in Am I ready.
+  function isAway(m) { return !!(m && (m.away === "own" || m.away === "other")); }
+  // cr1#1707: a real meeting is at a time, has someone else on it and is not time away
+  function realMeeting(m) { return !!(m && !m.all_day && !isBlock(m) && !isAway(m)); }
   function nMeetings(t) { return t ? (t.meetings || []).filter(function (m) { return !isBlock(m); }).length : 0; }
   function blockWords(bs) {
     // "3 hours blocked for <title>", or "for your own work" for several;
@@ -2430,7 +2566,7 @@
   }
   function dayClash(t, p, day, nowMs) {
     var now = nowMs == null ? Date.now() : nowMs;
-    var ms = (t && t.meetings ? t.meetings : []).filter(function (m) { return !m.all_day && !isBlock(m) && m.start && m.end && sentDay(m.start) === day; })
+    var ms = (t && t.meetings ? t.meetings : []).filter(function (m) { return realMeeting(m) && m.start && m.end && sentDay(m.start) === day; })   // cr1#1707: time away clashes with nothing
       .slice().sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
     // a clash already over is not one to know about
     var ahead = ms.filter(function (m) { return new Date(m.end).getTime() > now; });
@@ -2457,6 +2593,17 @@
       return v.year && v.month && v.day ? v.year + "-" + v.month + "-" + v.day : "";
     } catch (e) { return ""; }
   }
+  // review round 1 of #1740: the day an instant falls on in the workspace's
+  // zone (the today feed's week `tz`), so Today's "today" is the workspace's,
+  // whatever this browser's clock says; the browser's day where none is named.
+  function wsDayOf(t, iso) {
+    var tz = t && t.week ? t.week.tz : null, d = new Date(iso);
+    if (!tz || isNaN(d)) return sentDay(iso);
+    try {
+      var v = {}; new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(d).forEach(function (x) { v[x.type] = x.value; });
+      return v.year && v.month && v.day ? v.year + "-" + v.month + "-" + v.day : sentDay(iso);
+    } catch (e) { return sentDay(iso); }
+  }
   function sentModel(S) {
     var t = S.today, p = S.plate, day = hubDay();
     if (!t && !p) return null;
@@ -2469,7 +2616,8 @@
     if (!about) {
       // a plate from another day never names today's first thing to move
       var focus = p && p.focus && p.today === day ? liveOnly(p.focus) : [];
-      var ms = t && t.meetings ? t.meetings.filter(function (m) { return !m.all_day && sentDay(m.start) === day; }) : [];
+      // cr1#1707: time away is no meeting of the day
+      var ms = t && t.meetings ? t.meetings.filter(function (m) { return !m.all_day && !isAway(m) && sentDay(m.start) === day; }) : [];
       var bs = ms.filter(isBlock); ms = ms.filter(function (m) { return !isBlock(m); });
       // cr1#1290: the ranked lead (priority, key person, lead time) first
       var lead = p && p.lead && p.today === day ? liveOnly(p.lead) : [];
@@ -2915,6 +3063,8 @@
     if (errs.indexOf("reminders") >= 0) h += '<div class="quiet">Your reminders could not be read just now; the next refresh tries again.</div>';
     else if (m && num(m.n_reminders) > (m.reminders || []).length) h += '<div class="quiet">Showing ' + (m.reminders || []).length + " of " + num(m.n_reminders) + " reminders.</div>";
     $("reminders").innerHTML = h || (m ? "" : '<div class="quiet">Your reminders show after the next refresh.</div>');
+    // cr1#1707: an empty Reminders draws no heading; its "+ Reminder" stays, under the to-dos
+    var rb = $("remBlock"), rh = rb && rb.querySelector ? rb.querySelector(".hhead") : null; if (rh) rh.hidden = !!(m && !h);
   }
   // cr1#1591 Part A 6: a to-do is one line, its title and Done, with "High"
   // only when it is high. Its priority, its date and its last action
@@ -3523,7 +3673,13 @@
     // late). A run that could not read the book shows no count at all.
     var total = !(p && p.overdue_ok) ? 0 : olc ? num(olc.overdue) : rows.length + hidden;
     $("overdueCount").textContent = total;
-    $("lateCount").textContent = total ? total + " late" : "";
+    // cr1#1706: the Work badge counts what is due today (`work.due_today.n`),
+    // not the lifetime late total, which stays inside the tab (each tile's
+    // late count and the Late filter). An older feed with no `due_today`
+    // keeps the late badge, so the page never shows a 0 it cannot vouch for.
+    var dueT = p && p.work && p.work.due_today, badge = $("lateCount");
+    if (dueT && typeof dueT.n === "number" && isFinite(dueT.n)) { badge.textContent = dueT.n > 0 ? dueT.n + " due today" : ""; badge.className = "count due"; }
+    else { badge.textContent = total ? total + " late" : ""; badge.className = "count late"; }
     if (!p) { $("overduehead").textContent = isRunning("refresh") ? "Reading your commitments." : "Nothing read yet. Press Go."; $("overduerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
     // A feed written before this tab, or a book the run could not read: the
     // rows carry no direction, so the tab says that rather than sort them.
@@ -5185,7 +5341,7 @@
   function explainText(key) {
     if (key === "work_stream") return capW(aWord(word("work_stream"))) + " is one piece of ongoing work, such as a client or a deal. The " + word("thread", true) + " under it are its smaller pieces, each gathering its own meetings, emails and promises.";
     if (key === "review") return "To confirm holds what the system noticed and wants your yes or no on, such as a new person to put on file. Nothing changes until you answer.";
-    if (key === "go") return "Go starts your day: the first press each day runs the whole morning, your meeting briefs, your inbox, Apply and a refresh. Every later press reads your book again, so this page shows what changed, and writes a short brief for each of your next four meetings; it does not send your choices. Apply does that, then refreshes the day for you. Open a brief with Open prep on its row in Calendar.";
+    if (key === "go") return "Go starts your day: the first press each day runs the whole morning, your meeting briefs, your inbox, Apply and a refresh. Every later press reads your book again, so this page shows what changed; it does not send your choices or prep your meetings again. Apply does that, then refreshes the day for you. Open a brief with Open prep on its row in Calendar.";
     if (key === "apply") return "What you press here is saved as a choice. Apply sends your choices to your book, the record of your work; until then nothing changes.";
     return "";
   }
@@ -5423,6 +5579,14 @@
     $("peopleCount").textContent = pp && pp.people ? pp.people.length : 0;
     renderStarred();
     if (!pp) { $("peoplehead").textContent = isRunning("refresh") ? "Reading your people." : "No people read yet. Press Go."; $("peoplerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    // cr1#1738 (review of #1744): with who is off limits unread, the feed lists
+    // nobody and says why; the tab says that, with no count and no empty-book line.
+    if ((pp.errors || []).indexOf("fence") >= 0) {
+      $("peopleCount").textContent = "";
+      $("peoplehead").innerHTML = '<div class="quiet">' + esc(pp.line || "Your people could not be listed just now.") + "</div>";
+      $("peoplerows").innerHTML = notShownHtml(pp);
+      return;
+    }
     var q = String(S.peoplequery || "").toLowerCase();
     var rows = (pp.people || []).filter(function (p) { return !q || (p.name + " " + p.company + " " + p.role + " " + p.email).toLowerCase().indexOf(q) >= 0; });
     var nStar = (pp.people || []).filter(isStarred).length;
@@ -5441,7 +5605,22 @@
     // Coordinator ruling on cr1#1591: a search that finds no one, on a book larger
     // than the page holds, says where the rest are; no limit line otherwise.
     var held = (pp.people || []).length, more = num(pp.n_people) > held;
-    $("peoplerows").innerHTML = h || '<div class="quiet">' + (q ? (more ? "Nothing among the " + held + " most recent; ask in a chat for the rest." : "Nothing matches.") : "No people on file yet.") + "</div>";
+    $("peoplerows").innerHTML = (h || '<div class="quiet">' + (q ? (more ? "Nothing among the " + held + " most recent; ask in a chat for the rest." : "Nothing matches.") : "No people on file yet.") + "</div>")
+      + notShownHtml(pp);
+  }
+  // cr1#1738 (ruling 107): the people left off this tab, one folded line at its
+  // foot: names only, nothing open and no draft, and how to change it. With
+  // the fence unread, it says the list could not be checked.
+  var NOT_SHOWN_CHANGE = "To change who is off limits or personal, ask in a chat.";
+  var NOT_SHOWN_UNREAD = "Who is off limits or personal could not be checked just now, so nobody is listed here. The next refresh tries again.";
+  function notShownHtml(pp) {
+    var ns = pp && pp.not_shown;
+    if (!ns) return "";
+    if (ns.unread) return '<div class="quiet notshown">' + esc(NOT_SHOWN_UNREAD) + "</div>";
+    var names = Array.isArray(ns.names) ? ns.names : [], n = num(ns.n);
+    if (!n) return "";
+    return '<details class="secfold notshown"><summary>Not shown here (' + n + "): off limits or personal</summary>"
+      + '<div class="sub">' + names.map(esc).join(", ") + '</div><div class="quiet">' + esc(NOT_SHOWN_CHANGE) + "</div></details>";
   }
   function peopleFocus(pick) {
     // After a redraw, the keys go back where the owner was (no jump of the page).
@@ -5835,14 +6014,69 @@
     var rows = monthRows(m, f);
     if (!(m.items || []).length) h += '<div class="quiet">Nothing done yet this month.</div>';
     else if (!rows.length) h += '<div class="quiet">Nothing this month matches that filter.</div>';
-    rows.forEach(function (it) {
-      var k = byKey[it.kind] || {}, src = it.source || {};
+    // cr1#1710: grouped by day, newest first; each row says what it is
+    // (Meeting, Decision, Reply, Done, Applied) before its tidied title.
+    var lastDay = null, tz = recTz();
+    rows.slice().sort(function (a, b) { return String(b.ts || "").localeCompare(String(a.ts || "")); }).forEach(function (it) {
+      var k = byKey[it.kind] || {}, src = it.source || {}, day = recDayKey(it.ts, tz);
+      if (day !== lastDay) { h += '<h3 class="recday">' + esc(recDayWord(it.ts, tz) || "Undated") + "</h3>"; lastDay = day; }
       var who = (it.people || []).map(function (p) { return p.name; }).filter(Boolean).join(", ");
-      var sub = [esc(cap(k.one || it.kind)), esc(monthDay(it.ts)), src.word ? fromWords(src.word) : "",
-                 it.thread ? esc(it.thread) : "", who ? "with " + esc(who) : ""].filter(Boolean).join(" · ");
-      h += recRow("m:" + it.kind + ":" + it.ts + ":" + it.title, esc(showTitle(it.title)), "", [sub], "");
+      var sub = [src.word ? fromWords(src.word) : "", it.thread ? esc(it.thread) : "", who ? "with " + esc(who) : ""].filter(Boolean).join(" · ");
+      var type = REC_TYPES[it.kind] || cap(k.one || it.kind || "");
+      var rt = recTitle(it);
+      h += recRow("m:" + it.kind + ":" + it.ts + ":" + it.title, '<span class="rtype">' + esc(type) + "</span>" + (rt ? " " + esc(rt) : ""), "", [sub], "");
     });
     el.innerHTML = h;
+  }
+  // cr1#1710: what each Record row is, in one word, and its title: a meeting
+  // the page has on its calendar shows the calendar's title; anything else is
+  // tidied to sentence case (the meeting titles from notes come in lower case).
+  var REC_TYPES = { prep: "Meeting", decision: "Decision", sent: "Reply", closed: "Done", applied: "Applied" };
+  // review of #1739: two starts are one meeting when they are the same
+  // instant to the minute, whatever offset each was written with.
+  function recSameStart(a, b) {
+    if (!a || !b) return true;
+    var x = new Date(a).getTime(), y = new Date(b).getTime();
+    return isNaN(x) || isNaN(y) ? String(a) === String(b) : Math.floor(x / 60000) === Math.floor(y / 60000);
+  }
+  // A meeting on the page's calendar: today's and the ones already past.
+  function recCalMeeting(mid, start) {
+    var t = S.today || {}, all = (t.meetings || []).concat(Array.isArray(t.past) ? t.past : []);
+    for (var i = 0; i < all.length; i++) if (all[i] && all[i].meeting_id === mid && recSameStart(start, all[i].start)) return all[i];
+    return null;
+  }
+  // A meeting with no title says only what it is ("Meeting"), never twice.
+  function recTitle(it) {
+    if (it.kind === "prep") {
+      var m = it.meeting_id ? recCalMeeting(it.meeting_id, it.start) : null;
+      if (m && m.title) return showTitle(m.title, { kind: "meeting", empty: "" });
+      return showTitle(it.title, { kind: "meeting", empty: "" });
+    }
+    return showTitle(it.title, { kind: it.kind === "sent" ? "mail" : "item" });
+  }
+  // The workspace's zone for the day headings (review of #1739), else the browser's.
+  function recTz() {
+    var z = (S.board && S.board.tz) || (S.today && S.today.week && S.today.week.tz) || (S.brief && S.brief.tz) || null;
+    return typeof z === "string" && z ? z : null;
+  }
+  function recDayKey(iso, tz) {
+    var d = new Date(iso); if (isNaN(d)) return "";
+    try {
+      var o = { year: "numeric", month: "2-digit", day: "2-digit" }, v = {};
+      if (tz) o.timeZone = tz;
+      new Intl.DateTimeFormat("en-CA", o).formatToParts(d).forEach(function (x) { v[x.type] = x.value; });
+      return v.year && v.month && v.day ? v.year + "-" + v.month + "-" + v.day : "";
+    } catch (e) { return ""; }
+  }
+  // Today, Yesterday, then the date, each on the workspace's calendar.
+  function recDayWord(iso, tz) {
+    var k = recDayKey(iso, tz), now = recDayKey(new Date().toISOString(), tz);
+    if (!k) return "";
+    if (k === now) return "Today";
+    var p = now.split("-"), y = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2] - 1));
+    if (k === y.toISOString().slice(0, 10)) return "Yesterday";
+    try { var o = { weekday: "short", month: "short", day: "numeric" }; if (tz) o.timeZone = tz; return new Date(iso).toLocaleDateString([], o); }
+    catch (e) { return monthDay(iso); }
   }
   // cr1#1591 (Part A 10): a Record entry is one line, its title; what was
   // under it opens from More, in place. Its presses stay on the row.
@@ -6804,6 +7038,8 @@
     ev.preventDefault(); t.click();
   });
   $("startBtn").addEventListener("click", function () { goPress(); });
+  // cr1#1730: Try again is the same press as Go, shown only when the day could not update.
+  if ($("retryBtn")) $("retryBtn").addEventListener("click", function () { if ($("retryBtn").getAttribute("data-retry") === "apply") runPart("confirm"); else goPress(); });
 
   // ---- the new layout (cr1#1537) ----------------------------------------------
   // Owner ruling 2026-11-21: six tabs in one row, the calendar on the left of
@@ -7496,7 +7732,161 @@
   function wkOpenThread(tid, opener) { S.wk.thread = tid; S.wk.note = ""; renderWorkThread(); openDrawer("thread", opener); }
   function renderWork() {
     if (!S.wk) return;
-    renderTriage(); renderWorkPriorities(); renderWorkUpdates(); renderWorkThread();
+    renderTriage(); renderWorkPriorities(); renderWorkUpdates(); renderWorkThread(); renderStillYours();
+  }
+  // ---- Still yours? (cr1#1706) ----------------------------------------------
+  // A one-time review of every open item over the feed's `days` old: Keep,
+  // Done and Drop on each, and one press that drops every open item on a
+  // retired project. The list is the feed's (feed/stillyours, its own small
+  // doc, never inside feed/plate): the oldest rows it holds and the whole
+  // count, never worked out here. Each press saves one "stillyours" choice
+  // row; nothing is written until Apply, and the Apply run checks each
+  // press against the book again. An applied press offers its Undo, which
+  // sends the press's own `undo` tokens back unchanged. Opening the review
+  // asks for a fresh build once when the feed is from an earlier day or not
+  // built yet. A feed that is not there (an older seat) draws nothing.
+  var SY_NOT_BUILT_LINE = "The review has not been built yet. It is built when you open it and once a day; Apply builds it now.";
+  var SY_STALE_LINE = "This list was built on an earlier day. Opening it asks for a fresh one; your presses are checked again at Apply.";
+  // review round 1 of #1742: a list that could not be read says so, never an empty card
+  var SY_UNREAD_LINE = "Could not check this list today, so nothing is shown.";
+  // ...and why Apply shows a count after the review is opened
+  var SY_ASKED_LINE = "Opening this asked for a fresh list: that is the 1 waiting on Apply. Nothing in your book changes from it.";
+  var SY_DIR = { you_owe: "you owe", owed_to_you: "owed to you" };
+  var SY_LEFT = [["snoozed", "snoozed"], ["unconfirmed", "waiting for your yes"], ["held", "personal or off limits"]];
+  function syState() { if (!S.sy) S.sy = { open: false, confirm: "" }; return S.sy; }
+  // review round 1 of #1742 (NOTE 6): one fixed doc id per press on one list,
+  // as Tidy's are, so a second tap before the first comes back is the same row
+  function syStamp(f) { return String((f && (f.built_at || f.built_day)) || ""); }
+  function syDocId(kind, n) { return tdDocId(kind, syStamp(S.stillyours), n); }
+  // the newest press on one item (or project). A press made on an earlier
+  // list and since applied is that list's: the feed now holds its answer, so
+  // the row shows its own buttons again (NOTE 7), unless its Undo still waits.
+  function syPress(n) {
+    var best = null, now = syStamp(S.stillyours);
+    S.choices.forEach(function (c) {
+      if (c.kind !== "stillyours" || c.action === "undo" || c.action === "refresh" || String(c.n) !== String(n)) return;
+      var u = syUndoOf(c);
+      if (c.applied && String(c.sy_list || "") !== now && !(u && !u.applied)) return;
+      if (!best || (c.created_at || "") > (best.created_at || "")) best = c;
+    });
+    return best;
+  }
+  function syUndoOf(c) {
+    var best = null;
+    S.choices.forEach(function (u) { if (u.kind === "stillyours" && u.action === "undo" && u.press === c.id && (!best || (u.created_at || "") > (best.created_at || ""))) best = u; });
+    return best;
+  }
+  var SY_VERB = { keep: "Keep", done: "Done", drop: "Drop" };
+  // a press's state: waiting (with its Undo before Apply), applied (its line and its Undo), or put back
+  function syStateHtml(c) {
+    if (!c) return "";
+    var u = syUndoOf(c);
+    if (u) return '<span class="tag' + (u.applied ? "" : " wait") + '">' + esc(u.applied ? (u.result && u.result.line) || "Put back." : "put back waiting") + "</span>" + (u.applied ? "" : undoBtn(u));
+    if (!c.applied) return '<span class="tag wait">' + esc((SY_VERB[c.action] || "Drop all") + " waiting") + "</span>" + undoBtn(c);
+    var r = c.result || {}, back = Array.isArray(r.undo) && r.undo.length;
+    return '<span class="tag' + (r.outcome === "applied" ? " ok" : "") + '">' + esc(r.line || r.outcome || "Done.") + "</span>"
+      + (back ? '<button class="act undo" type="button" data-syundo="' + esc(c.id) + '" title="Put it back as it was">Undo</button>' : "");
+  }
+  function syRow(r) {
+    var c = syPress(r.id), age = num(r.age_days);
+    var sub = [age ? age + " days old" : "", SY_DIR[r.direction] || "", r.due ? "due " + fmtDate(r.due) : ""].filter(Boolean).join(" · ");
+    var acts = c ? syStateHtml(c) : ["keep", "done", "drop"].map(function (v) { return '<button class="act" type="button" data-sy="' + v + '" data-syid="' + esc(r.id) + '">' + SY_VERB[v] + "</button>"; }).join("");
+    return '<div class="row one" data-syrow="' + esc(r.id) + '"><div class="main"><div class="title"><span class="tt">' + esc(showTitle(r.title)) + '</span></div><div class="sub">' + esc(sub) + '</div></div><div class="acts">' + acts + "</div></div>";
+  }
+  function syCount(pj) { return num(pj.n_ids != null ? pj.n_ids : (pj.ids || []).length); }
+  // review round 1 of #1742 (MUST 2): what a project press leaves open, in words
+  function syLeft(pj) {
+    var l = pj.left_open || {}, n = 0, parts = [];
+    SY_LEFT.forEach(function (k) { var v = num(l[k[0]]); if (v) { n += v; parts.push(v + " " + k[1]); } });
+    return n ? n + (n === 1 ? " stays open" : " stay open") + " (" + parts.join(", ") + ")." : "";
+  }
+  function syProject(pj) {
+    var n = syCount(pj); if (!n) return "";
+    var c = syPress("p:" + pj.project_id), name = showTitle(pj.name, { empty: "a retired project" }), st = syState(), acts, ask = "";
+    if (c) acts = syStateHtml(c);
+    else if (st.confirm === pj.project_id) {
+      // the second step: nothing is saved until Drop them
+      acts = '<button class="act primary" type="button" data-sydropgo="' + esc(pj.project_id) + '">Drop them</button><button class="act" type="button" data-sydropno="' + esc(pj.project_id) + '">Cancel</button>';
+      ask = '<div class="sub syask">' + esc("Drop " + n + (n === 1 ? " open item" : " open items") + " on " + name + "?" + (syLeft(pj) ? " " + syLeft(pj) : "")) + "</div>";
+    } else acts = '<button class="act" type="button" data-sydrop="' + esc(pj.project_id) + '">Drop all ' + n + "</button>";
+    return '<div class="row one" data-syproj="' + esc(pj.project_id) + '"><div class="main"><div class="title"><span class="tt">' + esc("Everything open on " + name) + '</span></div><div class="sub">' + esc(n + (n === 1 ? " open item" : " open items") + " on a retired project") + "</div>" + ask + '</div><div class="acts">' + acts + "</div></div>";
+  }
+  // review round 2 of #1742 (MUST 1): an applied press whose item or project
+  // has left the list (the list rebuilt after Apply) keeps its line and its
+  // Undo, under "Just cleared", for as long as the page holds the choice
+  function syCleared(f) {
+    var listed = {};
+    ((f && f.ok !== false && f.rows) || []).forEach(function (r) { listed[String(r.id)] = true; });
+    ((f && f.ok !== false && f.projects) || []).forEach(function (pj) { if (syCount(pj) > 0) listed["p:" + pj.project_id] = true; });
+    var newest = {};
+    S.choices.forEach(function (c) {
+      if (c.kind !== "stillyours" || !c.applied || c.action === "undo" || c.action === "refresh" || listed[String(c.n)]) return;
+      if (!c.result || c.result.outcome !== "applied") return;
+      var k = String(c.n); if (!newest[k] || (c.created_at || "") > (newest[k].created_at || "")) newest[k] = c;
+    });
+    return Object.keys(newest).map(function (k) { return newest[k]; }).sort(function (a, b) { return (a.created_at || "") < (b.created_at || "") ? 1 : -1; });
+  }
+  function syClearedRow(c) {
+    var what = c.action === "drop_project" ? "Everything open on " + showTitle(c.title, { empty: "a retired project" }) : showTitle(c.title);
+    return '<div class="row one" data-sycleared="' + esc(c.n) + '"><div class="main"><div class="title"><span class="tt">' + esc(what) + '</span></div></div><div class="acts">' + syStateHtml(c) + "</div></div>";
+  }
+  function syRefreshWaiting() { return S.choices.some(function (c) { return c.kind === "stillyours" && c.action === "refresh" && !c.applied; }); }
+  function renderStillYours() {
+    var el = $("wkstill"); if (!el) return;
+    var f = S.stillyours, st = syState();
+    if (!f) { putHtml(el, ""); return; }
+    var line = f.ok === false ? (f.reason === "not_built" ? SY_NOT_BUILT_LINE : SY_UNREAD_LINE) : f.stale ? SY_STALE_LINE : "";
+    var rows = f.ok === false ? [] : f.rows || [], n = f.ok === false ? 0 : num(f.n);
+    var projects = f.ok === false ? [] : (f.projects || []).filter(function (pj) { return syCount(pj) > 0; });
+    var cleared = syCleared(f);
+    // nothing to review, nothing just cleared and nothing to say: no card
+    if (!n && !projects.length && !line && !cleared.length) { putHtml(el, ""); return; }
+    var h = '<details class="wkfold sy" id="syfold"' + (st.open ? " open" : "") + "><summary>Still yours?" + (n ? '<span class="count info">' + n + "</span>" : "") + "</summary>";
+    h += '<div class="quiet">' + esc("Open items over " + num(f.days || 30) + " days old. Keep, mark done or drop each; nothing is written until you press Apply.") + "</div>";
+    if (line) h += '<div class="quiet">' + esc(line) + "</div>";
+    if (syRefreshWaiting()) h += '<div class="quiet syasked">' + esc(SY_ASKED_LINE) + "</div>";
+    projects.forEach(function (pj) { h += syProject(pj); });
+    rows.forEach(function (r) { h += syRow(r); });
+    if (cleared.length) h += '<div class="wkhead"><h3>Just cleared</h3></div>' + cleared.map(syClearedRow).join("");
+    if (f.capped || n > rows.length) h += '<div class="quiet">' + esc("Showing the oldest " + rows.length + " of " + n + ". The rest show as these are cleared.") + "</div>";
+    if (num(f.n_held)) h += '<div class="quiet">' + esc(num(f.n_held) + (num(f.n_held) === 1 ? " more is" : " more are") + " personal or about someone you put off limits, so not listed here.") + "</div>";
+    putHtml(el, h + "</details>");
+  }
+  // opening the review asks for a fresh build when the list is old, not built
+  // or could not be read: once a day, across reloads (one doc id a day, and
+  // none while a refresh press already waits or was made today)
+  function syOpened() {
+    // review round 2 of #1742: the workspace's day, as Record's days are (#1739)
+    var f = S.stillyours, day = (typeof wsDayNow === "function" ? wsDayNow(S.today) : "") || hubDay();
+    if (!f || !(f.stale || f.ok === false)) return;
+    var id = tdDocId("syr", day, "refresh");
+    if (syRefreshWaiting() || S.choices.some(function (c) { return c.id === id; })) return;
+    saveChoice({ id: id, kind: "stillyours", src: "cockpit", n: "refresh", action: "refresh", title: "Still yours? review" });
+  }
+  function onStillYours(ev) {
+    var b = ev.target.closest && ev.target.closest("button[data-sy], button[data-sydrop], button[data-sydropgo], button[data-sydropno], button[data-syundo]"); if (!b) return false;
+    var st = syState(), list = syStamp(S.stillyours);
+    if (b.hasAttribute("data-sy")) {
+      var cid = b.getAttribute("data-syid"), r = ((S.stillyours || {}).rows || []).filter(function (x) { return String(x.id) === cid; })[0];
+      if (!r || syPress(cid)) return true;
+      saveChoice({ id: syDocId("sy", cid), kind: "stillyours", src: "cockpit", n: cid, action: b.getAttribute("data-sy"), commitment_id: cid, sy_list: list, title: r.title || "" });
+    } else if (b.hasAttribute("data-sydrop")) {
+      // MUST 2: the first press only asks; what stays open is said beside it
+      st.confirm = b.getAttribute("data-sydrop"); renderStillYours();
+    } else if (b.hasAttribute("data-sydropno")) {
+      st.confirm = ""; renderStillYours();
+    } else if (b.hasAttribute("data-sydropgo")) {
+      var pid = b.getAttribute("data-sydropgo"), pj = ((S.stillyours || {}).projects || []).filter(function (x) { return String(x.project_id) === pid; })[0];
+      st.confirm = "";
+      if (!pj || syPress("p:" + pid)) { renderStillYours(); return true; }
+      saveChoice({ id: syDocId("syp", pid), kind: "stillyours", src: "cockpit", n: "p:" + pid, action: "drop_project", project_id: pid, sy_list: list, title: pj.name || "" });
+    } else {
+      var id = b.getAttribute("data-syundo"), c = S.choices.filter(function (x) { return x.id === id; })[0];
+      if (!c || !c.result || !Array.isArray(c.result.undo) || syUndoOf(c)) return true;
+      // the press's own tokens, unchanged
+      saveChoice({ id: tdDocId("syu", "", c.id), kind: "stillyours", src: "cockpit", n: c.n, action: "undo", press: c.id, undo: c.result.undo, title: c.title || "" });
+    }
+    return true;
   }
   // ---- Tidy (cr1#1584) ------------------------------------------------------
   // The workspace's loose ends as piles at the foot of Work streams, each
@@ -7891,6 +8281,8 @@
   // supersedes cr1#1589's empty grid. Times are read the way every meeting
   // row reads them (`new Date(m.start)`, this viewer's clock).
   var NEXT_SHOW = 5, NEXT_JOIN_MS = 15 * 60000, NEXT_NOEND_MS = 60 * 60000;
+  // cr1#1707: all-day events are left out of Next (true would list them again)
+  var railKeepsAllDay = false;
   function meetKey(m) { return (m.start || "") + "|" + (m.title || ""); }
   // The rail, its lists and the next-meeting card are also redrawn by the
   // clock. A redraw that changes nothing leaves the nodes alone, so the focus
@@ -7906,11 +8298,15 @@
   // read as midnight in another zone.
   function railDay(iso) { var s = String(iso || ""); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : sentDay(s); }
   function railModel(t, nowMs) {
-    var day = hubDay(), ms = t && t.meetings ? t.meetings : [];
+    // review round 1 of #1740: today is the workspace's day, not this browser's
+    var day = wsDayNow(t) || hubDay(), ms = t && t.meetings ? t.meetings : [];
     var out = { ahead: [], past: [], all: [], rows: [], rest: [], anyToday: false };
     ms.forEach(function (m, i) {
       var it = { i: i, m: m };
+      // cr1#1707: an all-day row and time away are no meeting: off the list, and off Past
+      if (isAway(m)) return;
       if (m.all_day) {
+        if (!railKeepsAllDay) return;
         // cr1#1591 review: an all-day item is today's on its first day and on
         // every day it runs through (its end is the day after its last); one
         // over before today is not ahead. It sorts first on its own day.
@@ -7927,7 +8323,7 @@
       it.ended = m.end ? !isNaN(e) && e.getTime() <= nowMs : s.getTime() + NEXT_NOEND_MS <= nowMs;
       if (it.ended) { out.past.push(it); return; }
       it.now = s.getTime() <= nowMs;
-      it.today = it.now || sentDay(m.start) === day;
+      it.today = it.now || wsDayOf(t, m.start) === day;
       it.at = s.getTime();
       out.ahead.push(it);
     });
@@ -7982,11 +8378,14 @@
     var t = S.today, now = Date.now(), model = railModel(t, now), h = "";
     if (!t) h = '<div class="nxnone">' + (isRunning("prep") ? "Reading your calendar." : "No calendar read yet.") + "</div>";
     else {
-      // cr1#1589: an empty day is one short line, then the next meeting in
-      // the feed's window as a row of its own (its Join, its tag, its word),
-      // and the rest in the fold; Book a meeting sits under the list
-      var shown = model.anyToday ? model.rows : model.all.slice(0, 1), rest = model.anyToday ? model.rest : model.all.slice(1);
-      if (!model.anyToday) h = '<div class="nxnone">Nothing else today.</div>';
+      // cr1#1707: one meeting block. The big card holds the next real meeting
+      // (its Prep or Jump in); this list is the rest of today, the card's
+      // meeting never twice and no later day's: an empty rest is one short
+      // line. The rest past NEXT_SHOW fold, each opening its meeting.
+      var card = nextMeeting(t, now), ck = card ? meetKey(card) : null;
+      var todays = model.all.filter(function (it) { return it.today && meetKey(it.m) !== ck; });
+      var shown = todays.slice(0, NEXT_SHOW), rest = todays.slice(NEXT_SHOW);
+      if (!todays.length) h = '<div class="nxnone">Nothing else today.</div>';
       shown.forEach(function (it) { h += nextRow(it, now); });
       // cr1#1591 review: the rest fold open in place, each opening its meeting
       // (Join, Move, Cancel there), so a sixth meeting is never out of reach
@@ -8055,6 +8454,8 @@
     putHtml(el, h || '<div class="quiet">No meeting has ended yet.</div>');
     var pn = $("pastN"), pt = n ? " " + n : "";
     if (pn && pn.textContent !== pt) pn.textContent = pt;
+    // cr1#1707: no past meeting at all draws no Past meetings fold
+    var pg = $("pastgrp"); if (pg) pg.hidden = !n;
   }
   // A pressed meeting opens in the middle column, in place of Focus: its
   // time and place, then its own row as renderToday draws it (the prep state,
@@ -8720,24 +9121,49 @@
   function nextMeeting(t, nowMs) {
     var ms = t && t.meetings ? t.meetings : [];
     for (var i = 0; i < ms.length; i++) {
-      var m = ms[i]; if (m.all_day || isBlock(m) || !m.start) continue;
-      var e = new Date(m.end || m.start).getTime();
+      var m = ms[i]; if (!realMeeting(m) || !m.start) continue;
+      // cr1#1707: a meeting the calendar gave no end runs an hour, as the Next list reads it
+      var e = m.end ? new Date(m.end).getTime() : new Date(m.start).getTime() + NEXT_NOEND_MS;
       if (!isNaN(e) && e > nowMs) return m;
     }
     return null;
   }
+  // the first real meeting on the week's days still to start, past the feed's window
+  function laterMeeting(t, nowMs) {
+    var best = null;
+    ((t && t.week && Array.isArray(t.week.days)) ? t.week.days : []).forEach(function (d) {
+      (d.meetings || []).forEach(function (m) {
+        var s = m && m.start ? new Date(m.start).getTime() : NaN;
+        if (realMeeting(m) && !isNaN(s) && s > nowMs && (!best || s < new Date(best.start).getTime())) best = m;
+      });
+    });
+    return best;
+  }
   function renderNext() {
     var el = $("nextmeeting"); if (!el) return;
     var now = Date.now(), m = nextMeeting(S.today, now);
-    if (!m) { putHtml(el, ""); return; }
+    // review round 1 of #1740 (the coordinator's call): with no meeting in the
+    // feed's window (a day of time away only), one line names the next real
+    // meeting on the week, so Today is never bare
+    if (!m) { var nx = laterMeeting(S.today, now); putHtml(el, nx ? '<div class="quiet nextlater">Next meeting ' + esc(fmtWhen(nx.start)) + "</div>" : ""); return; }
     var mins = Math.round((new Date(m.start).getTime() - now) / 60000), big, small;
-    if (mins <= 0) { big = "Now"; small = "until " + fmtTime(m.end); }
-    else if (sentDay(m.start) !== hubDay()) { big = new Date(m.start).toLocaleDateString([], { weekday: "short" }); small = fmtTime(m.start); }
+    if (mins <= 0) { big = "Now"; small = m.end ? "until " + fmtTime(m.end) : "under way"; }
+    // review round 2 of #1740: under 90 minutes is a countdown, even across midnight
     else if (mins < 90) { big = String(mins); small = "min until " + fmtTime(m.start); }
+    else if (wsDayOf(S.today, m.start) !== (wsDayNow(S.today) || hubDay())) { big = new Date(m.start).toLocaleDateString([], { weekday: "short" }); small = fmtTime(m.start); }
     else { big = (mins / 60).toFixed(1); small = "hours until " + fmtTime(m.start); }
-    var ready = meetReady(m);
-    putHtml(el, '<div class="nextcard"><div class="cnt"><b>' + esc(big) + "</b><span>" + esc(small) + '</span></div><div class="nmain"><div class="nk">Next</div><div class="nt">' + esc(showTitle(m.title, { kind: "meeting" })) + "</div>"
-      + '<span class="tag' + (ready ? " ok" : "") + '">' + (ready ? "Prep ready" : "No prep yet") + '</span></div><button class="act primary" type="button" data-meet="' + esc(meetKey(m)) + '">' + (ready && m.prep_text ? "Open prep" : "Open") + "</button></div>");
+    var ready = meetReady(m), key = esc(meetKey(m)), personal = m.calendar === "personal";
+    // cr1#1707: the one meeting block. The card is the next real meeting with
+    // Join when it is about to start, Prep when its brief is here, else Jump
+    // in (never on a personal one: nothing about it is typed into a chat);
+    // its title opens the meeting. The Next list then holds the rest of today.
+    var link = typeof calLink === "function" ? calLink(m) : "", acts = "";
+    if (link && mins <= NEXT_JOIN_MS / 60000) acts += '<a class="act primary join" href="' + esc(link) + '" target="_blank" rel="noopener">Join</a>';
+    if (ready && m.prep_text) acts += '<button class="act' + (acts ? "" : " primary") + '" type="button" data-meet="' + key + '">Prep</button>';
+    else if (!personal && typeof jumpLink === "function") acts += jumpLink(jumpText("upcoming", m.title, typeof jumpWhen === "function" ? jumpWhen(m) : ""), "Jump in", acts ? "" : "primary");
+    else acts += '<button class="act' + (acts ? "" : " primary") + '" type="button" data-meet="' + key + '">Open</button>';
+    putHtml(el, '<div class="nextcard"><div class="cnt"><b>' + esc(big) + "</b><span>" + esc(small) + '</span></div><div class="nmain"><div class="nk">Next</div><button class="nt pm" type="button" data-meet="' + key + '" title="Open this meeting">' + esc(showTitle(m.title, { kind: "meeting" })) + "</button>"
+      + '<span class="tag' + (ready ? " ok" : "") + '">' + (ready ? "Prep ready" : "No prep yet") + '</span></div><div class="acts">' + acts + "</div></div>");
   }
   // Needs you now: at most three, from the lead the page already reads for
   // its day sentence (`plate.lead`, else `plate.focus`, for today's plate
@@ -8893,14 +9319,15 @@
   // ---- the masthead's status line ----
   function renderBeat(view, maint) {
     var dot = $("beatDot"); if (!dot) return;
-    var bad = !!maint || LEGS.some(function (l) { var s = legState(l[0]).state; return s === "error" || s === "no_answer"; });
+    // review of #1734: the mark says what the line says
+    var bad = lineTrouble($("dayline") ? $("dayline").textContent : "");
     dot.className = "beatdot" + (bad ? " bad" : "") + (view && view.anyRunning ? " live" : "");
     // cr1#1591: trouble shows the needs-a-look mark beside the words that name
     // it (the words are its name for a screen reader); otherwise the dot.
     if (dot.getAttribute("data-mark") !== (bad ? "look" : "dot")) { dot.innerHTML = bad ? NOTE_MARKS.look : ""; dot.setAttribute("data-mark", bad ? "look" : "dot"); }
     // a long line wraps to two where the masthead is tight; its hover says all of it
     var b = $("beatBtn"), line = $("dayline");
-    if (b && line && b.setAttribute) b.setAttribute("title", String(line.textContent || "").replace(/\.$/, "") + ". Press for Run details: the lights and any note.");
+    if (b && line && b.setAttribute) b.setAttribute("title", String(line.textContent || "").replace(/\.$/, "") + ". Press for Run details: each part's light.");
     // cr1#1635: what is running, by name, behind the icon beside the line;
     // drawn again only when it changes, so an open popup stays open.
     var tipEl = $("beatTip");
@@ -8995,6 +9422,9 @@
     if ((ev.key === "Enter" || ev.key === " ") && (t.hasAttribute("data-wkopen") || t.hasAttribute("data-wkthread") || t.hasAttribute("data-cfind"))) { ev.preventDefault(); t.click(); }
   });
   $("tab-work").addEventListener("toggle", function (ev) { var k = ev.target.getAttribute && ev.target.getAttribute("data-wkfold"); if (k) S.wk.pileOpen[k] = !!ev.target.open; }, true);
+  // cr1#1706: the Still yours? fold stays as the owner left it; opening it asks for a fresh list once
+  $("tab-work").addEventListener("toggle", function (ev) { if (ev.target && ev.target.id === "syfold") { syState().open = !!ev.target.open; if (ev.target.open) syOpened(); } }, true);
+  $("tab-work").addEventListener("click", function (ev) { onStillYours(ev); });
   // cr1#1584: a Tidy fold stays as the owner left it, and the work stream he picked stays picked.
   $("tab-work").addEventListener("toggle", function (ev) { var k = ev.target.getAttribute && ev.target.getAttribute("data-tdfold"); if (k) tdState().open[k] = !!ev.target.open; }, true);
   $("tab-work").addEventListener("change", function (ev) { var sel = ev.target.closest && ev.target.closest("select[data-tdstream]"); if (sel) { tdState().stream = String(sel.value || ""); renderTidy(); } });
@@ -10329,7 +10759,8 @@
   function readyRows() {
     var out = [];
     plWeekDays().forEach(function (d) {
-      (d.meetings || []).forEach(function (m) { if (m && !m.all_day && !isBlock(m)) out.push({ m: m, d: d, key: (m.event_id || meetKey(m)) + "@" + d.date }); });
+      // cr1#1707: nor time away, the owner's or a colleague's ("<Name> OOO" at six in the evening)
+      (d.meetings || []).forEach(function (m) { if (realMeeting(m)) out.push({ m: m, d: d, key: (m.event_id || meetKey(m)) + "@" + d.date }); });
     });
     return out;
   }
@@ -11086,13 +11517,13 @@
   function refreshDay() {
     // The refresh never reads the book while Apply writes it (cr1#679): with
     // Apply running it waits on Apply, the same arm Apply's own press sets.
+    // cr1#1730: a later press refreshes only; Prep keeps its own schedule.
     var legs = [], stamp = nowIso();
-    if (!isRunning("prep")) legs.push("prep");
     // A live arm already owns the next refresh: firing one here too would
     // run it twice, or ahead of an Apply that has not lit yet (review).
     var applying = isRunning("apply"), waits = applying && !refreshArmed;
     if (!applying && !refreshArmed && !isRunning("refresh")) legs.push("refresh");
-    if (!legs.length && !waits) { banner("Already refreshing. The lights say when it is done."); return; }
+    if (!legs.length && !waits) { banner("Already updating. The line at the top says when it is done."); return; }
     if (!SEQ.startedAt || !SEQ.full || runProgress() === LEGS.length) beginRun(stamp, false);
     if (waits) armRefreshAfterApply();
     legs.forEach(function (leg, i) { setTimeout(function () { fireLeg(leg, stamp).then(function () { banner("Started " + leg + "."); }, function (e) { failLeg(leg, e); banner(errLine(e, "Could not start " + leg), true, errText(e)); }); }, i * 250); });
@@ -11131,7 +11562,8 @@
     }).then(function () {
       // The two chats answer for themselves: a failure there never marks the
       // Hub's own lights as not started (cr1#679).
-      chatsToFire().forEach(function (c) { fire(c[1]).then(null, function (e) { banner(errLine(e, c[0] + " did not start"), true, errText(e)); }); });
+      // cr1#1730: Maintenance never speaks in the banner; Settings says when it needs the owner.
+      chatsToFire().forEach(function (c) { fire(c[1]).then(null, function (e) { if (c[0] !== "Maintenance") banner(errLine(e, c[0] + " did not start"), true, errText(e)); }); });
       armRefreshAfterApply();
       // The three that run together come on a beat apart, so the eye can follow.
       return Promise.all(["prep", "inbox", "apply"].map(function (leg, i) {
@@ -12279,6 +12711,8 @@
       db.doc("feed/mail_rules").onSnapshot(function (snap) { S.mailrules = snap.exists ? snap.data() : null; liveWallMoved(); renderInbox(); liveKick(); }, onErr);
       db.doc("feed/people").onSnapshot(function (snap) { S.people = snap.exists ? snap.data() : null; renderPeople(); renderInboxLive(); }, onErr);
       db.doc("feed/board").onSnapshot(function (snap) { S.board = snap.exists ? snap.data() : null; renderBoard(); if (typeof renderCalParts === "function") renderCalParts(); }, onErr);
+      // cr1#1706: the Still yours? review's own small doc
+      db.doc("feed/stillyours").onSnapshot(function (snap) { S.stillyours = snap.exists ? snap.data() : null; if (S.wk) renderStillYours(); }, onErr);
       db.doc("config/refresh_arm").onSnapshot(function (snap) { setArm(snap.exists ? snap.data() : null); maybeFireRefresh(); }, onErr);
       // cr1#1017: the page's own measure, the last seven days of it; this load is one open.
       var since = new Date(); since.setDate(since.getDate() - MEASURE_DAYS);

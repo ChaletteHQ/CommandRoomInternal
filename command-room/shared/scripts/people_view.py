@@ -374,7 +374,8 @@ def _added_lately(workspace_root, today) -> Dict[str, int]:
     return out
 
 
-def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
+def people(workspace_root, *, now_iso: Optional[str] = None,
+           hidden_ids: Optional[set] = None) -> Dict[str, Any]:
     """READ. `{generated_at, people: [...], starred: [ids], n_people}`: every
     person on file but the owner, the starred first, then anyone added in the
     last `NEW_DAYS` days (newest first), then most recently in touch first,
@@ -431,9 +432,17 @@ def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
     except Exception:  # noqa: BLE001 - no addresses on file leaves the check to the email itself
         own = set()
     out = []
+    # cr1#1738 (ruling 107): someone off limits or personally tied is left out
+    # before the sort and the cap, so the count is of the people shown; their
+    # names alone travel in `not_shown`, with nothing open and no draft.
+    hid = {str(x) for x in (hidden_ids or ())}
+    not_shown: List[str] = []
     for pid, card in cards.items():
         who = card.get("who") or {}
         if not who.get("name"):
+            continue
+        if str(pid) in hid:
+            not_shown.append(str(who["name"])[:120])
             continue
         mine = opens.get(pid) or {}
         items = sorted(mine.get("open") or [],
@@ -481,7 +490,8 @@ def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
                             r["name"].lower()))
     return {"generated_at": _iso(_now(now_iso)), "people": [lean_row(r) for r in out[:PEOPLE_CAP]], "n_people": len(out),
             "starred": [s for s in stars if s in cards], "errors": errors,
-            "counted_from_log": bool(cards_from_log or open_from_log)}
+            "counted_from_log": bool(cards_from_log or open_from_log),
+            **({"not_shown": {"n": len(not_shown), "names": sorted(not_shown, key=str.lower)}} if hidden_ids is not None else {})}
 
 
 __all__ = ["STARS_REL", "VERBS", "load_stars", "starred_ids", "star", "unstar",

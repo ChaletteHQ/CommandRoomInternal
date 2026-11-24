@@ -2511,6 +2511,72 @@ def _own_time_away(m: Dict[str, Any], title: str, names: Dict[str, List[str]], *
     return not _away_names_someone(title, m, names, leading=_away_leading_applies(m, stay))
 
 
+def _away_kind(m: Dict[str, Any], title: str, names: Any, *, long: bool) -> Optional[str]:
+    """cr1#1707: whose time away an event is, so Today and Am I ready leave
+    it out: "own" (the owner's own, by #1641's rule), "other" (someone
+    else's), else None (a meeting). The calendar's own out-of-office mark
+    makes any event time away. A time-away word does on an all-day event or
+    one of WEEK_AWAY_TIMED_HOURS or more (`long`); on a shorter one, only a
+    colleague's own entry ("<Name> OOO" at six in the evening, a name on
+    file or on the event, straight before the word) is, and only when the
+    owner does not organise it; never a meeting that only says the word
+    ("Sample PTO policy review"), nor one he organises with that colleague
+    on it ("<Name> - PTO handover"), nor one that names them elsewhere
+    ("<Name> / <Name>: team away day planning"). `names` is the names map,
+    or a callable that reads it (read only when needed)."""
+    title = str(title or "")
+    cal = _away_calendar_says(m)
+    if not (cal or WEEK_AWAY_RE.search(_away_title(title))):
+        return None
+    got = names() if callable(names) else names
+    if cal or long:
+        return "own" if _own_time_away(m, title, got) else "other"
+    plain = _away_title(title)
+    if not WEEK_AWAY_COLLEAGUE_RE.search(plain):
+        return None
+    # review round 1 of #1740: a meeting the owner organises is his meeting,
+    # whoever it names
+    if m.get("organiser") is True:
+        return None
+    # no guess from a capitalised word before the time-away word here: a
+    # short event is a meeting unless a person on file or on it is named
+    # straight before that word
+    return "other" if _away_name_before(plain, m, got) else None
+
+
+def _away_name_before(title: str, m: Dict[str, Any], names: Dict[str, List[str]]) -> bool:
+    """cr1#1707 (review round 1 of #1740): a person other than the owner, on
+    file or on the event, is named straight before the title's first
+    colleague time-away word ("Dustin OOO", "Dustin (OOO) - back Monday",
+    "Dustin Sample - PTO"): only separators stand between them. The owner's
+    own names never count. Review round 2 of #1740: and the word ends the
+    title or a separator follows it ("Dustin OOO (half day)"); a plain word
+    after it makes it a meeting about leave ("Dustin - PTO handover",
+    "Rio - away from desk", "Dustin away day prep")."""
+    hit = WEEK_AWAY_COLLEAGUE_RE.search(title)
+    if not hit:
+        return False
+    if not re.match(r"\s*(?:$|[(\-\u2013\u2014:),\[|/])", title[hit.end():]):
+        return False
+    lead = re.sub(r"[\s\-\u2013\u2014:|/(\[]+$", "", title[:hit.start()])
+    if not lead:
+        return False
+    attendees = m.get("attendees") if isinstance(m.get("attendees"), list) else []
+    own = {f.casefold() for n in names.get("own") or [] for f in _name_forms(n)}
+    for a in attendees:
+        if isinstance(a, dict) and a.get("self") is True:
+            own |= {f.casefold() for f in _name_forms(str(a.get("name") or ""))}
+    theirs = list(names.get("others") or []) + [str(a.get("name") or "") for a in attendees
+                                                 if isinstance(a, dict) and a.get("self") is not True]
+    for n in theirs:
+        for f in _name_forms(n):
+            if len(f) < 2 or f.casefold() in own or f.casefold() in WEEK_AWAY_LEAD_WORDS:
+                continue
+            if re.search(r"(?i)(?<!\w)" + re.escape(f) + r"$", lead):
+                return True
+    return False
+
+
 def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -> Dict[str, Any]:
     """The seven days' meetings for the Week view, from the same calendar
     read as the Today list (the run reads seven days for it). Each day: its
@@ -2540,12 +2606,15 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
     # and only when some event might be time away.
     names_box: List[Dict[str, List[str]]] = []
 
+    def names_now() -> Dict[str, List[str]]:
+        if not names_box:
+            names_box.append(_away_names(workspace_root))
+        return names_box[0]
+
     def own_away(ev: Dict[str, Any], title: str, personal_stay: bool = False) -> bool:
         if not (personal_stay or _away_calendar_says(ev) or WEEK_AWAY_RE.search(title)):
             return False
-        if not names_box:
-            names_box.append(_away_names(workspace_root))
-        return _own_time_away(ev, title, names_box[0], personal_stay=personal_stay)
+        return _own_time_away(ev, title, names_now(), personal_stay=personal_stay)
 
     for m in meetings or []:
         if not isinstance(m, dict):
@@ -2573,10 +2642,13 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
                 for d in span:
                     away.setdefault(d, title or "time away")
                 continue
+            kind = _away_kind(m, title, names_now, long=True)
             for d in span:
                 by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
                                   "start": None, "end": None, "all_day": True,
                                   "personal": personal, "clash": False, "solo": False})
+                if kind:
+                    by_day[d][-1]["away"] = kind   # cr1#1707
             continue
         start = _parse(m.get("start"))
         if start is None:
@@ -2607,9 +2679,12 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
             for d in span:
                 by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
                                   "start": None, "end": None, "all_day": True,
-                                  "personal": personal, "clash": False, "solo": False})
+                                  "personal": personal, "clash": False, "solo": False, "away": "other"})
             continue
         extras = _meeting_extras(m, wall)
+        # cr1#1707: a shorter event that is time away all the same (the
+        # calendar's own mark, a colleague's "<Name> OOO") is no meeting
+        away_kind = _away_kind(m, title, names_now, long=False)
         # cr1#1541: where it is, as a Today row carries it, only when the read
         # gave it; for a personal event only inside the Today list's own window
         # (the next UPCOMING_HOURS), so the Week shows no more of the personal
@@ -2622,6 +2697,8 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
                    "start": _iso(start), "end": _iso(end), "all_day": False,
                    "personal": personal, "clash": False, "solo": _no_one_else(m)}
             row.update(extras)
+            if away_kind:
+                row["away"] = away_kind
             if place:
                 row["place"] = place
             by_day[d].append(row)
@@ -2993,6 +3070,14 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
     ended: set = set()
     wall = _meeting_wall(workspace_root)
     day_start = None
+    # cr1#1707: the names a time-away title is checked against, read once and only when needed
+    names_box: List[Dict[str, List[str]]] = []
+
+    def names_now() -> Dict[str, List[str]]:
+        if not names_box:
+            names_box.append(_away_names(workspace_root))
+        return names_box[0]
+
     for m in meetings or []:
         if not isinstance(m, dict):
             continue
@@ -3045,6 +3130,12 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
         })
         if not all_day:
             rows[-1].update(_meeting_extras(m, wall))
+        # cr1#1707: time away, the owner's or someone else's, is no meeting:
+        # Today's big card, its Next list and the day's count leave it out
+        kind = _away_kind(m, rows[-1]["title"], names_now,
+                          long=all_day or end - start >= _dt.timedelta(hours=WEEK_AWAY_TIMED_HOURS))
+        if kind:
+            rows[-1]["away"] = kind
     ids = [r["meeting_id"] for r in rows if r["meeting_id"]]
     # cr1#1632: ONE read of the log, for the receipts and the saved meeting
     # pages both (the one-call refresh reads it once, HUBONECALL1).
@@ -3226,7 +3317,8 @@ def _person_names(workspace_root) -> Dict[str, str]:
             for p in entities_collection(ent, "people") if isinstance(p, dict) and p.get("id")}
 
 
-def _row_origin(ev: Dict[str, Any], names: Dict[str, str], owner: str, tzinfo, ties=frozenset()) -> Dict[str, Any]:
+def _row_origin(ev: Dict[str, Any], names: Dict[str, str], owner: str, tzinfo, ties=frozenset(),
+                hp: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """`{source, date, captured, who, line, paraphrase}` for one commitment,
     from its own record. `who` reads by direction, because no record says who
     spoke: `from X` on a promise someone else owns, `to X` on the owner's own.
@@ -3259,22 +3351,48 @@ def _row_origin(ev: Dict[str, Any], names: Dict[str, str], owner: str, tzinfo, t
         source += ", from a meeting"
     held = str(d.get("owner_id") or "")
     outside = str(d.get("owner_external") or "").strip()
+    # cr1#1721: #1717's rule for the captured rows' who, too. Someone off
+    # limits or on the personal side (`ties`) is never named, nor a free-text
+    # name that is theirs; with the ties or the fence unread (`ties` None),
+    # nobody is named at all.
+    hidden = {str(names.get(i) or "").strip().lower() for i in (ties or ())} - {""}
+
+    def _hid(pid: str) -> bool:
+        return bool(pid) and pid != owner and (ties is None or pid in ties)
+
+    def _text(value) -> str:
+        value = str(value or "").strip()
+        if ties is None or value.lower() in hidden:
+            return ""
+        # review of #1733: a first name or an alias of theirs is theirs too
+        if hp is not None:
+            import hub_work
+            if hub_work.name_is_hidden(value, hp):
+                return ""
+        return value
+
     if outside or (held and held != owner):
-        who = names.get(held) or outside
+        who = "" if _hid(held) else (str(names.get(held) or "") or _text(outside) or _text(d.get("owner_name")))
         who = "from " + who if who else ""
     else:
         cid = str(d.get("counterparty_id") or "")
-        cp = ("" if cid == owner else names.get(cid)) or d.get("counterparty_name") \
-            or next(iter(d.get("counterparty_names") or []), "") or ""
+        cp = "" if _hid(cid) else (("" if cid == owner else str(names.get(cid) or ""))
+                                   or _text(d.get("counterparty_name"))
+                                   or _text(next(iter(d.get("counterparty_names") or []), "")))
         who = "to " + str(cp) if cp else ""
+    # review of #1733, item 3: the captured words can name them too; a row
+    # with anyone hidden on it, or read with the fence unread, keeps none.
+    typed = [outside, d.get("owner_name"), d.get("counterparty_name")] + list(d.get("counterparty_names") or [])
+    veiled = (ties is None or _hid(held) or _hid(str(d.get("counterparty_id") or ""))
+              or any(str(t or "").strip() and not _text(t) for t in typed))
     day = str(d.get("meeting_date") or "")[:10]
     captured = not day
     if captured:
         at = _parse(ev.get("ts"))
         day = at.astimezone(tzinfo).date().isoformat() if at else ""
     return {"source": source, "date": day, "captured": captured, "who": who[:120],
-            "line": str(d.get("evidence") or "").strip()[:ORIGIN_LINE_CAP],
-            "paraphrase": str(d.get("evidence_kind") or "") == "paraphrase"}
+            "line": "" if veiled else str(d.get("evidence") or "").strip()[:ORIGIN_LINE_CAP],
+            "paraphrase": (not veiled) and str(d.get("evidence_kind") or "") == "paraphrase"}
 
 
 _CLOSER_WORDS = {
@@ -4009,10 +4127,12 @@ def feed_projects(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         work_threads = set(business_thread_ids(workspace_root))
     except Exception:  # noqa: BLE001 - unread: none is on the work side, so the page offers no cross-line move
         work_threads = set()
+    _hp = _hidden_people(workspace_root)  # cr1#1738: one read of who is hidden, for every card
     for tid, c in (cards.get("threads") or {}).items():
         v = opens.get(tid) or {}
         mine, theirs = list(v.get("you_owe") or []), list(v.get("owed_to_you") or [])
         nxt = tc.pick_next(mine, theirs, today)
+        c = _card_without_hidden(c, _hp)
         company = c.get("company") or {}
         key = (c.get("people") or {}).get("key_contact") or {}
         rows.append({
@@ -5425,6 +5545,17 @@ MONTH_ITEMS_CAP = 150
 _PREP_SLUG_HASH = re.compile(r"(?:^|-)[0-9a-f]{8}$")
 
 
+def _month_start_iso(value) -> str:
+    """cr1#1710 review: a meeting's start as the page compares it, in UTC
+    ("Z"), as `feed/today` carries its meetings. A date with no time, or a
+    value that does not parse, is kept as written."""
+    raw = str(value or "")[:40]
+    if "T" not in raw:
+        return raw
+    dt = _parse(raw)
+    return _iso(dt) if dt else raw
+
+
 def _month_start(workspace_root, now: _dt.datetime) -> _dt.datetime:
     """The first instant of `now`'s calendar month in the workspace's zone."""
     local = now.astimezone(_workspace_tz(workspace_root))
@@ -5526,7 +5657,10 @@ def _month_done(workspace_root, events: List[Dict[str, Any]], now: _dt.datetime)
             slug = _PREP_SLUG_HASH.sub("", str(d.get("slug") or "")).replace("-", " ").replace("_", " ").strip()
             counts["prep"] += 1
             items.append(dict(where(ev, d), kind="prep", ts=_iso(at), source={"word": "Meeting"},
-                              title=str(d.get("title") or d.get("meeting_title") or slug or "A meeting prep")[:240]))
+                              title=str(d.get("title") or d.get("meeting_title") or slug or "A meeting prep")[:240],
+                              # cr1#1710: the calendar event, so the page can show its title
+                              meeting_id=str(d.get("meeting_id") or "")[:200],
+                              start=_month_start_iso(d.get("meeting_start"))))
         elif kind == "decision":
             if ev.get("supersedes_seq") is not None or d.get("supersedes_seq") is not None:
                 continue
@@ -6235,6 +6369,23 @@ def _budget_options() -> List[Dict[str, Any]]:
     return [{"preset": p, "n": int(quiet.QUESTION_BUDGET[p])} for p in quiet.PRESET_LADDER]
 
 
+def _apply_still_yours(workspace_root, rows, *, resolved_by: str = "", now_iso=None) -> Dict[str, Any]:
+    """cr1#1706: the Apply run's "Still yours?" rows, through the review's
+    own writer (`still_yours.review_apply`, on the door)."""
+    import still_yours
+
+    return still_yours.review_apply(workspace_root, rows, resolved_by=resolved_by, now_iso=now_iso)
+
+
+def feed_stillyours(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. cr1#1706: the "Still yours?" review's document as its writers
+    left it (`still_yours.feed`): at most the oldest 100 rows and the whole
+    count, `stale` when built on an earlier day. Never builds it."""
+    import still_yours
+
+    return still_yours.feed(workspace_root, now_iso)
+
+
 def feed_settings(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     """READ. The Settings tab (cr1#781): every learned voice rule still in force
     or reversed (`learning_pass.learned_rules`), each with its one sentence,
@@ -6560,7 +6711,7 @@ def apply_settings_choices(workspace_root, choices: Optional[List[Dict[str, Any]
 
 
 def _chase_offers(workspace_root, opens: List[Dict[str, Any]], origins: Dict[str, Any],
-                  now: _dt.datetime) -> Dict[str, Dict[str, Any]]:
+                  now: _dt.datetime, hp: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
     """`{commitment_id: offer}` for each late row owed to the owner, with a
     counterparty, that is not snoozed or waiting for the owner's yes
     (cr1#219): `chase_policy.chase_offer` over the book. Reads only; the offer
@@ -6613,6 +6764,9 @@ def _chase_offers(workspace_root, opens: List[Dict[str, Any]], origins: Dict[str
                 or not counterparty_count(ev, workspace_root=str(workspace_root)):
             continue
         pid = str(_commitment_field(ev, "owner_id") or "")
+        # cr1#1738: no draft to someone off limits or personally tied; none at all with the fence unread
+        if hp is not None and (hp.get("unread") or pid in (hp.get("ids") or ())):
+            continue
         rec = people.get(pid)
         rtype = str((rec or {}).get("relationship_type") or (orgs.get((rec or {}).get("org_id")) or {}).get("relationship_type") or "")
         lat = [g for a in addresses.get(pid, []) for g in gaps.get(a, [])]
@@ -6675,11 +6829,19 @@ def _overdue_facts(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[
         raw = _commitment_field(ev, "due")
         due = parse_date(raw)
         other = [str(_commitment_field(ev, "owner_id") or "")] if bucket == BUCKET_OWED_TO_YOU else counterparty_ids(ev)
-        who = names.get(other[0], "") if other else \
-            primary_counterparty_name(ev, workspace_root=str(workspace_root)) or ""
+        # review of #1733 round 3: an id not on file falls back to the typed name, as
+        # _counterparty_line does, and only an id on file is the row's who_id
+        on_file = bool(other) and bool(names.get(other[0]))
+        # follow-up of #1733 round 3: a row owed to the owner falls back to its typed
+        # owner_name, as plate_view's _counterparty_line does; any other to the counterparty's
+        typed = (_commitment_field(ev, "owner_name") if bucket == BUCKET_OWED_TO_YOU
+                 else primary_counterparty_name(ev, workspace_root=str(workspace_root)))
+        who = (names.get(other[0], "") if on_file else "") or str(typed or "")
         return {"late": is_overdue(raw, today), "bucket": bucket, "due": due.isoformat() if due else "",
                 "due_phrase": render_due_phrase(due.isoformat(), today) if due else "",
                 "who": str(who)[:120], "snoozed": str(_commitment_id(ev)) in muted,
+                # review of #1733 round 2: who it is, by id, so the row is judged by id, never by a namesake
+                "who_id": str(other[0]) if on_file else "",
                 "counted": str(_commitment_id(ev)) in counted_ids}
 
     top, _steps = partition_subitems(opens)
@@ -6861,6 +7023,7 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     # plate draws (personal rows included: the page is the owner's own).
     # Nothing here is fetched live.
     opens: Optional[List[Dict[str, Any]]] = None
+    _hp = _hidden_people(workspace_root)
     try:
         from cru_match import _commitment_id, load_open_commitments
 
@@ -6869,16 +7032,10 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         owner = _owner_id(workspace_root)
         tzinfo = _workspace_tz(workspace_root)
         opens = load_open_commitments(ep) if ep.exists() else []
-        try:
-            import hub_meeting
-            import hub_work
-            _ties = hub_meeting._tie_ids(Path(str(workspace_root)))
-            _wall = hub_work.fence(workspace_root)
-            # fix check of round 1 of #1717: off limits is never named either; an unread fence names nobody
-            _ties = None if _ties is None or _wall is None else frozenset(_ties) | frozenset(_wall.get("off") or ())
-        except Exception:  # noqa: BLE001 - ties or fence unread: nobody is named
-            _ties = None
-        origins = {str(_commitment_id(ev)): _row_origin(ev, names, owner, tzinfo, _ties) for ev in opens}
+        # fix check of round 1 of #1717, cr1#1721: off limits and personal ties
+        # are never named; an unread fence or ties names nobody (`hub_work.hidden_people`)
+        _ties = None if _hp["unread"] else _hp["ids"]
+        origins = {str(_commitment_id(ev)): _row_origin(ev, names, owner, tzinfo, _ties, _hp) for ev in opens}
     except Exception:  # noqa: BLE001 - a bad record leaves the note off, never the plate
         origins = {}
     # review round 1 of #1700: each row's project by id (the open list's), for Put in...
@@ -6979,7 +7136,7 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     except Exception:  # noqa: BLE001 - an unread log leaves the strip off, never a guessed count
         feed["done"] = {"kinds": {}, "errors": ["done"]}
     try:
-        offers = _chase_offers(workspace_root, opens or [], origins, now)
+        offers = _chase_offers(workspace_root, opens or [], origins, now, hp=_hp)
     except Exception:  # noqa: BLE001 - a bad record takes the press off the row, never the plate
         offers = {}
     seat = hub_words(workspace_root)
@@ -7002,7 +7159,93 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         feed["work"] = hub_work.work_block(workspace_root, _iso(now))
     except Exception:  # noqa: BLE001 - no block: the page then offers no pile
         pass
+    # review of #1733, item 1: the rows themselves name nobody hidden either
+    # (their who and the name part of their context), in every list they ride
+    for lst in (feed["rows"], feed.get("late_rows") or [], focus, lead, chase, schedule):
+        _hide_people_in_rows(lst, _hp)
+    # review of #1733 round 3: who_id served the scrub only; it never ships (the
+    # heavy plate came to 217,954 bytes with it, over REFRESH_DOC_LIMIT)
+    for lst in (feed["rows"], feed.get("late_rows") or [], focus, lead, chase, schedule):
+        for r in lst or []:
+            if isinstance(r, dict):
+                r.pop("who_id", None)
     return _with_words(workspace_root, feed, seat)
+
+
+def _card_without_hidden(c: Dict[str, Any], hp: Dict[str, Any]) -> Dict[str, Any]:
+    """cr1#1738 (review of #1744): a work stream's card with the people it
+    lists by id, less anyone hidden (all of them with the fence unread); its
+    key contact is then the first one left, as the card picks it, so the
+    panel, the contact and Ask for an update's draft never name them, and a
+    namesake is never taken for them."""
+    ppl = c.get("people") if isinstance(c.get("people"), dict) else None
+    if not ppl:
+        return c
+    ids = hp.get("ids") or frozenset()
+    rows = [r for r in (ppl.get("rows") or []) if isinstance(r, dict) and not hp.get("unread")
+            and str(r.get("person_id") or "") not in ids]
+    key = ({"person_id": rows[0].get("person_id"), "name": rows[0].get("name")} if rows else {})
+    return dict(c, people=dict(ppl, rows=rows, key_contact=key))
+
+
+def _hidden_people(workspace_root) -> Dict[str, Any]:
+    """`hub_work.hidden_people`, failing closed (nobody is named) when it
+    cannot be asked."""
+    try:
+        import hub_work
+
+        return hub_work.hidden_people(workspace_root)
+    except Exception:  # noqa: BLE001
+        return {"unread": True, "ids": frozenset(), "names": frozenset(), "all_names": frozenset()}
+
+
+def _hide_people_in_rows(rows, hp: Dict[str, Any]) -> None:
+    """cr1#1721 (review of #1733): a plate row names nobody `hp` hides. Its
+    `who` is judged by the row's person id where it has one, and by its words
+    only for a typed name with no id; a hidden `who` is cleared, and with it
+    the one part of `context` that is that who and the origin's captured
+    line. A context part is dropped otherwise only when it is, whole, a hidden
+    person's whole name: dates and status are never matched word by word
+    (round 2, item 1). With the fence unread every who, its context part and
+    every captured line go, whatever names are known (round 2, item 2). In
+    place; other fields are left."""
+    import hub_work
+
+    ids = hp.get("ids") or frozenset()
+    unread = bool(hp.get("unread"))
+    whole = hp.get("all_full") if unread else hp.get("full_names")
+    whole = whole or frozenset()
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        veiled = unread
+        who = str(r.get("who") or "")
+        wid = str(r.get("who_id") or "")
+        if unread:
+            hid = bool(who)
+        elif wid:
+            hid = bool(who) and wid in ids
+        else:
+            hid = bool(who) and hub_work.name_is_hidden(who, hp)
+        if hid:
+            r["who"] = ""
+            veiled = True
+        ctx = str(r.get("context") or "")
+        if ctx:
+            parts = ctx.split(" · ")
+            said = who.strip().lower()
+            # a row judged by id and not hidden keeps its own who in context, even
+            # when a hidden person shares the whole name (round 3, the twin case)
+            mine = bool(wid) and not hid and not unread
+            keep = [x for x in parts if not ((hid and said and x.strip().lower() == said)
+                                             or (x.strip().lower() in whole and not (mine and x.strip().lower() == said)))]
+            if len(keep) != len(parts):
+                r["context"] = " · ".join(keep)
+                veiled = True
+        o = r.get("origin")
+        if veiled and isinstance(o, dict) and (o.get("line") or o.get("who")):
+            r["origin"] = dict(o, line="", paraphrase=False,
+                               who="" if unread or hub_work.name_is_hidden(o.get("who"), hp) else o.get("who"))
 
 
 class _InboxPage(HTMLParser):
@@ -7914,6 +8157,7 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
     settings: List[Dict[str, Any]] = []
     mail: List[Dict[str, Any]] = []
     people: List[Dict[str, Any]] = []
+    stillyours: List[Dict[str, Any]] = []
     refused: List[Dict[str, Any]] = []
     seen = set()
     tokens_seen = set(str(t) for t in (used_tokens or []) if isinstance(t, str) and t)
@@ -8062,6 +8306,24 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
                          **({"back_of": str(raw.get("back_of"))[:160]} if raw.get("back_of") else {}),
                          **({"back_seq": raw.get("back_seq")} if isinstance(raw.get("back_seq"), int)
                             and not isinstance(raw.get("back_seq"), bool) else {})})
+        elif kind == "stillyours":
+            # cr1#1706: a "Still yours?" press, its Undo, or the review's
+            # refresh, for `still_yours.review_apply`, which checks each row
+            # against the book again before it writes.
+            import still_yours
+
+            if verb not in still_yours.VERBS:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            row = {"id": cid, "action": verb, "title": str(raw.get("title") or "")[:200]}
+            if raw.get("commitment_id"):
+                row["commitment_id"] = str(raw.get("commitment_id"))[:80]
+            if raw.get("project_id"):
+                row["project_id"] = str(raw.get("project_id"))[:80]
+            if verb == "undo" and isinstance(raw.get("undo"), list):
+                row["undo"] = [t for t in raw["undo"][:still_yours.UNDO_TOKEN_CAP] if isinstance(t, dict)]
+            stillyours.append(row)
         elif kind == "settings":
             # cr1#781: the Settings tab's edit, for `apply_settings_choices`.
             if verb not in SETTINGS_VERBS:
@@ -8106,9 +8368,10 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=kind or "none"),
                             "reason": "unknown_kind"})
     return {"commitment": commitment, "inbox": inbox, "hub": hub, "review": review, "week": week,
-            "settings": settings, "mail": mail, "people": people, "refused": refused, "skipped": skipped,
+            "settings": settings, "mail": mail, "people": people, "stillyours": stillyours,
+            "refused": refused, "skipped": skipped,
             "n_waiting": (len(commitment) + len(inbox) + len(hub) + len(review) + len(week)
-                          + len(settings) + len(mail) + len(people)),
+                          + len(settings) + len(mail) + len(people) + len(stillyours)),
             "n_refused": len(refused)}
 
 
@@ -8179,7 +8442,33 @@ def feed_people(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     (`people_view.people`)."""
     import people_view
 
-    return _fit_people(_with_words(workspace_root, people_view.people(workspace_root, now_iso=_iso(_now(now_iso)))))
+    hp = _hidden_people(workspace_root)
+    feed = people_view.people(workspace_root, now_iso=_iso(_now(now_iso)),
+                              hidden_ids=None if hp.get("unread") else set(hp.get("ids") or ()))
+    return _fit_people(_with_words(workspace_root, _hide_people_in_feed(feed, hp)))
+
+
+#: cr1#1738: what the People tab says when the fence cannot be read.
+PEOPLE_FENCE_UNREAD_LINE = "Your people could not be listed just now: who is off limits could not be read. The next refresh tries again."
+
+
+def _hide_people_in_feed(feed: Dict[str, Any], hp: Dict[str, Any]) -> Dict[str, Any]:
+    """cr1#1738 (ruling 105): someone off limits or tied to the personal side
+    is not on the People tab at all (they are managed in Settings, where the
+    off-limits list lives), nor starred, nor counted. With the fence unread,
+    nobody is listed and the feed says why."""
+    if not isinstance(feed, dict):
+        return feed
+    people = [r for r in feed.get("people") or [] if isinstance(r, dict)]
+    if hp.get("unread"):
+        return dict(feed, people=[], starred=[], n_people=0, not_shown={"unread": True},
+                    errors=list(feed.get("errors") or []) + ["fence"], line=PEOPLE_FENCE_UNREAD_LINE)
+    ids = hp.get("ids") or frozenset()
+    # a second layer: people_view left them out before its cap already
+    kept = [r for r in people if str(r.get("id") or "") not in ids]
+    gone = len(people) - len(kept)
+    return dict(feed, people=kept, starred=[x for x in feed.get("starred") or [] if str(x) not in ids],
+                n_people=max(0, int(feed.get("n_people") or 0) - gone))
 
 
 #: cr1#1715: the People feed is one page document, pulled whole; at about 400
@@ -11967,7 +12256,9 @@ APPLY_BATCH_MAX = CLAIM_BATCH_MAX
 #: The feeds a kind's landed press refreshes (cockpit-apply-detail.md says how).
 APPLY_FEEDS = {"hub": ("feed/mine",), "review": ("feed/review",),
                "settings": ("feed/settings", "feed/week"), "mail": ("feed/mail_rules",),
-               "people": ("feed/people",)}
+               "people": ("feed/people",),
+               # review round 2 of #1742: a Still yours? press refreshes its own list
+               "stillyours": ("feed/stillyours",)}
 #: The Hub's add and edit presses that also refresh their own tab (cr1#1431).
 APPLY_EDIT_FEEDS = {"stream_edit": ("feed/projects", "feed/board"),
                     "priority_edit": ("feed/projects", "feed/board"),
@@ -12132,7 +12423,8 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
 
     writers = (("commitment", apply_commitment_choices), ("review", apply_review_choices),
                ("week", apply_week_choices), ("settings", apply_settings_choices),
-               ("mail", apply_mail_choices), ("people", apply_people_choices))
+               ("mail", apply_mail_choices), ("people", apply_people_choices),
+               ("stillyours", _apply_still_yours))
     hub_rows = [r for r in plan.get("hub") or [] if str(r.get("kind") or "") != "miss"]
     miss_ids = [str(r.get("id")) for r in plan.get("hub") or [] if str(r.get("kind") or "") == "miss"]
     inbox_ids = [str(r.get("id")) for r in plan.get("inbox") or [] if r.get("id")]
@@ -12682,6 +12974,9 @@ REFRESH_READS: Tuple[Tuple[str, str], ...] = (
     ("feed/brief", "feed_brief"),
     ("feed/review", "feed_review"),
     ("feed/settings", "feed_settings"),
+    # cr1#1706: the "Still yours?" review's document, a READ of the small file
+    # its writers keep (`still_yours.feed`), never built inside `feed/plate`.
+    ("feed/stillyours", "feed_stillyours"),
 )
 REFRESH_PLATE_FAILED_LINE = "The plate could not be read, so the Hub was not refreshed."
 #: Every document a refresh may write, and no other (never another task's light).
@@ -12865,7 +13160,7 @@ REFRESH_STAGES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("reads", ("feed/projects", "feed/board", "feed/mine", "feed/mail_rules",
                "feed/people", "feed/brief")),
     ("review", ("feed/review",)),
-    ("record", ("feed/settings", "feed/week", "status/maintenance")),
+    ("record", ("feed/settings", "feed/stillyours", "feed/week", "status/maintenance")),
 )
 REFRESH_STAGE_NAMES: Tuple[str, ...] = tuple(s for s, _d in REFRESH_STAGES)
 #: What a part that did not finish is called in the light's line.
@@ -12882,6 +13177,7 @@ REFRESH_DOC_WORDS: Dict[str, str] = {
     "feed/projects": "the work streams", "feed/board": "the Week board", "feed/mine": "your lists",
     "feed/mail_rules": "the mail rules", "feed/people": "the people", "feed/brief": "the brief",
     "feed/review": "To confirm", "feed/settings": "Settings", "feed/week": "the Record tab",
+    "feed/stillyours": "the Still yours? review",
     "status/maintenance": "the Maintenance record",
 }
 REFRESH_DOCS_FAILED_LINE = "{plate} Not updated: {what}; the Hub keeps its last copy of those."
@@ -13018,6 +13314,10 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
         if not _REFRESH_TOKEN_RE.match(tok) or str(man.get("token") or "") != tok or "stages" not in man:
             return {"ok": False, "stage": want, "line": ONE_CALL_GONE_LINES["refresh"]}
         ran = list(man.get("stages") or []) + list(man.get("not_finished") or [])
+        if want == "record" and "status/refresh" in [str(s[0]) for s in man.get("sizes") or []]:
+            # cr1#1727 item 4: a retried record answers the finished run, so
+            # its parts are still pulled; nothing is built or written again
+            return _refresh_record_again(workspace_root, man)
         if want in ran or "record" in ran:
             # review of #1718, item 3: a part runs once, and nothing after the light
             return {"ok": False, "stage": want, "line": REFRESH_STAGE_AGAIN_LINE}
@@ -13155,6 +13455,32 @@ def _refresh_not_finished(workspace_root, name: str, man: Optional[Dict[str, Any
     if idx + 1 < len(REFRESH_STAGE_NAMES):
         out["next"] = REFRESH_STAGE_NAMES[idx + 1]
     return out
+
+
+def _refresh_record_again(workspace_root, man: Dict[str, Any]) -> Dict[str, Any]:
+    """cr1#1727 item 4: the finished run's own answer, read back from its
+    manifest and its kept light; nothing is built or written."""
+    try:
+        light = json.loads(_refresh_file(_task_scratch(workspace_root, "refresh"), "status/refresh")
+                           .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"ok": False, "stage": "record", "line": ONE_CALL_GONE_LINES["refresh"]}
+    sizes = [(str(s[0]), int(s[1])) for s in man.get("sizes") or []]
+    report = list(man.get("report") or [])
+    done = list(man.get("stages") or [])
+    return {
+        "ok": str(light.get("state") or "") == "done",
+        "token": man["token"],
+        "stage": "record",
+        "again": True,
+        "pages": report,
+        "parts": _refresh_parts(sizes),
+        "light": light,
+        "counts": dict(man.get("counts") or {}),
+        "missing": [s for s in REFRESH_STAGE_NAMES if s not in done],
+        "failed": [r["doc"] for r in report if not r.get("ok")],
+        "line": str(light.get("line") or ""),
+    }
 
 
 def _refresh_keep_page_maint(built: Dict[str, Dict[str, Any]], report: List[Dict[str, Any]],

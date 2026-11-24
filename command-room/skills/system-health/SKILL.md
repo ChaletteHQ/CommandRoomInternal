@@ -417,7 +417,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"p
 
 ## Is everything OK? (cr1#1585)
 
-When the owner asks "is everything OK?" (or "is everything ok", "everything ok?"), the answer is ONE read in three parts: did the scheduled tasks run, is the workspace in shape, and what waits for a yes. It is the same answer the Hub shows as one line under Run details. It reads and writes nothing.
+When the owner asks "is everything OK?" (or "is everything ok", "everything ok?"), the answer is ONE read in three parts: did the scheduled tasks run, is the workspace in shape, and what waits for a yes. It is the same answer the Hub shows in Settings, under Maintenance, when it is not all OK, or as "Not updated since <time>" when Maintenance has not run for over a day (cr1#1730, cr1#1737). It reads and writes nothing.
 
 1. Do Step 1's listing exactly as written above: the scheduler discovery above, the availability check, `schedule_backend:plan_list`, and its one tool call, keeping every row whole. When Step 1 says no scheduler is available, pass `"records_known": false` and no rows.
 2. Then this one call, in place of Step 2's:
