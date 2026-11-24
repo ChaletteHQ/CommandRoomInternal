@@ -150,7 +150,10 @@ COMMITMENT_VERBS = frozenset({"done", "drop", "context", "confirm", "snooze", "r
                               "unassign",
                               # cr1#1540: a pile's press on an item owed to the owner
                               # that went quiet (it rests, still open), and its Undo
-                              "park", "unpark"})
+                              "park", "unpark",
+                              # cr1#1658 change 6: move an item that has a home to another
+                              # project (its Undo is `unassign`, as for Assign to)
+                              "rehome"})
 INBOX_VERBS = frozenset({"send", "draft", "snooze"})
 #: cr1#1020: the inbox presses the owner's mail rules take (`mail_rules`),
 #: applied in code by `apply_mail_choices`, never through a mail handler:
@@ -182,6 +185,19 @@ NOT_WORK_LINE = "Set aside: not work."
 ASSIGN_REASON = "Given a home on the Command Room Hub"
 ASSIGN_NO_STREAM_LINE = "That work stream is not on your book any more; nothing was written. Pick another."
 ASSIGN_HAS_HOME_LINE = "That one already has a home; nothing was written."
+#: cr1#1658 change 6: Move to another project.
+REHOME_REASON = "Moved to another project on the Command Room Hub"
+REHOME_SAME_LINE = "It is already there; nothing was written."
+REHOME_NO_TARGET_LINE = "That project is not on your book any more; nothing was written. Pick another."
+UNMOVE_LINE = "Moved back where it was."
+#: review round 1 of #1700: what a move refuses, and its Undo's one refusal
+REHOME_NO_HOME_LINE = "That one has no project yet, so it is given one under No home yet with Assign to; nothing was written."
+REHOME_LANE_LINE = "That would move it across your personal line, so it is not moved; nothing was written."
+REHOME_OFF_LIMITS_LINE = "That item is about someone you put off limits, so it is not moved from the Hub; nothing was written."
+REHOME_FENCE_LINE = "Your account settings could not be read just now, so nothing was moved. Try again after the next Refresh."
+UNMOVE_GONE_LINE = "Its old project is archived or gone, so it stays where it is; nothing was written."
+TODO_NO_PROJECT_LINE = "Added as {level} priority, with no project: that project is no longer on your book."
+TODO_PERSONAL_PROJECT_LINE = "Added as {level} priority, with no project: a to-do from the Hub is not put on a personal project."
 #: cr1#1289 part two: Assign to on a line only heard tracks it first,
 #: through the queue's own confirm; this is the line when that refuses.
 ASSIGN_HEARD_FAILED_LINE = "That line could not be tracked, so it was not given a home; nothing was written."
@@ -345,7 +361,7 @@ NOT_OPEN_LINE = "That one is not open; nothing to reopen."
 EMPTY_NOTE_LINE = "The note was empty; nothing was written."
 NO_HOME_LINE = "No person or project to attach the note to; nothing was written."
 SUBITEMS_LINE = "That item has open sub-items; close them first in chat."
-SNOOZE_NEEDS_DATE_LINE = "Snooze needs a date or a number of days; nothing moved."
+SNOOZE_NEEDS_DATE_LINE = "Later needs a day: a date, a day like Thursday, or a number of days; nothing moved."
 
 STATUS_RUNNING_LINE = "Started."
 STATUS_NO_ANSWER_LINE = "No answer for {minutes} minutes. Is your computer on?"
@@ -1785,8 +1801,14 @@ def schedule_holder_status(workspace_root, env: Optional[Dict[str, str]] = None
         if words == said:
             account = key
     computer = held.get("device")
-    return {"line": lines[0], "short": f"Schedules run on {computer}" if computer else "", "computer": computer,
+    # cr1#1641 item 17 (cr1#1645): the few words name no machine; the sentence
+    # naming the computer stays behind the information mark.
+    return {"line": lines[0], "short": HOLDER_SHORT if computer else "", "computer": computer,
             "account": account, "pending": bool(held.get("pending"))}
+
+
+#: cr1#1641 item 17: the Run details note's few words for where the schedules run.
+HOLDER_SHORT = "Where your scheduled tasks run"
 
 
 def maintenance_status(workspace_root=None, *, now_iso=None, review: Optional[Dict[str, Any]] = None,
@@ -3204,7 +3226,7 @@ def _person_names(workspace_root) -> Dict[str, str]:
             for p in entities_collection(ent, "people") if isinstance(p, dict) and p.get("id")}
 
 
-def _row_origin(ev: Dict[str, Any], names: Dict[str, str], owner: str, tzinfo) -> Dict[str, Any]:
+def _row_origin(ev: Dict[str, Any], names: Dict[str, str], owner: str, tzinfo, ties=frozenset()) -> Dict[str, Any]:
     """`{source, date, captured, who, line, paraphrase}` for one commitment,
     from its own record. `who` reads by direction, because no record says who
     spoke: `from X` on a promise someone else owns, `to X` on the owner's own.
@@ -3224,6 +3246,17 @@ def _row_origin(ev: Dict[str, Any], names: Dict[str, str], owner: str, tzinfo) -
     else:
         source = (_ORIGIN_SOURCES.get(scheme)
                   or _ORIGIN_SKILLS.get(str(ev.get("source_skill") or "").split(":")[0]) or "Captured")
+    # cr1#1658 change 4: an item made on the Hub from an Inbox message says
+    # so; change 8: from a person's card or a meeting, too
+    about = str(d.get("about_ref") or "")
+    if about.startswith("mail:thread:"):
+        source += ", from a message"
+    elif about.startswith("person:"):
+        # review round 1 of #1717: a person on the personal side (or ties unread: None) is never named here
+        pid = about.split(":", 1)[1]
+        source += ", from " + ((names.get(pid) if ties is not None and pid not in ties else "") or "a person's card")
+    elif about.startswith("meeting:"):
+        source += ", from a meeting"
     held = str(d.get("owner_id") or "")
     outside = str(d.get("owner_external") or "").strip()
     if outside or (held and held != owner):
@@ -3971,6 +4004,11 @@ def feed_projects(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         opens, list_from_log, late_known = {}, True, False
         out["errors"].append("open")
     rows = []
+    try:
+        from personal_leak import business_thread_ids
+        work_threads = set(business_thread_ids(workspace_root))
+    except Exception:  # noqa: BLE001 - unread: none is on the work side, so the page offers no cross-line move
+        work_threads = set()
     for tid, c in (cards.get("threads") or {}).items():
         v = opens.get(tid) or {}
         mine, theirs = list(v.get("you_owe") or []), list(v.get("owed_to_you") or [])
@@ -3983,6 +4021,8 @@ def feed_projects(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             "org": str(company.get("name") or "")[:120],
             "company_id": str(c.get("company_id") or ""),
             "status": str((c.get("status") or {}).get("value") or "active"),
+            # review round 1 of #1700: which side of the personal line it is on, for Put in...
+            "work_lane": tid in work_threads,
             "work_stream": str((c.get("parent") or {}).get("id") or ""),
             "last_activity": (c.get("last_moved") or {}).get("day") or None,
             "open": len(mine) + len(theirs) if late_known else None,
@@ -5286,8 +5326,10 @@ def _answer_owner_question(workspace_root, n: str, verb: str, actor: str, answer
 
 #: The Done tab (cr1#780).
 WEEK_DAYS = 7
-WEEK_EMPTY_LINE = "Nothing was settled for you this week."
-WEEK_RULES_LINE = "Nothing else was settled for you this week."
+#: cr1#1645 item 8: "decided", the word of Record's own heading ("Decided for
+#: you"), never the internal "settled".
+WEEK_EMPTY_LINE = "Nothing was decided for you this week."
+WEEK_RULES_LINE = "Nothing else was decided for you this week."
 WEEK_PARTIAL_LINE = "Part of this could not be put back; say `undo` in a chat."
 WEEK_ALREADY_LINE = "That was already put back; nothing was written."
 #: cr1#1322: every change refused, because the item changed after it.
@@ -5370,7 +5412,8 @@ MONTH_KINDS = (
     ("sent", "reply sent", "replies sent"),
     ("prep", "prep made", "preps made"),
     ("decision", "decision recorded", "decisions recorded"),
-    ("applied", "choice applied", "choices applied"),
+    # cr1#1641 item 20 (cr1#1645): what was done, never the internal "choices".
+    ("applied", "change made", "changes made"),
 )
 #: The closes that count as done this month: a fact, the owner's word, or
 #: the owner's own tap (`flow_measure.route_of`). A silence or lapse close is
@@ -5502,7 +5545,7 @@ def _month_done(workspace_root, events: List[Dict[str, Any]], now: _dt.datetime)
                     verbs.append(v)
             hub = str(d.get("surface") or "").startswith("cockpit")
             items.append({"kind": "applied", "ts": _iso(at), "source": {"word": "Hub" if hub else "Chat"},
-                          "title": (f"{len(ok)} choice applied" if len(ok) == 1 else f"{len(ok)} choices applied")
+                          "title": (f"{len(ok)} change made" if len(ok) == 1 else f"{len(ok)} changes made")
                           + (": " + ", ".join(verbs[:4]) if verbs else ""),
                           "thread_id": "", "thread": "", "people": []})
     items.sort(key=lambda r: r["ts"], reverse=True)
@@ -6826,11 +6869,34 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         owner = _owner_id(workspace_root)
         tzinfo = _workspace_tz(workspace_root)
         opens = load_open_commitments(ep) if ep.exists() else []
-        origins = {str(_commitment_id(ev)): _row_origin(ev, names, owner, tzinfo) for ev in opens}
+        try:
+            import hub_meeting
+            import hub_work
+            _ties = hub_meeting._tie_ids(Path(str(workspace_root)))
+            _wall = hub_work.fence(workspace_root)
+            # fix check of round 1 of #1717: off limits is never named either; an unread fence names nobody
+            _ties = None if _ties is None or _wall is None else frozenset(_ties) | frozenset(_wall.get("off") or ())
+        except Exception:  # noqa: BLE001 - ties or fence unread: nobody is named
+            _ties = None
+        origins = {str(_commitment_id(ev)): _row_origin(ev, names, owner, tzinfo, _ties) for ev in opens}
     except Exception:  # noqa: BLE001 - a bad record leaves the note off, never the plate
         origins = {}
+    # review round 1 of #1700: each row's project by id (the open list's), for Put in...
+    try:
+        projects = _projects_of(workspace_root, now)
+    except Exception:  # noqa: BLE001
+        projects = {}
+    # ...and which side of the personal line the item is on: the fence's own
+    # read, or a project that is not a work one (fix check of round 1)
+    try:
+        _fence, lane_personal = _lanes(workspace_root, projects)
+    except Exception:  # noqa: BLE001
+        _fence, lane_personal = None, set()
     for r in rows:
         r["origin"] = origins.get(str(r.get("id")))
+        if projects.get(str(r.get("id"))):
+            r["project_id"] = projects[str(r.get("id"))]
+        r["personal_lane"] = str(r.get("id")) in lane_personal
     # cr1#1636 item 2: whether each row sits on live work, read before
     # anything ranks the rows (`_lead_rows` leaves one that is not out).
     try:
@@ -6846,6 +6912,13 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             overdue_ok = True
     except Exception:  # noqa: BLE001 - the Overdue tab says it has no answer; the plate still draws
         pass
+    # cr1#1658 change 5: what a Later hid until a day, for the Later view.
+    # None when it cannot be read, so the page says so instead of "nothing".
+    try:
+        later_rows, n_later = _later_rows(workspace_root, opens or [], _owner_id(workspace_root), now) \
+            if opens is not None else ([], None)
+    except Exception:  # noqa: BLE001 - an unread ledger lists nothing and says so
+        later_rows, n_later = [], None
     do_it = [r for r in rows if r["lane"] in ("do_it", "confirm")]
     # cr1#1012: a row leads "Move these today" as overdue only when the open
     # list counts it; a row past its date that is not counted (waiting for a
@@ -6889,7 +6962,11 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         "goals": goals["rows"], "n_goals": goals["n"],
         "rows": rows[:PLATE_ROW_CAP], "n_rows": len(rows),
         "n_hidden": max(0, len(rows) - PLATE_ROW_CAP),
-        "late_rows": late_rows, "n_late_hidden": n_late_hidden, "overdue_ok": overdue_ok,
+        "late_rows": [dict(x, personal_lane=str(x.get("id")) in lane_personal, **({"project_id": projects[str(x.get("id"))]} if projects.get(str(x.get("id"))) else {})) for x in late_rows],
+        # review round 1 of #1700: rows name their project by id; with no fence read, Put in... is not offered
+        "project_ids": True, "lanes_known": _fence is not None,
+        "n_late_hidden": n_late_hidden, "overdue_ok": overdue_ok,
+        "later_rows": later_rows, "n_later": n_later,
         # cr1#1017 behaviour 4: what opened and closed, with times, so Today
         # shows only what changed since the owner last looked
         "changes": _changes(workspace_root, now),
@@ -7078,6 +7155,8 @@ def feed_inbox(workspace_root=None, page_html: str = "", *, fire_stamp: str = ""
             "draft": draft,
             "actions": actions,
             "thread_id": str(thread.get("thread_id") or "") if thread else None,
+            # review round 1 of #1699 (B2): the thread's own sender, never the reply's first To
+            "sender": (_mr_address(thread.get("sender_email") or thread.get("sender")) or None) if thread else None,
             "message_id": str(thread.get("message_id") or "") if thread else None,
             "message_ts": str(thread.get("ts") or "") if thread else None,
             "fire_stamp": fire_stamp,
@@ -8003,13 +8082,14 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             hub.append({"id": cid, "kind": kind, "action": verb, "n": str(raw.get("n") or "")[:512],
                         "input": raw.get("input") if isinstance(raw.get("input"), dict) else {},
                         "title": str(raw.get("title") or "")[:200]})
-        elif kind in ("reminder", "todo", "miss") or kind in EDIT_KINDS:
+        elif kind in ("reminder", "todo", "waiting", "miss") or kind in EDIT_KINDS:
             # cr1#662: the Today page's own lists, written by apply_hub_choices;
             # cr1#1017: the header's "Missed something?", answered there too;
             # cr1#1383: a work stream, person or priority added, renamed or
             # taken back (`hub_edit`), written there as well; slice 4: a
             # commitment's wording edited, or that edit taken back.
             verbs = (REMINDER_VERBS if kind == "reminder" else TODO_VERBS if kind == "todo"
+                     else WAITING_VERBS if kind == "waiting"
                      else MISS_VERBS if kind == "miss" else _edit_verbs(kind))
             if verb not in verbs:
                 refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
@@ -8099,7 +8179,74 @@ def feed_people(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     (`people_view.people`)."""
     import people_view
 
-    return _with_words(workspace_root, people_view.people(workspace_root, now_iso=_iso(_now(now_iso))))
+    return _fit_people(_with_words(workspace_root, people_view.people(workspace_root, now_iso=_iso(_now(now_iso)))))
+
+
+#: cr1#1715: the People feed is one page document, pulled whole; at about 400
+#: people with open items it came out near 370,000 characters, over
+#: `REFRESH_DOC_LIMIT`, so the tab was never published again. It is cut to
+#: fit from the end of its order (the starred first, then the new, then the
+#: most recently in touch), and the page says how many more there are from
+#: `n_people`, as it already does past `people_view.PEOPLE_CAP`.
+PEOPLE_FEED_BUDGET = 190_000
+#: The page's first screen of people: the starred, then this many more
+#: (`PEOPLE_FIRST` in the page). Rows past it travel trimmed when the feed
+#: is over its budget (review of #1718, item 2).
+PEOPLE_FIRST_SCREEN = 20
+PEOPLE_TRIM_OPEN = 1
+PEOPLE_LIST_TRIMMED_NOTE = "This list is long; ask in a chat to send it."
+
+
+def _people_needs_you(row: Dict[str, Any]) -> bool:
+    nxt = row.get("next_step") or {}
+    return bool(nxt.get("overdue")) or int(row.get("n_owed_to_you") or 0) > 0
+
+
+def _trim_person(row: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(row)
+    if isinstance(out.get("open"), list) and len(out["open"]) > PEOPLE_TRIM_OPEN:
+        out["open"] = out["open"][:PEOPLE_TRIM_OPEN]
+    lists = out.get("lists")
+    if isinstance(lists, dict):
+        out["lists"] = {k: ({"note": PEOPLE_LIST_TRIMMED_NOTE, "n": v.get("n")} if isinstance(v, dict) and "body" in v else v)
+                        for k, v in lists.items()}
+    out["trimmed"] = True
+    return out
+
+
+def _fit_people(feed: Dict[str, Any]) -> Dict[str, Any]:
+    """Under `PEOPLE_FEED_BUDGET` (cr1#1715). Nothing changes when it fits.
+    Over it: the starred first, then the people with an overdue next step or
+    something owed to the owner, then the rest, each in the feed's order;
+    rows past the page's first screen travel with their first few open items
+    and their lists as a note (their counts stay whole); only then are rows
+    cut from the end, and the feed says `cut_to_fit` (the page says how many
+    it holds)."""
+    people = feed.get("people")
+    if not isinstance(people, list):
+        return feed
+
+    def size(rows) -> int:
+        return len(json.dumps(dict(feed, people=rows), separators=(",", ":"), default=str))
+
+    if size(people) <= PEOPLE_FEED_BUDGET:
+        return feed
+    starred = [r for r in people if r.get("starred")]
+    rest = [r for r in people if not r.get("starred")]
+    ordered = starred + [r for r in rest if _people_needs_you(r)] + [r for r in rest if not _people_needs_you(r)]
+    screen = len(starred) + PEOPLE_FIRST_SCREEN
+    rows = ordered[:screen] + [_trim_person(r) for r in ordered[screen:]]
+    out = dict(feed, people=rows, trimmed_to_fit=True)
+    if size(rows) <= PEOPLE_FEED_BUDGET:
+        return out
+    lo, hi = 0, len(rows)  # the most that fit is in [lo, hi)
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if size(rows[:mid]) <= PEOPLE_FEED_BUDGET:
+            lo = mid
+        else:
+            hi = mid
+    return dict(out, people=rows[:lo], cut_to_fit=True)
 
 
 def feed_mail_rules(workspace_root, *, now_iso=None) -> Dict[str, Any]:
@@ -8290,6 +8437,36 @@ def feed_brief(workspace_root, *, now_iso=None) -> Dict[str, Any]:
 #: and the apply task writes, like every other press.
 REMINDER_VERBS = frozenset({"add", "done", "push", "delete"})  # delete: cr1#1221
 TODO_VERBS = frozenset({"add"})
+#: cr1#1658 change 4: Waiting on them, made from a message.
+WAITING_VERBS = frozenset({"add"})
+WAITING_NEEDS_TEXT_LINE = "Waiting on them needs a few words."
+WAITING_NO_PERSON_LINE = ("The sender is not in your People yet, so nothing was saved. "
+                          "Add them there first, then press Waiting on them again.")
+#: review round 1 of #1699 (B4): two people on file share the sender's address.
+WAITING_SHARED_LINE = ("Two people in your People share this sender's address, so nothing was saved. "
+                       "Give each their own address there, then press Waiting on them again.")
+#: B1, B5: a make from a message is checked before anything is written.
+MAIL_MAKE_FENCE_LINE = "Your account settings could not be read just now, so nothing was saved from this message. Try again after the next Refresh."
+MAIL_MAKE_OFF_LIMITS_LINE = "That sender is off limits, so nothing was saved from this message."
+MAIL_MAKE_BAD_LINE = "This message's link could not be kept, so nothing was saved. Refresh the Inbox and press it again."
+MAIL_MAKE_NO_SENDER_LINE = "This message's sender was not sent with the press, so nothing was saved. Refresh the page and press it again."
+#: fix check of round 1: the press names another sender than the thread's own, as the last Inbox run read it
+MAIL_MAKE_SENDER_LINE = "The press names someone other than this message's sender, so nothing was saved. Refresh the Inbox and press it again."
+#: review round 1 of #1717: what a To-do or Remind me from a person's card or a meeting refuses
+PERSON_MAKE_OFF_LIMITS_LINE = "That person is off limits, so nothing was saved."
+PERSON_MAKE_TIE_LINE = "That person is on your personal side, so nothing was put on a project; nothing was saved."
+MEETING_MAKE_UNKNOWN_LINE = "That meeting has no prep or notes in your book, so nothing was saved from it."
+MEETING_MAKE_SOLO_LINE = "That meeting has nobody else on it, so nothing was saved from it."
+MEETING_MAKE_PRIVATE_LINE = "Someone on that meeting is off limits or on your personal side, so nothing was saved from it."
+MEETING_MAKE_PERSONAL_LINE = "That meeting is on your personal calendar, so nothing was saved from it."
+#: fix check of round 1 of #1717: a reminder's own link names an item on the list, or nothing is saved
+REMINDER_BAD_REF_LINE = "That reminder's link is not an item on your list, so nothing was saved."
+#: round-2 fix check: the last Inbox run's feed is there but cannot be read
+MAIL_MAKE_FEED_LINE = "The last Inbox read could not be checked, so nothing was saved from this message. Refresh the Inbox and press it again."
+#: B3: the same make pressed twice.
+MAKE_ALREADY_LINE = "Already on your list from this; nothing new was added."
+#: cr1#1658 change 5: the most rows the Later list sends, soonest back first.
+LATER_CAP = 40
 #: cr1#1383 part 2: add, rename and undo of a work stream, a person and a
 #: priority from the Hub, each through its owning writer (`hub_edit`).
 EDIT_KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit", "meeting_edit")
@@ -8341,7 +8518,7 @@ ATTACHED_BUDGET = 60_000
 REMINDER_NEEDS_TEXT_LINE = "A reminder needs a few words."
 #: cr1#1221: a Delete press, applied. The undo is the owner's own word.
 REMINDER_DELETED_LINE = "Deleted. Say undo in a chat to bring it back."
-REMINDER_NEEDS_DATE_LINE = "A reminder needs a day: a date, or a number of days from today."
+REMINDER_NEEDS_DATE_LINE = "A reminder needs a day: a date, a day like Thursday, or a number of days from today."
 TODO_NEEDS_TEXT_LINE = "A to-do needs a few words."
 #: "Missed something?" (cr1#1017, train 8 behaviour 6): the header entry on
 #: every tab. The owner says in a sentence what the Hub failed to show; the
@@ -8505,6 +8682,24 @@ def feed_mine(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         todos = []
         errors.append("todos")
     todos.sort(key=lambda t: (t["priority"], str(t["added"])))
+    # review round 1 of #1700: a to-do's project by id and by name, for Put in...
+    todo_lanes_known = False
+    try:
+        import thread_cards as tc
+
+        places = _projects_of(root, now)
+        _tf, todo_personal = _lanes(root, places)
+        todo_lanes_known = _tf is not None
+        cards = tc.read_cards(root)[0]
+        names = {k: str((v or {}).get("name") or "") for k, v in {**(cards.get("threads") or {}), **(cards.get("work_streams") or {})}.items()}
+        for t_ in todos:
+            pid = places.get(str(t_["id"]))
+            t_["personal_lane"] = str(t_["id"]) in todo_personal
+            if pid:
+                t_["project_id"] = pid
+                t_["project"] = names.get(pid, "")[:120]
+    except Exception:  # noqa: BLE001 - no project read: the row says none, never a guessed one
+        todo_lanes_known = False
     try:
         _todo_last_actions(root, todos[:MINE_CAP], todo_evs)
     except Exception:  # noqa: BLE001 - an unread last action leaves the line off, never the list
@@ -8522,7 +8717,7 @@ def feed_mine(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     except Exception:  # noqa: BLE001 - the lists never fail for this
         errors.append("attached")
     return _with_words(workspace_root, {"generated_at": _iso(now), "today": today.isoformat(),
-            "reminders": reminders_out, "todos": todos[:MINE_CAP],
+            "reminders": reminders_out, "todos": todos[:MINE_CAP], "lanes_known": todo_lanes_known,
             "n_todos": len(todos), "n_reminders": n_reminders, "errors": errors, "attached": attached,
             "attached_cut": attached_cut})
 
@@ -8755,6 +8950,395 @@ def _replayed(ev: Dict[str, Any], verb: str) -> Dict[str, Any]:
     if verb == "delete":
         return {"outcome": "applied", "line": REMINDER_DELETED_LINE, "replayed": True}
     return {"outcome": "applied", "line": "Cleared.", "replayed": True}
+
+
+def _live_project(root, project_id, any_lane: bool = False) -> Optional[str]:
+    """cr1#1658 change 6: a project a to-do added from its drawer goes on,
+    when it is a live project on the thread cards; None otherwise, so the
+    to-do is still added, with no project."""
+    pid = str(project_id or "").strip()
+    if not pid:
+        return None
+    try:
+        import thread_cards as tc
+
+        cards = tc.read_cards(Path(str(root)))[0]
+    except Exception:  # noqa: BLE001 - no cards: no project, never a guessed one
+        return None
+    if pid not in {**(cards.get("threads") or {}), **(cards.get("work_streams") or {})}:
+        return None
+    if any_lane:
+        return pid
+    # review round 1 of #1700: a Hub to-do is on the work side, so a personal project is never stamped on it
+    try:
+        from personal_leak import business_thread_ids
+
+        return pid if pid in business_thread_ids(root) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _meeting_pointer(meeting_id) -> Optional[str]:
+    """cr1#1658 change 8: the pointer a To-do or Remind me made from a
+    meeting keeps, `meeting:<id>`; None without one."""
+    import commitment_state as cs
+
+    mid = str(meeting_id or "").strip()
+    return cs.about_pointer(f"meeting:{mid}") if mid else None
+
+
+def _person_on_file(root, person_id) -> Optional[str]:
+    """cr1#1658 change 8: `person_id` when it is a person on file and not
+    the owner; None otherwise, never a guess."""
+    pid = str(person_id or "").strip()
+    if not pid or pid == str(_owner_id(root) or ""):
+        return None
+    try:
+        import commitments_helpers as cmh
+
+        return pid if pid in cmh._wo_people(str(root)) else None
+    except Exception:  # noqa: BLE001 - no people on file: nobody
+        return None
+
+
+def _made_from(root, inp) -> Optional[str]:
+    """cr1#1658: what a Hub to-do was made from, as its `about_ref`: a
+    message's thread, a person on file (`person:<id>`), or a meeting."""
+    import commitment_state as cs
+
+    who = _person_on_file(root, inp.get("person"))
+    return (_mail_pointer(inp.get("thread_id")) or (cs.about_pointer(f"person:{who}") if who else None)
+            or _meeting_pointer(inp.get("meeting")))
+
+
+def _mr_address(value) -> str:
+    """A bare lower-case address (`mail_rules.address_of`), "" for none."""
+    try:
+        import mail_rules
+
+        return str(mail_rules.address_of(value or "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _mail_pointer(thread_id) -> Optional[str]:
+    """cr1#1658: the pointer a To-do, Remind me or Waiting on them made from
+    an Inbox message keeps to its thread, `mail:thread:<id>`; None without one."""
+    import commitment_state as cs
+
+    tid = str(thread_id or "").strip()
+    return cs.about_pointer(f"mail:thread:{tid}") if tid else None
+
+
+def _made_gate(root, inp) -> Optional[str]:
+    """Review round 1 of #1717: the line that refuses a To-do or Remind me
+    made from a person's card or a meeting, or None to go on (None too for
+    a press from neither). Read before anything is written, failing closed:
+    a fence or a people list it cannot read refuses. A person is refused
+    when off limits (`fence["off"]`, or `account_scope_gate.sender_off_limits`
+    by person), and when on the personal side (a personal tie) and a project
+    is given. A meeting is resolved from the book, never the page: its prep
+    receipt (with its people) or its notes; refused when the book has
+    neither, when nobody else is on it, or when anyone on it is off limits
+    or has a personal tie."""
+    person = str(inp.get("person") or "").strip()
+    meeting = str(inp.get("meeting") or "").strip()
+    if not person and not meeting:
+        return None
+    try:
+        import hub_meeting
+        import hub_work
+        from account_scope_gate import sender_off_limits
+
+        fence = hub_work.fence(root)
+        ties = hub_meeting._tie_ids(Path(str(root)))
+    except Exception:  # noqa: BLE001 - no fence read: refuse, never guess
+        return MAIL_MAKE_FENCE_LINE
+    if fence is None or ties is None:
+        return MAIL_MAKE_FENCE_LINE
+    off = set(fence.get("off") or set())
+    if person:
+        if person in off or sender_off_limits(root, sender_person_id=person):
+            return PERSON_MAKE_OFF_LIMITS_LINE
+        if person in ties and str(inp.get("project") or "").strip():
+            return PERSON_MAKE_TIE_LINE
+    if meeting and str(inp.get("calendar") or "").strip().lower() == "personal":
+        return MEETING_MAKE_PERSONAL_LINE
+    if meeting:
+        people = _meeting_people(root, meeting)
+        if people is None:
+            return MEETING_MAKE_UNKNOWN_LINE
+        people.discard(str(_owner_id(root) or ""))
+        if not people:
+            return MEETING_MAKE_SOLO_LINE
+        if any(p in off or p in ties or sender_off_limits(root, sender_person_id=p) for p in people):
+            return MEETING_MAKE_PRIVATE_LINE
+    return None
+
+
+def _open_item(root, cid) -> bool:
+    """Fix check of round 1 of #1717: whether `cid` is an open item on the
+    list (the only raw ref a reminder from a row carries)."""
+    want = str(cid or "").strip()
+    if not want:
+        return False
+    try:
+        from cru_match import _commitment_id, load_open_commitments
+
+        return any(str(_commitment_id(e)) == want for e in load_open_commitments(Path(str(root)) / "_hq" / "data" / "events.jsonl"))
+    except Exception:  # noqa: BLE001 - no list read: no item, so the press is refused
+        return False
+
+
+def _meeting_people(root, meeting_id: str) -> Optional[set]:
+    """Review round 1 of #1717: the people on a meeting by the book's own
+    record, never the page's word: its prep receipts' `attendee_person_ids`,
+    and the people on its notes (`meeting` rows a `meeting_processed`
+    receipt for this id points at). None when the book has neither."""
+    from connector_adapters.provenance import dedup_key_of
+    from events_io import load_events_owner_scoped
+
+    evs = load_events_owner_scoped(str(root))[0]
+    found, people, refs = False, set(), set()
+    for e in evs:
+        d = e.get("data") if isinstance(e, dict) and isinstance(e.get("data"), dict) else {}
+        if e.get("type") == "prep_brief" and str(d.get("meeting_id") or "") == meeting_id:
+            found = True
+            people |= {str(p) for p in d.get("attendee_person_ids") or [] if str(p).strip()}
+        elif e.get("type") == "meeting_processed" and str(d.get("meeting_id") or "") == meeting_id:
+            found = True
+            # G30: stored refs are compared by their dedup key, never by raw spelling
+            k = dedup_key_of(d.get("source_ref")) if d.get("source_ref") else None
+            if k:
+                refs.add(k)
+    if refs:
+        keys = refs
+        for e in evs:
+            d = e.get("data") if isinstance(e, dict) and isinstance(e.get("data"), dict) else {}
+            if e.get("type") == "meeting" and d.get("source_ref") and dedup_key_of(d.get("source_ref")) in keys:
+                people |= {str(p) for p in e.get("person_ids") or [] if str(p).strip()}
+    return people if found else None
+
+
+def _mail_make_gate(root, inp) -> Optional[str]:
+    """Review round 1 of #1699 (B1, B5): the line that refuses a To-do,
+    Remind me or Waiting on them made from a message, or None to go on. A
+    press with no thread is no mail make (None). It is refused when its
+    thread cannot be kept as a pointer, when it carries no sender, when the
+    fence cannot be read (fail closed, `hub_work.fence`), and when the
+    sender is off limits by address or by the person their address is
+    (`account_scope_gate.sender_off_limits`, which reads a per-sender
+    override that turns writing off too). Read only."""
+    if not str(inp.get("thread_id") or "").strip():
+        return None
+    if _mail_pointer(inp.get("thread_id")) is None:
+        return MAIL_MAKE_BAD_LINE
+    # fix check of round 1: the address read once, in its bare form ("Name <a@b>" is a@b)
+    addr = _mr_address(inp.get("addr"))
+    if "@" not in addr:
+        return MAIL_MAKE_NO_SENDER_LINE
+    # ...and, when the last Inbox run's feed is at hand, it must be the thread's own sender
+    known = _inbox_thread_sender(root, inp.get("thread_id"))
+    if known is None:
+        return MAIL_MAKE_FEED_LINE
+    if known and known != addr:
+        return MAIL_MAKE_SENDER_LINE
+    try:
+        import hub_work
+        from account_scope_gate import sender_off_limits
+
+        fence = hub_work.fence(root)
+    except Exception:  # noqa: BLE001 - no fence read: refuse, never guess
+        return MAIL_MAKE_FENCE_LINE
+    if fence is None:
+        return MAIL_MAKE_FENCE_LINE
+    # fix check of round 1: every person on that address is checked, one or two
+    ids = _people_for_address(root, addr)
+    off = fence.get("off") or set()
+    if sender_off_limits(root, sender_email=addr) or any(i in off or sender_off_limits(root, sender_person_id=i) for i in ids):
+        return MAIL_MAKE_OFF_LIMITS_LINE
+    return None
+
+
+def _inbox_thread_sender(root, thread_id) -> Optional[str]:
+    """Fix check of round 1 (a stopgap until the Inbox run keeps a thread
+    record in the workspace, cr1#1701): the bare sender of `thread_id` in
+    the last Inbox run's feed, when that feed is in its scratch folder.
+    "" when no feed is there, or it does not hold the thread: Apply then
+    checks the press's own sender only. None when something is there but
+    cannot be read as a feed (round-2 fix check: refused, never read as no
+    feed)."""
+    tid = str(thread_id or "").strip()
+    if not tid:
+        return ""
+    try:
+        f = _refresh_file(_task_scratch(root, "inbox"), "feed/inbox")
+        if not f.exists():
+            return ""
+        feed = json.loads(f.read_text(encoding="utf-8"))
+        items = feed.get("items") if isinstance(feed, dict) else None
+        if not isinstance(items, list):
+            return None
+        for it in items:
+            if isinstance(it, dict) and str(it.get("thread_id") or "") == tid:
+                # #1699's round-3 note N1: a row with a blank sender, or a name with no address, is no answer
+                return _mr_address(it.get("sender")) or None
+    except Exception:  # noqa: BLE001 - there but unreadable (a folder, bad JSON): no answer
+        return None
+    return ""
+
+
+def _reminder_made(root, now, ref: Optional[str], summary: str, person: Optional[str] = None) -> bool:
+    """B3: a reminder on the list already made from `ref` with these words;
+    with `person` (review round 1 of #1717), one about that person with
+    these words (the list does not carry its people, so its own rows do)."""
+    import commitment_state as cs
+    import reminders as rm
+
+    want = " ".join(str(summary or "").split()).lower()
+    today = cs._now_calendar_day(_iso(now), workspace_path=str(root)) or now.date()
+    active = rm.load_active_reminders(Path(str(root)), today, surface="m_facing")
+    if person:
+        from events_io import load_events_owner_scoped
+
+        ids = {str(e.get("data", {}).get("id")) for e in load_events_owner_scoped(str(root))[0]
+               if isinstance(e, dict) and e.get("type") == "reminder" and person in (e.get("person_ids") or [])
+               and " ".join(str((e.get("data") or {}).get("summary") or "").split()).lower() == want}
+        return any(str(a.get("id")) in ids for a in active)
+    for a in active:
+        if str(a.get("ref") or "") == ref and " ".join(str(a.get("summary") or "").split()).lower() == want:
+            return True
+    return False
+
+
+def _open_made(root, about: str, title: str) -> Optional[str]:
+    """B3: the id of an open item already made from `about` with these words."""
+    if not about:
+        return None
+    from cru_match import load_open_commitments
+
+    want = " ".join(str(title or "").split()).lower()
+    for ev in load_open_commitments(Path(str(root)) / "_hq" / "data" / "events.jsonl"):
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if d.get("about_ref") == about and " ".join(str(d.get("title") or "").split()).lower() == want:
+            return str(d.get("id") or "")
+    return None
+
+
+def _people_for_address(root, addr) -> set:
+    """Fix check of round 1: every person on file whose address (or one of
+    their addresses) is `addr` in its bare form."""
+    a = _mr_address(addr)
+    if "@" not in a:
+        return set()
+    from entities_io import entities_collection
+
+    try:
+        data = json.loads((Path(str(root)) / "_hq" / "data" / "entities.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no people on file: nobody
+        return set()
+    out = set()
+    for p in entities_collection(data, "people"):
+        if isinstance(p, dict) and p.get("id") and any(_mr_address(m) == a for m in [p.get("email")] + list(p.get("emails") or [])):
+            out.add(str(p["id"]))
+    return out
+
+
+def _person_for_address(root, addr) -> tuple:
+    """`(person id, why)`: the one person on file whose saved address (or
+    one of their addresses) is `addr`; else `(None, "none")`, or
+    `(None, "shared")` when two people share it (B4). Never a guess by name."""
+    hits = _people_for_address(root, addr)
+    if len(hits) == 1:
+        return next(iter(hits)), ""
+    return None, "shared" if hits else "none"
+
+
+def _person_by_address(root, addr) -> Optional[str]:
+    """cr1#1658: the one person on file whose saved address is `addr`, or
+    None (no one, or more than one). Never a guess by name."""
+    a = str(addr or "").strip().lower()
+    if "@" not in a:
+        return None
+    from entities_io import entities_collection
+
+    try:
+        data = json.loads((Path(str(root)) / "_hq" / "data" / "entities.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no people on file: nobody
+        return None
+    hits = []
+    for p in entities_collection(data, "people"):
+        if not isinstance(p, dict) or not p.get("id"):
+            continue
+        mails = [p.get("email")] + list(p.get("emails") or [])
+        if any(str(m or "").strip().lower() == a for m in mails):
+            hits.append(str(p["id"]))
+    return hits[0] if len(set(hits)) == 1 else None
+
+
+def _hub_waiting_add(root, inp, actor) -> Dict[str, Any]:
+    """cr1#1658 change 4: Waiting on them, pressed on an Inbox message: the
+    sender owes the owner what the words say. The person is the one on file
+    with the sender's address, never a guess; the write is the Waiting On
+    add (`commitments_helpers._wo_add_item`, then
+    `commitment_state.create_owed_to_me_item`), pointing at the thread. The
+    same person already owing the same thing is said and writes nothing,
+    which is also what a retried run gets."""
+    import commitments_helpers as cmh
+
+    title = " ".join(str(inp.get("title") or "").split())[:240]
+    if not title:
+        return {"outcome": "error", "line": WAITING_NEEDS_TEXT_LINE}
+    refused = _mail_make_gate(root, inp) if str(inp.get("thread_id") or "").strip() else MAIL_MAKE_BAD_LINE
+    if refused:
+        return {"outcome": "refused", "line": refused}
+    pid, why = _person_for_address(root, inp.get("addr"))
+    if not pid:
+        return {"outcome": "error", "line": WAITING_SHARED_LINE if why == "shared" else WAITING_NO_PERSON_LINE}
+    out = cmh._wo_add_item(str(root), actor=actor, title=title, owner_name=None, owner_id=pid,
+                           n=None, commitment_id=None, about_ref=_mail_pointer(inp.get("thread_id")))
+    st = out.get("status")
+    line = str(out.get("ack") or WAITING_NO_PERSON_LINE)
+    if st == "created":
+        return {"outcome": "applied", "line": line, "commitment_id": out.get("commitment_id")}
+    if st == "already_listed":
+        return {"outcome": "already", "line": line, "commitment_id": out.get("commitment_id")}
+    return {"outcome": "error", "line": line}
+
+
+def _later_rows(workspace_root, opens, owner, now) -> tuple:
+    """cr1#1658 change 5: what is hidden until a day, soonest back first,
+    `(rows, n)`: each open item a live hide keeps off the lists
+    (`mute_ledger.item_snoozes`: the owner's own Later, which moves the
+    date and hides it until then; a Later on what someone owes the owner;
+    a hold), with the day it comes back and whose it is. Read only."""
+    from cru_match import _commitment_id
+    from events_io import load_events_owner_scoped
+    from mute_ledger import check_back_day, item_snoozes
+
+    events = load_events_owner_scoped(str(workspace_root))[0]
+    ends = item_snoozes(events, _iso(now))
+    try:
+        tzinfo = _workspace_tz(workspace_root)
+    except Exception:  # noqa: BLE001 - no zone: the stamp's own UTC day
+        tzinfo = None
+    names = _person_names(workspace_root)
+    rows = []
+    for ev in opens:
+        cid = str(_commitment_id(ev) or "")
+        end = ends.get(cid)
+        if not end:
+            continue
+        day = check_back_day(end, tzinfo)
+        if day is None:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        mine = str(d.get("owner_id") or "") == str(owner or "")
+        other = str(d.get("counterparty_id") or "") if mine else str(d.get("owner_id") or "")
+        rows.append({"id": cid, "title": " ".join(str(d.get("title") or "").split())[:200], "back": day.isoformat(),
+                     "mine": mine, "with": str(names.get(other) or "")[:120]})
+    rows.sort(key=lambda r: (r["back"], r["title"]))
+    return rows[:LATER_CAP], len(rows)
 
 
 def _todo_id(events_path, ref: str) -> Optional[str]:
@@ -9427,6 +10011,36 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                 # cr1#1020: a reminder made from a commitment names it (`ref`),
                 # and may have no day: the owner asked for one without a date.
                 ref = str(inp.get("ref") or "").strip()[:REMINDER_REF_CAP] or None
+                # cr1#1658 change 4: a reminder made from a message names its thread, and
+                # only its thread (round-2 fix check: the press's own ref is never kept beside
+                # one); change 8: one made from a meeting names that meeting, and only it
+                if str(inp.get("thread_id") or "").strip():
+                    ref = _mail_pointer(inp.get("thread_id"))
+                elif str(inp.get("meeting") or "").strip():
+                    ref = _meeting_pointer(inp.get("meeting"))
+                who = _person_on_file(root, inp.get("person"))
+                gate = _mail_make_gate(root, inp) or _made_gate(root, inp)
+                # a ref naming a meeting with no meeting given is the same forged shape: refused
+                if not gate and str(inp.get("ref") or "").strip().lower().startswith("meeting:") and not str(inp.get("meeting") or "").strip():
+                    gate = MEETING_MAKE_UNKNOWN_LINE
+                # fix check of round 1: a ref naming a mail thread is a make from a message, so it
+                # carries its thread (and is gated); a ref given alone is refused
+                if not gate and str(inp.get("ref") or "").strip().lower().startswith("mail:") and not str(inp.get("thread_id") or "").strip():
+                    gate = MAIL_MAKE_BAD_LINE
+                # fix check of round 1 of #1717: any other raw ref (a person:, a made-up id) is
+                # kept only when it names an open item on the list, as the page sends it
+                if (not gate and str(inp.get("ref") or "").strip() and not str(inp.get("thread_id") or "").strip()
+                        and not str(inp.get("meeting") or "").strip() and not _open_item(root, inp.get("ref"))):
+                    gate = REMINDER_BAD_REF_LINE
+                if gate:
+                    r.update(outcome="refused", line=gate)
+                    results.append(r)
+                    continue
+                if ((ref and str(ref).startswith(("mail:thread:", "meeting:")) and _reminder_made(root, now, ref, text))
+                        or (who and _reminder_made(root, now, None, text, person=who))):
+                    r.update(outcome="already", line=MAKE_ALREADY_LINE)
+                    results.append(r)
+                    continue
                 undated = inp.get("undated") is True and not str(inp.get("when") or "").strip()
                 when, why = (None, None) if undated else _hub_day_checked(inp.get("when"), now, root)
                 if not text:
@@ -9434,7 +10048,7 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                 elif undated:
                     today = cs._now_calendar_day(_iso(now), workspace_path=str(root)) or now.date()
                     ev = rm.build_reminder_event(text, remind_from=today, ref=ref, undated=True,
-                                                 source_skill=SOURCE_SKILL)
+                                                 source_skill=SOURCE_SKILL, person_ids=[who] if who else None)
                     ev.setdefault("data", {})["hub_choice"] = choice_id
                     append_event(events_path, ev, holder="cockpit_helpers")
                     r.update(outcome="applied", line=REMINDER_UNDATED_LINE, reminder_id=ev["data"]["id"])
@@ -9444,7 +10058,8 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                     # A day asked for is the day it pins from, as on the Today
                     # page; it is not a deadline (show-my-reminders sets
                     # `due` only for a real one).
-                    ev = rm.build_reminder_event(text, remind_from=when, ref=ref, source_skill=SOURCE_SKILL)
+                    ev = rm.build_reminder_event(text, remind_from=when, ref=ref, source_skill=SOURCE_SKILL,
+                                                 person_ids=[who] if who else None)
                     ev.setdefault("data", {})["hub_choice"] = choice_id
                     append_event(events_path, ev, holder="cockpit_helpers")
                     r.update(outcome="applied", line=f"Reminder set for {when}.",
@@ -9508,21 +10123,35 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                 text = str(inp.get("title") or "").strip()
                 ref = f"{TODO_REF_SCHEME}:{c.get('id')}"
                 prior = _todo_id(events_path, ref) if choice_id else None
+                # review round 1 of #1699: a make from a message is checked first (B1,
+                # B5), and the same make pressed twice is added once (B3)
+                gate = None if prior else (_mail_make_gate(root, inp) or _made_gate(root, inp))
+                made = None if prior or gate or not text else _open_made(root, _made_from(root, inp) or "", text[:240])
                 if not text:
                     r.update(outcome="error", line=TODO_NEEDS_TEXT_LINE)
+                elif gate:
+                    r.update(outcome="refused", line=gate)
+                elif made:
+                    r.update(outcome="already", line=MAKE_ALREADY_LINE, commitment_id=made)
                 elif prior:
                     r.update(outcome="applied", replayed=True, commitment_id=prior,
                              line=f"Added as {PRIORITY_NAMES[_priority(inp.get('priority'))].lower()} priority.")
                 else:
+                    on_project = _live_project(root, inp.get("project"))
                     out = cs.create_personal_task(
                         str(root), title=text[:240], owner_id=actor,
                         source_ref=f"{TODO_REF_SCHEME}:{c.get('id')}",
                         source_skill=SOURCE_SKILL, priority=_priority(inp.get("priority")),
-                        source=TODO_SOURCE)
+                        source=TODO_SOURCE, about_ref=_made_from(root, inp),
+                        primary_thread_id=on_project)
                     cid = ((out or {}).get("commitment") or {}).get("data", {}).get("id")                         or _todo_id(events_path, f"{TODO_REF_SCHEME}:{c.get('id')}")
+                    level = PRIORITY_NAMES[_priority(inp.get('priority'))].lower()
                     r.update(outcome="applied",
-                             line=f"Added as {PRIORITY_NAMES[_priority(inp.get('priority'))].lower()} priority.",
+                             line=((TODO_PERSONAL_PROJECT_LINE if _live_project(root, inp.get("project"), any_lane=True) else TODO_NO_PROJECT_LINE).format(level=level)
+                                   if str(inp.get("project") or "").strip() and not on_project else f"Added as {level} priority."),
                              commitment_id=cid)
+            elif kind == "waiting" and verb == "add":
+                r.update(_hub_waiting_add(root, inp, actor))
             else:
                 r.update(outcome="error", line=UNKNOWN_VERB_LINE.format(verb=f"{kind} {verb}".strip() or "none"))
         except Exception as exc:  # noqa: BLE001 - one row's failure never stops the batch
@@ -9710,7 +10339,7 @@ def _not_work_queued(workspace_root, cid: str, actor: str) -> tuple:
 
 def _assign_home(workspace_root, cid: str, target: str, ledger_open: set, now,
                  label: str, choice_id: str, extra: Optional[Dict[str, Any]] = None,
-                 events: Optional[list] = None) -> tuple:
+                 events: Optional[list] = None, move: bool = False) -> tuple:
     """cr1#1289: "Assign to" on a "No home yet" row. The book picks the
     target: it must be a live work stream on the thread cards, never only
     the page's word. The promise must be open and on no thread (the open
@@ -9727,8 +10356,12 @@ def _assign_home(workspace_root, cid: str, target: str, ledger_open: set, now,
         return {"status": "already_resolved"}, "already", ALREADY_CLOSED_LINE
     cards, _from_log = tc.read_cards(root)
     streams = cards.get("work_streams") or {}
-    if not target or target not in streams:
-        return {"status": "refused", "error": "not_a_work_stream"}, "refused", ASSIGN_NO_STREAM_LINE
+    # cr1#1658 change 6: a move goes to any live project on the cards, a
+    # thread or a work stream; Assign to keeps to work streams
+    places = {**(cards.get("threads") or {}), **streams} if move else streams
+    if not target or target not in places:
+        return ({"status": "refused", "error": "not_a_project" if move else "not_a_work_stream"}, "refused",
+                REHOME_NO_TARGET_LINE if move else ASSIGN_NO_STREAM_LINE)
     events_path = root / "_hq" / "data" / "events.jsonl"
     if events is None:
         from events_io import load_events_owner_scoped
@@ -9743,18 +10376,31 @@ def _assign_home(workspace_root, cid: str, target: str, ledger_open: set, now,
     row = next((x for x in doc.get("rows") or [] if str(x.get("id")) == cid), None)
     if row is None:
         return {"status": "already_resolved"}, "already", ALREADY_CLOSED_LINE
-    if str(row.get("thread_id") or "").strip():
+    here = str(row.get("thread_id") or "").strip()
+    if here and not move:
         return {"status": "has_home", "thread_id": row.get("thread_id")}, "already", ASSIGN_HAS_HOME_LINE
+    if move and not here:
+        # ruling 86: a row with no project keeps Assign to and its work-stream rule
+        return {"status": "refused", "error": "no_home"}, "refused", REHOME_NO_HOME_LINE
+    if move and here == target:
+        return {"status": "same_home", "thread_id": here}, "already", REHOME_SAME_LINE
     seq = (row.get("source") or {}).get("seq")
     src = next((e for e in events if isinstance(e, dict) and e.get("seq") == seq), None) if seq is not None else None
     if src is None:
         return {"status": "error", "error": "no_capture_row"}, "error", GONE_LINE
+    if move:
+        stop = _move_refusal(root, cid, target, src, here)
+        if stop:
+            return stop
     old_related = list(src.get("related_thread_ids") or [])
     new_related = [t for t in old_related if t != target]
+    # cr1#1658: a move records where the item is now (a home given earlier
+    # included), so its Undo puts it back there, not on the capture's thread
     data = {"origin": ol.HOME_ORIGIN, "commitment_id": cid, "target_thread_id": target,
-            "old_primary_thread_id": src.get("primary_thread_id"), "new_primary_thread_id": target,
+            "old_primary_thread_id": (here or src.get("primary_thread_id")) if move else src.get("primary_thread_id"),
+            "new_primary_thread_id": target,
             "old_related_thread_ids": old_related, "new_related_thread_ids": new_related,
-            "reason": ASSIGN_REASON, "cockpit_batch": label}
+            "reason": REHOME_REASON if move else ASSIGN_REASON, "cockpit_batch": label}
     if choice_id:
         data["hub_choice"] = choice_id
     if extra:
@@ -9765,10 +10411,76 @@ def _assign_home(workspace_root, cid: str, target: str, ledger_open: set, now,
         "type": "reclassification", "source_skill": COMMITMENT_SRC, "supersedes_seq": seq,
         "primary_thread_id": target, "related_thread_ids": new_related,
         "classification_confidence": 1.0, "data": data}, holder="cockpit_helpers")
-    name = str((streams.get(target) or {}).get("name") or "").strip()
+    name = str((places.get(target) or {}).get("name") or "").strip()
     out_seq = (landed[0] if isinstance(landed, list) and landed else {}).get("seq")
     return ({"status": "assigned", "thread_id": target, "seq": out_seq}, "applied",
             f"Moved to {name}." if name else "Given a home.")
+
+
+def _move_refusal(root: Path, cid: str, target: str, capture: dict, here: str = "") -> Optional[tuple]:
+    """Review round 1 of #1700: a move is refused, before anything is
+    written, when the fence cannot be read (fail closed), when the item is
+    about someone off limits (`hub_edit._off_limits_item`, as Edit refuses),
+    or when it would cross the personal line: an item on the personal lane
+    (`hub_work.fence`'s `personal`) only to a personal project, an item off
+    it only to a work one (`personal_leak.business_thread_ids`).
+    Answers the press's `(handler, outcome, line)`, or None to go on."""
+    import hub_edit
+    import hub_work
+    from cru_match import _commitment_id, load_open_commitments
+    from personal_leak import business_thread_ids
+
+    fence = hub_work.fence(root)
+    if fence is None:
+        return {"status": "refused", "error": "fence_unread"}, "refused", REHOME_FENCE_LINE
+    live = next((e for e in load_open_commitments(root / "_hq" / "data" / "events.jsonl")
+                 if str(_commitment_id(e)) == cid), None)
+    off = hub_edit._off_limits_item(root, cid, live, capture)
+    if off is None:
+        return {"status": "refused", "error": "fence_unread"}, "refused", REHOME_FENCE_LINE
+    if off:
+        return {"status": "refused", "error": "off_limits"}, "refused", REHOME_OFF_LIMITS_LINE
+    work = business_thread_ids(root)
+    if not work:
+        # #1700's round-2 note (a): no work project read (no threads list) is no answer; refuse
+        return {"status": "refused", "error": "fence_unread"}, "refused", REHOME_FENCE_LINE
+    # fix check of round 1: an item is on the personal side when the fence says
+    # so (person ties, personal reminders) or when the project it is on is
+    # not a work one, ties or not
+    personal_item = cid in (fence.get("personal") or set()) or bool(here and here not in work)
+    business_target = target in work
+    if personal_item == business_target:
+        return {"status": "refused", "error": "crosses_lane"}, "refused", REHOME_LANE_LINE
+    return None
+
+
+def _lanes(root, projects: Dict[str, str]) -> tuple:
+    """Fix check of round 1 of #1700: `(fence, {ids on the personal side})`:
+    the fence's personal lane, plus every item whose project is not a work
+    one. The fence is None when it cannot be read; the set is then empty."""
+    import hub_work
+    from personal_leak import business_thread_ids
+
+    fence = hub_work.fence(root)
+    if fence is None:
+        return None, set()
+    work = business_thread_ids(root)
+    out = set(fence.get("personal") or set())
+    out |= {cid for cid, pid in projects.items() if pid and pid not in work}
+    return fence, out
+
+
+def _projects_of(root, now) -> Dict[str, str]:
+    """Review round 1 of #1700: {item id: the project it is on}, from the
+    open list (a home given on the Hub included), so a row names its project
+    by id and Put in... leaves it out by id, never by name."""
+    import open_list as ol
+
+    try:
+        doc, _counted = ol.read_list(Path(str(root)), now)
+    except Exception:  # noqa: BLE001 - no list: no ids, the page falls back on names
+        return {}
+    return {str(r.get("id")): str(r.get("thread_id") or "") for r in doc.get("rows") or [] if r.get("thread_id")}
 
 
 def _home_written(root: Path, choice_id: str, events: Optional[list] = None) -> Optional[Dict[str, Any]]:
@@ -10277,6 +10989,17 @@ def _undo_home(workspace_root, cid_in: str, press_id: Any, undo_id: str, ledger_
             # archive is tried again below (review of cr1#1341).
             mine = newest
     seq = None
+    if mine is None and pd.get("reason") == REHOME_REASON:
+        # ruling 86: a move's Undo puts it back only on a project still live; never out of sight
+        import thread_cards as tc
+
+        cards = tc.read_cards(root)[0]
+        if str(pd.get("old_primary_thread_id") or "") not in {**(cards.get("threads") or {}), **(cards.get("work_streams") or {})}:
+            return {"status": "refused", "error": "old_home_gone"}, "refused", UNMOVE_GONE_LINE
+        # #1700's round-2 note (b): putting it back is a move too, judged the same way
+        stop = _move_refusal(root, cid, str(pd.get("old_primary_thread_id") or ""), {}, target)
+        if stop:
+            return stop
     if mine is None:
         old_related = list(pd.get("old_related_thread_ids") or [])
         old_primary = str(pd.get("old_primary_thread_id") or "")
@@ -10300,7 +11023,8 @@ def _undo_home(workspace_root, cid_in: str, press_id: Any, undo_id: str, ledger_
     if seq is not None:
         handler["seq"] = seq
     tracked = UNASSIGN_TRACKED_LINE if promoted_from else ""
-    line = UNASSIGN_LINE + tracked
+    # cr1#1658: the Undo of a move puts it back on the project it was on
+    line = (UNMOVE_LINE if pd.get("reason") == REHOME_REASON else UNASSIGN_LINE) + tracked
     name = target
     if pd.get("created_stream") == target:
         import thread_archive as ta
@@ -10814,6 +11538,14 @@ def _apply_commitment_choices_run(workspace_root, choices, *, resolved_by, now_i
                 # that press, and a heard line's press names its obs id.
                 handler, outcome, line = _undo_home(workspace_root, cid, c.get("input"), str(c.get("id") or ""),
                                                     ledger_open, label)
+                r.update(outcome=outcome, line=line)
+                if handler.get("seq") is not None:
+                    r["seq"] = handler["seq"]
+            elif verb == "rehome":
+                # cr1#1658 change 6: the same home a No home yet Assign writes,
+                # for an item that already has one
+                handler, outcome, line = _assign_home(workspace_root, cid, str(c.get("input") or "").strip(),
+                                                      ledger_open, now, label, str(c.get("id") or ""), move=True)
                 r.update(outcome=outcome, line=line)
                 if handler.get("seq") is not None:
                     r["seq"] = handler["seq"]
@@ -12120,67 +12852,315 @@ def _keep_built(workspace_root, task: str, report: List[Dict[str, Any]],
     return token, sizes
 
 
+#: cr1#1714: the refresh in ordered calls, each its own door call, so no one
+#: call needs more than the door's 150 s. On a cloud seat the folder is read
+#: over the computer's mount, and the whole refresh in one call (cr1#1530)
+#: timed out there on every scheduled run. The plate is alone (the largest),
+#: To confirm alone (the next), and Settings and the Record tab close the run
+#: with the Maintenance record and this task's light. Each call reads the event log
+#: once for itself; the documents of all of them land in the one scratch
+#: folder under the first call's token, in this order, the light last.
+REFRESH_STAGES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("plate", ("feed/plate",)),
+    ("reads", ("feed/projects", "feed/board", "feed/mine", "feed/mail_rules",
+               "feed/people", "feed/brief")),
+    ("review", ("feed/review",)),
+    ("record", ("feed/settings", "feed/week", "status/maintenance")),
+)
+REFRESH_STAGE_NAMES: Tuple[str, ...] = tuple(s for s, _d in REFRESH_STAGES)
+#: What a part that did not finish is called in the light's line.
+REFRESH_STAGE_WORDS: Dict[str, str] = {
+    "plate": "the plate",
+    "reads": "the work streams, the Week board, your lists, the mail rules, the people and the brief",
+    "review": "To confirm",
+    "record": "Settings and the Record tab",
+}
+REFRESH_STAGE_MISSING_LINE = "Part of the refresh did not finish ({what}), so the Hub keeps its last copy of that part."
+#: cr1#1715: a document that was not built, or was too large to pull, is not
+#: published; the light names it rather than saying done.
+REFRESH_DOC_WORDS: Dict[str, str] = {
+    "feed/projects": "the work streams", "feed/board": "the Week board", "feed/mine": "your lists",
+    "feed/mail_rules": "the mail rules", "feed/people": "the people", "feed/brief": "the brief",
+    "feed/review": "To confirm", "feed/settings": "Settings", "feed/week": "the Record tab",
+    "status/maintenance": "the Maintenance record",
+}
+REFRESH_DOCS_FAILED_LINE = "{plate} Not updated: {what}; the Hub keeps its last copy of those."
+REFRESH_STAGE_UNKNOWN_LINE = "That is not a part of the refresh; the parts are {names}."
+#: cr1#1714: a part called on its own answers by this many seconds, so the
+#: door (150 s) never stops it with nothing said. A part still building then
+#: answers `ok: false, not_finished: true`; the run goes on, and the last
+#: part's light names it. The door's cap is the limit this stays under.
+REFRESH_STAGE_BUDGET_S = 120
+REFRESH_STAGE_SLOW_LINE = "This part of the refresh did not finish in time; the Hub keeps its last copy of it."
+REFRESH_STAGE_AGAIN_LINE = "That part of this refresh has already run, or the refresh has finished; nothing was built."
+
+
+def _refresh_builders(workspace_root, now_s: str, since_s: str,
+                      built: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Each refresh document's builder, by document. The Maintenance record
+    reads To confirm and the work streams as this run built them (`built`)."""
+    out: Dict[str, Any] = {"feed/plate": lambda: feed_plate(workspace_root, now_iso=now_s)}
+    for doc, name in REFRESH_READS:
+        out[doc] = (lambda name=name: globals()[name](workspace_root, now_iso=now_s))
+
+    def _week() -> Dict[str, Any]:
+        # The recap's sections are a READ of that module. It is loaded by
+        # name because the module also lands the recap document, and a
+        # plain import here would make this module (and everything that
+        # imports it) count as a document renderer in RTGATE1's derived
+        # population. Nothing here renders or lands a document.
+        import importlib
+
+        week_sections = getattr(importlib.import_module("friday_" + "wrap_helpers"), "week_sections")
+        sections = week_sections(str(workspace_root), since_iso=since_s, now_iso=now_s)
+        return feed_week(workspace_root, sections=sections, now_iso=now_s)
+
+    out["feed/week"] = _week
+    out["status/maintenance"] = lambda: maintenance_status(workspace_root, now_iso=now_s,
+                                                           review=built.get("feed/review"),
+                                                           projects=built.get("feed/projects"))
+    return out
+
+
+def _stage_manifest_write(scratch: Path, manifest: Dict[str, Any]) -> None:
+    """Atomic (review of #1718): a stop mid-write leaves the last whole
+    manifest, never a torn one every later part would refuse."""
+    from atomic_write import atomic_write_text
+
+    atomic_write_text(scratch / REFRESH_MANIFEST, json.dumps(manifest, default=str))
+
+
+def _stage_keep(workspace_root, report: List[Dict[str, Any]], built: Dict[str, Dict[str, Any]],
+                manifest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """cr1#1714: keep one call's documents beside the earlier calls' under the
+    same token (a new token for the first call), the manifest last, and
+    answer the manifest. A document over `REFRESH_DOC_LIMIT` is marked too
+    large and not kept, as `_keep_built` does. Raises OSError when the folder
+    cannot be used (or would be inside the workspace)."""
+    scratch = _task_scratch(workspace_root, "refresh")
+    try:
+        scratch.resolve().relative_to(Path(str(workspace_root)).resolve())
+    except ValueError:
+        pass  # outside the workspace, as it must be
+    else:
+        raise OSError("the scratch folder would be inside the workspace")
+    scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
+    man = dict(manifest) if manifest else {"token": secrets.token_hex(8), "sizes": [],
+                                           "stages": [], "report": []}
+    sizes = [list(s) for s in man.get("sizes") or []]
+    for row in report:
+        doc = row["doc"]
+        if doc not in built:
+            continue
+        text = json.dumps(built[doc], separators=(",", ":"), default=str)
+        row["chars"] = len(text)
+        if len(text) > REFRESH_DOC_LIMIT:
+            row["ok"] = False
+            row["error"] = "too_large"
+            continue
+        _refresh_file(scratch, doc).write_text(text, encoding="utf-8")
+        sizes = [s for s in sizes if s[0] != doc] + [[doc, len(text)]]
+    man["sizes"] = sizes
+    man["report"] = list(man.get("report") or []) + report
+    _stage_manifest_write(scratch, man)
+    return man
+
+
+def _stage_load(workspace_root, man: Dict[str, Any], doc: str) -> Optional[Dict[str, Any]]:
+    """A document an earlier call of this run kept, or None."""
+    if not any(s[0] == doc for s in man.get("sizes") or []):
+        return None
+    try:
+        val = json.loads(_refresh_file(_task_scratch(workspace_root, "refresh"), doc).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return val if isinstance(val, dict) else None
+
+
 def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
                 status_docs: Optional[List[Any]] = None,
                 choices: Optional[List[Any]] = None,
-                run_id: Optional[str] = None) -> Dict[str, Any]:
-    """A WRITER (it builds the plate, which mints display numbers). The whole
-    refresh in one process (cr1#1530): the lights a dead run left, the applied
-    choices to clear, the plate, every read feed, the Record tab and the
-    Maintenance record, with the event log read once for the reads.
+                run_id: Optional[str] = None,
+                stage: str = "", token: str = "",
+                budget_s: Optional[float] = None) -> Dict[str, Any]:
+    """A WRITER (it builds the plate, which mints display numbers). The
+    refresh: the lights a dead run left, the applied choices to clear, the
+    plate, every read feed, the Record tab and the Maintenance record.
+
+    cr1#1714: a scheduled run calls it once per part, in `REFRESH_STAGES`
+    order: `stage: "plate"` first (it answers the run's `token`), then
+    `reads`, `review` and `record`, each with that token, each its own door
+    call with the event log read once for it. A part answers `{ok, token,
+    stage, next, pages, seconds, line}`; the last (`record`) answers the
+    whole run's `{ok, token, pages, parts, light, counts, failed, seconds,
+    line}`, and its light is `done` only when every part finished and the
+    plate was built. With no `stage`, every part runs in this one process
+    and the answer is the last part's (in-process callers and tests).
 
     The documents are kept in a scratch folder outside the workspace and are
-    NOT in this answer. It returns `{ok, token, pages: [{doc, ok, chars,
-    seconds, error?}], parts: [[doc, ...], ...], settle, prune, light, counts,
-    seconds, line}`; `refresh_part` hands each part back. A read that fails is
-    named and left out, so the page keeps its old copy; only a failed plate
-    turns the light to error, as before."""
+    NOT in any answer; `refresh_part` hands each part back. A read that fails
+    is named and left out, so the page keeps its old copy."""
     import time
 
     now = _now(now_iso)
     now_s = _iso(now)
     since_s = str(since_iso or "") or _iso(now - _dt.timedelta(days=7))
     started = time.monotonic()
-    built: Dict[str, Dict[str, Any]] = {}
-    report: List[Dict[str, Any]] = []
-
-    def _run(doc: str, fn) -> None:
-        _one_call_build(built, report, doc, fn)
-
+    want = str(stage or "").strip()
+    if want and want not in REFRESH_STAGE_NAMES:
+        return {"ok": False, "stage": want,
+                "line": REFRESH_STAGE_UNKNOWN_LINE.format(names=", ".join(REFRESH_STAGE_NAMES))}
+    stages = [want] if want else list(REFRESH_STAGE_NAMES)
+    man: Optional[Dict[str, Any]] = None
+    if stages[0] != "plate":
+        man = _refresh_manifest(_task_scratch(workspace_root, "refresh"))
+        tok = str(token or "")
+        if not _REFRESH_TOKEN_RE.match(tok) or str(man.get("token") or "") != tok or "stages" not in man:
+            return {"ok": False, "stage": want, "line": ONE_CALL_GONE_LINES["refresh"]}
+        ran = list(man.get("stages") or []) + list(man.get("not_finished") or [])
+        if want in ran or "record" in ran:
+            # review of #1718, item 3: a part runs once, and nothing after the light
+            return {"ok": False, "stage": want, "line": REFRESH_STAGE_AGAIN_LINE}
     statuses = [s for s in (_flat_status(d) for d in (status_docs or [])) if s]
-    # This run wrote its own light to running before this call; settling the
-    # copy read before that would overwrite it and break the finish's pin.
-    settle = [d for d in settle_statuses(workspace_root, statuses, now_iso=now_s)
-              if str(d.get("leg") or "") != "refresh"]
-    prune = plan_prune_choices(workspace_root, list(choices or []), now_iso=now_s)
+    settle: List[Dict[str, Any]] = []
+    prune: Dict[str, Any] = {"writes": []}
+    answer: Dict[str, Any] = {}
+    for name in stages:
+        built: Dict[str, Dict[str, Any]] = {}
+        report: List[Dict[str, Any]] = []
+        if name == "plate":
+            # This run wrote its own light to running before this call; settling the
+            # copy read before that would overwrite it and break the finish's pin.
+            settle = [d for d in settle_statuses(workspace_root, statuses, now_iso=now_s)
+                      if str(d.get("leg") or "") != "refresh"]
+            prune = plan_prune_choices(workspace_root, list(choices or []), now_iso=now_s)
+        if name == "record" and man is not None:
+            for doc in ("feed/review", "feed/projects"):
+                kept = _stage_load(workspace_root, man, doc)
+                if kept is not None:
+                    built[doc] = kept
+        docs = dict(REFRESH_STAGES)[name]
 
-    with _one_log_read():
-        # cr1#1638: the plate is built inside the one log read too. Its own
-        # writes (display numbers) change the file, and the read is keyed on
-        # the file's size and time, so what it reads after a write is new.
-        _run("feed/plate", lambda: feed_plate(workspace_root, now_iso=now_s))
-        for doc, name in REFRESH_READS:
-            _run(doc, lambda name=name: globals()[name](workspace_root, now_iso=now_s))
+        def _build(built=built, report=report, docs=docs) -> None:
+            with _one_log_read():
+                # cr1#1638: the plate is built inside the one log read too. Its own
+                # writes (display numbers) change the file, and the read is keyed on
+                # the file's size and time, so what it reads after a write is new.
+                makers = _refresh_builders(workspace_root, now_s, since_s, built)
+                for doc in docs:
+                    _one_call_build(built, report, doc, makers[doc])
 
-        def _week() -> Dict[str, Any]:
-            # The recap's sections are a READ of that module. It is loaded by
-            # name because the module also lands the recap document, and a
-            # plain import here would make this module (and everything that
-            # imports it) count as a document renderer in RTGATE1's derived
-            # population. Nothing here renders or lands a document.
-            import importlib
+        if not want:
+            _build()
+        else:
+            # cr1#1714: one part on its own answers inside its budget. The
+            # build runs on a worker; a build past the budget is left to the
+            # process's end (as the door's own stop would), and nothing it
+            # built is kept.
+            import threading
 
-            week_sections = getattr(importlib.import_module("friday_" + "wrap_helpers"), "week_sections")
-            sections = week_sections(str(workspace_root), since_iso=since_s, now_iso=now_s)
-            return feed_week(workspace_root, sections=sections, now_iso=now_s)
+            box: Dict[str, Any] = {}
 
-        _run("feed/week", _week)
-        _run("status/maintenance", lambda: maintenance_status(workspace_root, now_iso=now_s,
-                                                              review=built.get("feed/review"),
-                                                              projects=built.get("feed/projects")))
+            def _work() -> None:
+                try:
+                    _build()
+                except BaseException as exc:  # noqa: BLE001 - handed to the caller below
+                    box["exc"] = exc
 
-    # cr1#666: an `idle` answer over a page that says `done` is a read that
-    # failed; the page keeps what it has.
+            worker = threading.Thread(target=_work, name="cr-refresh-" + name, daemon=True)
+            worker.start()
+            worker.join(REFRESH_STAGE_BUDGET_S if budget_s is None else float(budget_s))
+            if worker.is_alive():
+                return _refresh_not_finished(workspace_root, name, man, token=token,
+                                             started=started, now_s=now_s, run_id=run_id)
+            if "exc" in box:
+                raise box["exc"]
+        if name == "record":
+            _refresh_keep_page_maint(built, report, statuses)
+        keep = {d: built[d] for d in docs if d in built}
+        if name == "plate":
+            plate = keep.get("feed/plate")
+            # The plate counts as built when it is kept by the same rule the
+            # keep applies (built, and small enough to pull), cr1#1638.
+            plate_ok = plate is not None and len(json.dumps(plate, separators=(",", ":"), default=str)) <= REFRESH_DOC_LIMIT
+            counts: Dict[str, Any] = {}
+            line = REFRESH_PLATE_FAILED_LINE
+            if plate_ok and plate is not None:
+                day_ago = now - _dt.timedelta(hours=24)
+                closed = 0
+                for c in (plate.get("changes") or {}).get("closed") or []:
+                    try:
+                        if _now(c.get("ts")) >= day_ago:
+                            closed += 1
+                    except Exception:  # noqa: BLE001 - an undated close is not counted
+                        pass
+                counts = {"plate": int(plate.get("n_rows") or 0), "closed": closed}
+                # cr1#1638: the real window, never "overnight".
+                line = f"{counts['plate']} on the plate, {closed} closed in the last day."
+        try:
+            man = _stage_keep(workspace_root, report, keep, man)
+            if name == "plate":
+                man.update(plate_ok=plate_ok, counts=counts, plate_line=line)
+            man["stages"] = list(man.get("stages") or []) + [name]
+            if name == "record":
+                answer = _refresh_finish(workspace_root, man, now_s=now_s, run_id=run_id)
+            _stage_manifest_write(_task_scratch(workspace_root, "refresh"), man)
+        except OSError as exc:
+            return {"ok": False, "stage": name, "line": "The refresh could not keep its answers on this computer.",
+                    "error": type(exc).__name__, "pages": report}
+        if name != "record":
+            nxt = REFRESH_STAGE_NAMES[REFRESH_STAGE_NAMES.index(name) + 1]
+            answer = {"ok": True, "token": man["token"], "stage": name, "next": nxt,
+                      "pages": report, "line": ""}
+    answer["seconds"] = round(time.monotonic() - started, 2)
+    answer["settle"] = settle
+    answer["prune"] = prune
+    return answer
+
+
+def _refresh_not_finished(workspace_root, name: str, man: Optional[Dict[str, Any]], *,
+                          token: str, started: float, now_s: str = "",
+                          run_id: Optional[str] = None) -> Dict[str, Any]:
+    """cr1#1714: a part that ran past its budget. The run's manifest notes it
+    (the plate's call makes the run's manifest here, empty, so the later
+    parts still have a token), and the answer says the part did not finish.
+    The last part's light names it."""
+    import time
+
+    try:
+        man = dict(man) if man else {"token": secrets.token_hex(8), "sizes": [], "stages": [],
+                                     "report": [], "plate_ok": False}
+        man["not_finished"] = list(man.get("not_finished") or []) + [name]
+        scratch = _task_scratch(workspace_root, "refresh")
+        scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _stage_manifest_write(scratch, man)
+    except OSError as exc:
+        return {"ok": False, "stage": name, "line": "The refresh could not keep its answers on this computer.",
+                "error": type(exc).__name__}
+    if name == "record":
+        # review of #1718, item 1: the last part past its budget still writes
+        # the light (naming it) and hands back what the earlier parts built.
+        try:
+            fin = _refresh_finish(workspace_root, man, now_s=now_s or _iso(_now()), run_id=run_id)
+            _stage_manifest_write(_task_scratch(workspace_root, "refresh"), man)
+        except OSError as exc:
+            return {"ok": False, "stage": name, "line": "The refresh could not keep its answers on this computer.",
+                    "error": type(exc).__name__}
+        fin.update(not_finished=True, seconds=round(time.monotonic() - started, 2))
+        return fin
+    idx = REFRESH_STAGE_NAMES.index(name)
+    out: Dict[str, Any] = {"ok": False, "not_finished": True, "token": man["token"], "stage": name,
+                           "line": REFRESH_STAGE_SLOW_LINE,
+                           "seconds": round(time.monotonic() - started, 2)}
+    if idx + 1 < len(REFRESH_STAGE_NAMES):
+        out["next"] = REFRESH_STAGE_NAMES[idx + 1]
+    return out
+
+
+def _refresh_keep_page_maint(built: Dict[str, Dict[str, Any]], report: List[Dict[str, Any]],
+                             statuses: List[Dict[str, Any]]) -> None:
+    """cr1#666: an `idle` answer over a page that says `done` is a read that
+    failed; the page keeps what it has."""
     page_maint = next((d for d in statuses if str(d.get("leg") or "") == "maintenance"), None)
     maint = built.get("status/maintenance")
     if maint is not None and str(maint.get("state") or "") == "idle" \
@@ -12198,50 +13178,44 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
                 if clean is not None:
                     row["scrubbed"] = True
 
-    plate = built.get("feed/plate")
-    # The plate counts as built when it is kept by the same rule `_keep_built`
-    # applies (built, and small enough to pull), decided before keeping so the
-    # light can be kept with the documents (cr1#1638).
-    plate_ok = plate is not None and len(json.dumps(plate, separators=(",", ":"), default=str)) <= REFRESH_DOC_LIMIT
-    counts: Dict[str, Any] = {}
-    if plate_ok and plate is not None:
-        day_ago = now - _dt.timedelta(hours=24)
-        closed = 0
-        for c in (plate.get("changes") or {}).get("closed") or []:
-            try:
-                if _now(c.get("ts")) >= day_ago:
-                    closed += 1
-            except Exception:  # noqa: BLE001 - an undated close is not counted
-                pass
-        counts = {"plate": int(plate.get("n_rows") or 0), "closed": closed}
-        # cr1#1638: the real window, never "overnight".
-        line = f"{counts['plate']} on the plate, {closed} closed in the last day."
-        state = "done"
+
+def _refresh_finish(workspace_root, man: Dict[str, Any], *, now_s: str,
+                    run_id: Optional[str]) -> Dict[str, Any]:
+    """The last part's answer: this task's light, kept last (cr1#1638: the
+    light rides with the documents, so the finish is the same batch as the
+    feeds), and the whole run's parts. The light is `done` only when every
+    part of `REFRESH_STAGES` finished and the plate was built (cr1#1714)."""
+    done = list(man.get("stages") or [])
+    missing = [s for s in REFRESH_STAGE_NAMES if s not in done]
+    plate_ok = bool(man.get("plate_ok"))
+    if missing:
+        what = "; ".join(REFRESH_STAGE_WORDS[s] for s in missing)
+        line, state = REFRESH_STAGE_MISSING_LINE.format(what=what), "error"
+    elif not plate_ok:
+        line, state = REFRESH_PLATE_FAILED_LINE, "error"
     else:
-        line = REFRESH_PLATE_FAILED_LINE
-        state = "error"
+        line, state = str(man.get("plate_line") or ""), "done"
+        bad = [str(r.get("doc")) for r in man.get("report") or []
+               if not r.get("ok") and str(r.get("doc")) in REFRESH_DOC_WORDS]
+        if bad:
+            what = ", ".join(REFRESH_DOC_WORDS[d] for d in bad)
+            line, state = REFRESH_DOCS_FAILED_LINE.format(plate=line, what=what), "error"
     light = status_doc(workspace_root, "refresh", state, line, now_iso=now_s, run_id=run_id,
                        stop_reason=line if state == "error" else None)
-    # cr1#1638: the light rides with the documents, so the finish is the same
-    # batch as the feeds (sorted last) and nothing is retyped from an answer.
-    built["status/refresh"] = light
-    report.append({"doc": "status/refresh", "ok": True, "seconds": 0.0})
-    try:
-        token, sizes = _keep_built(workspace_root, "refresh", report, built)
-    except OSError as exc:
-        return {"ok": False, "line": "The refresh could not keep its answers on this computer.",
-                "error": type(exc).__name__, "pages": report, "light": light}
+    row = {"doc": "status/refresh", "ok": True, "seconds": 0.0}
+    man.update(_stage_keep(workspace_root, [row], {"status/refresh": light}, man))
+    sizes = [(str(s[0]), int(s[1])) for s in man.get("sizes") or []]
+    report = list(man.get("report") or [])
     return {
-        "ok": plate_ok,
-        "token": token,
+        "ok": state == "done",
+        "token": man["token"],
+        "stage": "record",
         "pages": report,
         "parts": _refresh_parts(sizes),
-        "settle": settle,
-        "prune": prune,
         "light": light,
-        "counts": counts,
-        "failed": [r["doc"] for r in report if not r["ok"]],
-        "seconds": round(time.monotonic() - started, 2),
+        "counts": dict(man.get("counts") or {}),
+        "missing": missing,
+        "failed": [r["doc"] for r in report if not r.get("ok")],
         "line": line,
     }
 

@@ -332,6 +332,8 @@
         "org_fact_observed",
         "entity_fact_retracted",
         "commitment_note_retracted",
+        "bring_in_item",
+        "bring_in_item_undone",
         "chart_render",
         "coaching_engagement_started",
         "engagement_baseline_set",

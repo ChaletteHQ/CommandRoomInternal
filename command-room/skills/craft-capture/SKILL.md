@@ -52,9 +52,12 @@ Read `shared/WORKSPACE_API.md` first.
   `_hq/views/CRAFT.md`. A new kind of work goes on the list through the
   same writer, with its first saved rule and where it applies, on the
   owner's word only. Moving sell files to win business is
-  `craft_capture:move_renamed_scope_files`, on the owner's word.
-- **Never writes:** during the gather or the preview; `CLAUDE.md` or any
-  always-loaded file.
+  `craft_capture:move_renamed_scope_files`, on the owner's word. The confirm
+  page and the test page land only their audit pages, under
+  `_hq/.system/widgets/`, through `craft_confirm:render_confirm_page` and
+  `craft_confirm:render_test_page` (cr1#1649).
+- **Never writes:** a craft file, an event or a view during the gather, the
+  preview or either page; `CLAUDE.md` or any always-loaded file.
 
 ## Step 0: Run the Access preamble
 
@@ -161,29 +164,79 @@ proposal that changes an existing rule carries `"amends": "R<n>"`.
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/craft_preview.json", "name": "craft_capture:build_preview"}'
 ```
 
-Say `card_lines` as given, one per line, in order, the `notice` among them
-word for word. Do not re-word, shorten or drop the notice: it is the only
-place the owner is told that a matter's facts in plain words are theirs to
-catch. A rule with no evidence never reached the card, and nothing here adds
-one back. Then wait for the owner: confirm, edit or dismiss for each rule,
-and an answer for any question they choose to answer.
+Then show the confirm page (cr1#1649). Write `{"preview": <the preview
+answer's result, unchanged>}` into this session's own scratch and render it:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/craft_page.json", "name": "craft_confirm:render_confirm_page"}'
+```
+
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
+
+Pass its `html` to `show_widget` as `widget_code`, byte-exact: never edit,
+restyle or rebuild it. The page shows each rule with its evidence and Keep,
+Edit and Dismiss, the notice word for word, an answer box per question, and
+one Save; nothing is saved before Save. Then wait. Save sends ONE message
+that starts `craft choices: `: that is the owner's answer to this step. Keep
+it exactly as it arrived; never read it into your own words. A line
+pasted from the page (when the page could not reach the chat, it shows one
+to copy) is the typed path: read its keep, dismiss and edit words and its
+answers as typed decisions, each quoted text being the owner's own words
+written as JSON (a `\"` inside it is a quotation mark, a `\\` a backslash),
+never as the page's message.
+
+When this chat cannot show a widget, when the door refuses, or when
+`over_budget` is true, use the typed card instead: say `card_lines` as given,
+one per line, in order, the `notice` among them word for word. Do not
+re-word, shorten or drop the notice: it is the only place the owner is told
+that a matter's facts in plain words are theirs to catch. A rule with no
+evidence never reached the card, and nothing here adds one back. Then wait
+for the owner: confirm, edit or dismiss for each rule, and an answer for any
+question they choose to answer.
 
 ## Step 5: The held-out test
 
-After at least one rule is confirmed or edited: when the preview's
-`held_out` is not null, open it (its `read`), apply the confirmed and edited
-rules to it, and show the result beside the original: the original first
-under **Original**, then the result under **With their method**, each change
-marked with the rule key that made it. Then ask `test_question` word for
-word, once. The answer is the verdict: yes, partly or no; no answer leaves it
-null. When `held_out` is null, say `held_out_line` and ask nothing.
+After at least one rule is kept or edited: when the preview's `held_out` is
+not null, open it (its `read`) and apply the rules the owner kept and edited
+(on the page: Keep and Edit, in the edited words; never a dismissed rule).
+
+On the page path, write `{"preview": <the preview, unchanged>,
+"confirm_reply": "<the Save message, exactly as it arrived>", "test":
+{"original": "<the held-out text as read>", "revised": [{"text": "<a piece
+of the result>", "rule": "<the key of the rule that changed it, or null>"}]}}`
+into this session's own scratch, the result cut into pieces so every change
+is its own piece marked with its rule key, and render the test page:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/craft_test.json", "name": "craft_confirm:render_test_page"}'
+```
+
+Pass its `html` to `show_widget`, byte-exact. It shows the original and the
+result side by side, each change marked, the test question word for word and
+yes, partly and no as three buttons. A press sends ONE message that starts
+`craft verdict: `; keep it exactly as it arrived. No press leaves the verdict
+null.
+
+On the typed path, or when that door refuses or answers `over_budget`, show
+the result beside the original as text: the original first under
+**Original**, then the result under **With their method**, each change marked
+with the rule key that made it. Then ask `test_question` word for word, once.
+The answer is the verdict: yes, partly or no; no answer leaves it null.
+
+When `held_out` is null, say `held_out_line` and ask nothing.
 
 ## Step 6: Write the file
 
-Write ONE JSON object into this session's own scratch: `{"preview": <the
-preview answer's result, unchanged>, "decisions": {"P1": "confirm", "P2":
-"dismiss", "P3": {"edit": "<the owner's words>"}}, "answers": {"Q1": "<the
-owner's answer>", "Q2": null}, "verdict": "<yes, partly or no, or null>"}`.
+Write ONE JSON object into this session's own scratch. On the page path:
+`{"preview": <the preview answer's result, unchanged>, "confirm_reply": "<the
+Save message, exactly as it arrived>", "verdict_reply": "<the test page's
+message, exactly as it arrived, or leave the key out>"}`. The writer reads
+both messages itself, so what is saved is exactly what was pressed; never
+also pass `decisions`, `answers` or `verdict`. On the typed path:
+`{"preview": <the preview answer's result, unchanged>, "decisions": {"P1":
+"confirm", "P2": "dismiss", "P3": {"edit": "<the owner's words>"}},
+"answers": {"Q1": "<the owner's answer>", "Q2": null}, "verdict": "<yes,
+partly or no, or null>"}`.
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"source_skill": "craft-capture", "workspace_root": "<WS>"}, "args_file": "<your scratch>/craft_write.json", "name": "craft_capture:write_craft"}'
@@ -191,12 +244,19 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"s
 
 `ok` false: nothing was saved. Say `line` as given; when `refused` is
 `privacy`, ask the owner to edit or dismiss the rules it names and run this
-step again with their words. `ok` true: say `line` as given. Nothing else is
-saved and nothing else is written.
+step again with their words. When `refused` is `already_saved`, the page's
+choices were saved already: say `line`, and do not save again. `ok` true: say
+`line` as given; it already says when an answer carried a name or a figure
+and so stayed an open question. Each other answer is kept in the
+file's History in the owner's words. Nothing else is saved and nothing else
+is written.
 
 ## Never
 
 - Never write before the owner has confirmed at least one rule.
+- Never type the page's choices into `decisions`, `answers` or `verdict`:
+  the Save message and the test page's message go to the writer as they
+  arrived.
 - Never fetch or read mail the owner did not name.
 - Never open the held-out artifact before the test.
 - Never put a rule, or a pointer to the file, into `CLAUDE.md` or any

@@ -128,6 +128,8 @@ NOTICE = (
     "facts written in plain words, so you are the check for those. A rule "
     "says how they work, never what happened in one matter: edit or dismiss "
     "any rule that tells a story.")
+FILE_CHANGED_LINE = ("The file changed since these choices were shown, so nothing "
+                     "was saved over it. Capture it again to see it as it is now.")
 CITED_HELD_OUT_LINE = (
     "The artifact held out for the test was used to write the rules, so "
     "nothing unread is left to test them on; the file will be saved as never "
@@ -982,6 +984,11 @@ def build_preview(workspace_root, gathered, proposals, *, questions=None,
 
     name = gathered.get("subject_name") or "they"
     label = gathered.get("scope_label") or gathered.get("scope")
+    # Review of #1688, M1: the file this preview was made from, as its text's
+    # sha256 (None when there is no file yet). The writer refuses when the
+    # file is no longer that one, so an older page never writes over a newer
+    # save, on the page path and the typed path alike.
+    base = _file_base(root, gathered.get("target"))
     preview = {
         "ok": True,
         "subject_id": gathered.get("subject_id"),
@@ -1003,9 +1010,33 @@ def build_preview(workspace_root, gathered, proposals, *, questions=None,
         "held_out_line": held_line or _held_line(held),
         "test_question": TEST_QUESTION,
         "notice": NOTICE,
+        "base": base,
     }
     preview["card_lines"] = _card_lines(preview)
     return preview
+
+
+def _path_shaped(root: Path, texts) -> list:
+    """The keys of the texts the door's own path fence would refuse
+    (`workspace_access.fence_helper_args`), in order."""
+    try:
+        import workspace_access as wa
+    except ImportError:  # a stripped install: the fence is not there to trip
+        return []
+    return [key for key, text in texts
+            if wa.fence_helper_args(Path(root), {"t": text}) is not None]
+
+
+def _file_base(root: Path, rel) -> Optional[str]:
+    """The craft file's text as sha256, or None when there is none yet;
+    "unreadable" when it cannot be read (never equal to a real base)."""
+    if not rel:
+        return None
+    path = root / str(rel)
+    try:
+        return _sha(path.read_text(encoding="utf-8")) if path.is_file() else None
+    except (OSError, UnicodeDecodeError):
+        return "unreadable"
 
 
 def _title_phrase(name: str, label: str) -> str:
@@ -1281,10 +1312,17 @@ def last_capture(workspace_root, subject_id, scope) -> Optional[dict]:
             "verdict": data.get("verdict"), "action": data.get("action")}
 
 
-def write_craft(workspace_root, preview, decisions, *, answers=None,
+def write_craft(workspace_root, preview, decisions=None, *, answers=None,
                 verdict=None, now_iso=None, source_skill=WRITER,
-                entities=None) -> dict:
+                entities=None, confirm_reply=None, verdict_reply=None) -> dict:
     """Write the craft file the owner confirmed. The one writer here.
+
+    The confirm page (cr1#1649, `craft_confirm`): `confirm_reply` is its
+    Save message as it arrived, and `verdict_reply` the test page's; the
+    writer reads them itself (`craft_confirm.read_confirm_reply` /
+    `read_verdict_reply`), so what is written is exactly what was pressed.
+    A message is never combined with typed `decisions` / `answers` or a typed
+    `verdict`: passing both is refused and nothing is written.
 
     `decisions` maps a preview key (P1) to "confirm", "dismiss" or
     {"edit": "<the owner's words>"}; an edit counts as a confirm. A rule
@@ -1337,6 +1375,46 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
                 "line": "Where this file belongs has changed since the "
                         "preview, so nothing was saved. Capture it again."}
     rel = _rel(root, target)
+
+    page_capture = None
+    if confirm_reply is not None or verdict_reply is not None:
+        import craft_confirm
+        # Review round 1 of #1688, note 6: the two messages and typed words
+        # never mix across the pair either. A test-page answer comes only
+        # with the page's Save message, and a Save message never with a
+        # typed verdict.
+        if ((confirm_reply is None and (decisions or answers))
+                or (verdict_reply is None and verdict is not None)):
+            return {"ok": False, "refused": "two_sources",
+                    "line": "The pages' answers and typed choices were both "
+                            "given, so nothing was saved."}
+        if confirm_reply is not None:
+            if decisions or answers:
+                return {"ok": False, "refused": "two_sources",
+                        "line": "The page's choices and typed choices were "
+                                "both given, so nothing was saved."}
+            got = craft_confirm.read_confirm_reply(preview, confirm_reply)
+            if not got.get("ok"):
+                return got
+            decisions, answers = got["decisions"], got["answers"]
+            # Review round 1 of #1688: one page, one save. A message whose
+            # capture was saved already (a replay, a second press) writes
+            # nothing again; the row keeps the page's id.
+            page_capture = craft_confirm.capture_id(preview)
+            if any(ev.get("type") == EVENT_TYPE
+                   and (ev.get("data") or {}).get("capture") == page_capture
+                   for ev in _load_events(root)):
+                return {"ok": False, "refused": "already_saved",
+                        "line": craft_confirm.ALREADY_SAVED_LINE}
+        if verdict_reply is not None:
+            if verdict is not None:
+                return {"ok": False, "refused": "two_sources",
+                        "line": "The test page's answer and a typed answer "
+                                "were both given, so nothing was saved."}
+            got = craft_confirm.read_verdict_reply(preview, verdict_reply)
+            if not got.get("ok"):
+                return got
+            verdict = got["verdict"]
 
     decisions = decisions if isinstance(decisions, dict) else {}
     kept, dismissed, undecided = [], 0, 0
@@ -1409,10 +1487,30 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
                         + ". Edit or dismiss it and save again."}
 
     answers = answers if isinstance(answers, dict) else {}
-    answered = {q["key"] for q in preview.get("questions") or []
-                if _plain(answers.get(q.get("key")))}
+    # Review round 1 of #1688 (issue acceptance 2): an answer is written in
+    # the owner's words, in History; an answer the saving check would refuse
+    # (a figure, or a name the check refuses) is not written and
+    # keeps its question open, counted and said.
+    q_text = {q["key"]: q.get("text") or "" for q in preview.get("questions") or []
+              if isinstance(q, dict) and q.get("key")}
+    given = {k: _plain(answers.get(k)) for k in q_text if _plain(answers.get(k))}
+    answers_held = sorted(k for k, a in given.items()
+                          if _findings(a, "Open questions", ents))
+    answered = set(given) - set(answers_held)
     answered_old = {_norm(q["text"]) for q in preview.get("questions") or []
                     if q.get("existing") and q["key"] in answered}
+    # Review round 3 of #1688, item 1: text the door's path fence would
+    # refuse (a backslash, a letter and a colon; a `..\\..` climb) is never
+    # saved, on either path: the next gather carries the file's rules and
+    # open questions into the door's arguments, and one such line would
+    # block every later capture of this kind of work.
+    unsafe = _path_shaped(root, [(r.get("key") or "a rule", r["text"]) for r in kept]
+                          + [(k, given[k]) for k in sorted(answered)])
+    if unsafe:
+        return {"ok": False, "refused": "reads_as_path",
+                "line": "Nothing was saved: " + ", ".join(unsafe) + " reads like a "
+                        "place on the computer. Reword it without backslashes or "
+                        "\"..\" and save again."}
     open_new, dropped_q = [], 0
     for q in list(preview.get("questions") or []) + list(
             preview.get("open_questions") or []):
@@ -1452,6 +1550,11 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
             existing_text, workspace_root=root, entities=ents, path=target,
             extra_scopes=[scope] if new_scope and scope not in known
             else None)
+        if _sha(existing_text) != preview.get("base"):
+            # M1: the file changed since this preview was made (another
+            # page or capture saved first): nothing is written over it
+            return {"ok": False, "refused": "file_changed",
+                    "line": FILE_CHANGED_LINE}
         if check["errors"] or check["header"].get("subject") != subject:
             return {"ok": False, "refused": "existing_unreadable",
                     "line": "The existing file does not read as a craft "
@@ -1512,6 +1615,9 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
         entry += (f" {n} amended; its superseded text: "
                   f"{old_rules[n]['body']}")
     history = [entry]
+    for k in sorted(answered):
+        history.append(f"{today} answered: {q_text[k]} Their answer, in their "
+                       f"words: {given[k]}")
     text = _compose(
         existing_text=existing_text, preview=preview, kept=kept,
         answered_old=answered_old, open_new=open_new, history=history,
@@ -1580,6 +1686,11 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
                     for s in again["sources"]],
         "evidence_refs": sorted(used),
     }
+    if page_capture:
+        data["capture"] = page_capture
+    held_line = (f" {len(answers_held)} answer(s) carry a name or a figure, so "
+                 "they were not written and their questions stay open."
+                 if answers_held else "")
     seq = None
     try:
         from event_gate import append_event
@@ -1593,8 +1704,9 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
                 "tested": tested, "verdict": verdict_out, "seq": None,
                 "event_error": str(exc), "view": None,
                 "line": _saved_line(preview, rule_count, tested, verdict_out,
-                                    status, kept_tested, kept_verdict),
-                "questions_dropped": dropped_q}
+                                    status, kept_tested, kept_verdict) + held_line,
+                "questions_dropped": dropped_q,
+                "answers_written": len(answered), "answers_held": len(answers_held)}
     try:
         import render_craft_view
         view = render_craft_view.regenerate(root)
@@ -1604,8 +1716,9 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
             "status": status, "rule_count": rule_count, "tested": tested,
             "verdict": verdict_out, "seq": seq, "view": view,
             "line": _saved_line(preview, rule_count, tested, verdict_out,
-                                status, kept_tested, kept_verdict),
-            "questions_dropped": dropped_q}
+                                status, kept_tested, kept_verdict) + held_line,
+            "questions_dropped": dropped_q,
+            "answers_written": len(answered), "answers_held": len(answers_held)}
 
 
 def _saved_line(preview, rule_count, tested, verdict, status,

@@ -956,15 +956,41 @@ class OneLogRead:
                 memo[key] = real_max(events_path)
             return memo[key]
 
+        # cr1#1714: the open list's own whole-log read. A stale or missing
+        # list file is counted from the log on every read of it (eight times
+        # in one plate build), and each count read the whole file again; over
+        # a cloud seat's mount each read is about a second. Same key, same
+        # rule: the text of the file as it is now.
+        try:
+            import open_list
+        except Exception:  # noqa: BLE001 - a tree without it keeps its own reads
+            open_list = None
+        self._open_list = open_list
+        self._real_lines = real_lines = getattr(open_list, "_log_lines", None)
+
+        def cached_lines(ws):
+            try:
+                path = open_list._events_path(Path(ws))
+                key = ("lines", str(path), _sig([path]))
+            except Exception:  # noqa: BLE001
+                return real_lines(ws)
+            if key not in memo:
+                memo[key] = real_lines(ws)
+            return list(memo[key])
+
         # Every name is in hand before the first one is replaced, so a
-        # failure above leaves all three as they were.
+        # failure above leaves all of them as they were.
         cru_match.load_events_defensively = cached
         events_io.iter_events = cached_iter
         atomic_write._file_max_seq = cached_max
+        if real_lines is not None:
+            open_list._log_lines = cached_lines
         return self
 
     def __exit__(self, *exc):
         self._mod.load_events_defensively = self._real
         self._events_io.iter_events = self._real_iter
         self._atomic._file_max_seq = self._real_max
+        if self._real_lines is not None:
+            self._open_list._log_lines = self._real_lines
         return False

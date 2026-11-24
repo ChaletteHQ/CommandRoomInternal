@@ -157,7 +157,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"c
 
 Write each result as that choice's `result`. A result with outcome `refused` or `already` wrote nothing, and its `line` says why. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the rules list so the page shows the change at once: `run_helper` with `cockpit_helpers:feed_mail_rules` (`{"workspace_root": "<WS>"}`) and `set` the answer on `feed/mail_rules`. The rules apply from the next inbox read.
 
-**`people`** (cr1#1020): the People tab's stars, a person starred to Home or unstarred. Nothing here sends anything or changes a person's record. One writer call, `resolved_by` again left empty:
+**`people`** (cr1#1020): the People tab's stars, a person starred to Today or unstarred. Nothing here sends anything or changes a person's record. One writer call, `resolved_by` again left empty:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the people list, as it came back>], "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_people_choices"}'

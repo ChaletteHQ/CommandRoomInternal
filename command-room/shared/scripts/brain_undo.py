@@ -891,6 +891,25 @@ def _reverse_commitment_note(workspace_root, change, *, undone_by, source_skill)
                                    source_skill=source_skill)
 
 
+def _reverse_bring_in_item(workspace_root, change, *, undone_by, source_skill):
+    """cr1#1586 - take back one row a bring-in batch wrote: a link leaves
+    its project, a copy moves to the archive (never deleted), an item left
+    at its source leaves the pile. ADDITIVE: one `bring_in_item_undone`
+    names the row, which stays in history (`bring_in.take_back_item`). The
+    source is never touched. The owner's own batch: a reversal the machine
+    makes on its own judgment is refused. NEVER ADD THESE CLASSES TO
+    AUTO_ALLOWED."""
+    from bring_in import UNDO_OWNER_ONLY, take_back_item
+
+    if not _undo_actor_is_person(undone_by):
+        raise BrainUndoError(UNDO_OWNER_ONLY)
+    seq = _seq_of_change_ref(change)
+    if seq is None:
+        return {"status": _UNDO_REFUSED, "why": "unrecorded"}
+    return take_back_item(workspace_root, seq, undone_by=undone_by,
+                          source_skill=source_skill)
+
+
 def _reverse_craft_scope(workspace_root, change, *, undone_by, source_skill):
     # CRAFT1 (cr1#396) - take back a kind of work the owner added to the
     # craft scope list. ADDITIVE: `craft_contract.reverse_scope_added`
@@ -2097,6 +2116,30 @@ REVERSERS: dict[str, dict] = {
                        "on your brief, your reminders and the Hub, and a "
                        "repeating one keeps repeating",
     },
+    # cr1#1586: the three kinds of row a bring-in batch writes. Owner-only,
+    # never auto. The people and companies a batch adds are
+    # `person_org_creation_structured_fact` rows in the same batch.
+    "bring_in_link": {
+        "reverse": _reverse_bring_in_item,
+        "reverses_via": "bring_in_item_undone (undoes_seq: the link note's "
+                        "seq; the note stays in history)",
+        "description": "take back a link to something you brought in - it "
+                       "leaves its project; the source is never touched",
+    },
+    "bring_in_copy": {
+        "reverse": _reverse_bring_in_item,
+        "reverses_via": "bring_in_item_undone (the copy moved to "
+                        "_archive/bring-in-undo-<batch>/, never deleted)",
+        "description": "take back a copy you brought in - it moves to the "
+                       "archive; the source is never touched",
+    },
+    "bring_in_left_at_source": {
+        "reverse": _reverse_bring_in_item,
+        "reverses_via": "bring_in_item_undone (and a bring_in_undone row in "
+                        "the bring-in log, which takes it off the pile)",
+        "description": "take an item you left at its source off the "
+                       "Documents with no project pile",
+    },
     # CRAFT1 (cr1#396): an owner-added craft scope. Owner-only, never auto.
     "craft_scope": {
         "reverse": _reverse_craft_scope,
@@ -2413,6 +2456,62 @@ def has_reverser(change_class: str) -> bool:
 # ---------------------------------------------------------------------------
 # Batch resolution
 # ---------------------------------------------------------------------------
+
+class _SentReconcileIndex:
+    """cr1#1706 / cr1#1725: the sent_reconcile windows of one log, built in ONE
+    pass, so a listing answers each audit by bisect instead of scanning the
+    whole log twice per audit (8.4 million row checks on a real book of
+    26,300 rows and 317 audits).
+
+    It answers exactly what `_changes_for_sent_reconcile`'s scan answers,
+    by the same UNDOGUARD rules: a seq is read through `event_seq`, a row
+    with no readable seq is skipped, the window of an audit is
+    `(prev_seq, audit_seq]` where `prev_seq` is the readable sent_reconcile
+    audit just before the FIRST one at `audit_seq` in log order (0 for the
+    first), the closes come back in log order, and an audit that is not on
+    the log raises `BrainUndoError`."""
+
+    def __init__(self, events: list[dict]):
+        from event_seq import event_seq
+
+        self.audits: list[int] = []           # readable audit seqs, log order
+        self.first: dict[int, int] = {}       # audit seq -> index of its first occurrence
+        closes: list[tuple] = []              # (seq, log position, cid)
+        for pos, ev in enumerate(events):
+            t = ev.get("type")
+            if t == "sent_reconcile":
+                seq = event_seq(ev)
+                if seq is None:
+                    continue
+                self.first.setdefault(seq, len(self.audits))
+                self.audits.append(seq)
+            elif t == "commitment_resolved":
+                seq = event_seq(ev)
+                if seq is None:
+                    continue
+                data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                if data.get("resolved_by") != "sent_reconcile":
+                    continue
+                cid = data.get("commitment_id") or data.get("id") or data.get("target_id")
+                if not cid:
+                    continue
+                closes.append((seq, pos, cid))
+        closes.sort(key=lambda c: (c[0], c[1]))
+        self.closes = closes
+        self.seqs = [c[0] for c in closes]
+
+    def changes(self, audit_seq: int) -> list[dict]:
+        from bisect import bisect_right
+
+        k = self.first.get(audit_seq)
+        if k is None:
+            raise BrainUndoError(f"no sent_reconcile audit event at seq {audit_seq}")
+        prev_seq = self.audits[k - 1] if k else 0
+        lo, hi = bisect_right(self.seqs, prev_seq), bisect_right(self.seqs, audit_seq)
+        window = sorted(self.closes[lo:hi], key=lambda c: c[1]) if lo < hi else []
+        return [{"change_class": "commitment_close", "change_ref": f"seq:{seq}", "commitment_id": cid}
+                for seq, _pos, cid in window]
+
 
 def _changes_for_sent_reconcile(events: list[dict], audit_seq: int) -> list[dict]:
     """The commitment closes narrated by ONE sent_reconcile run: every
@@ -3351,6 +3450,7 @@ def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
     undone = undone_index(events)
 
     batches: dict = {}
+    sent_index: Optional[_SentReconcileIndex] = None
     for ev in events:
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         when = parse_ts(event_time(ev))
@@ -3396,7 +3496,11 @@ def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
             if audit_seq is None:
                 continue
             key = f"sent_reconcile:{audit_seq}"
-            sent_changes = _changes_for_sent_reconcile(events, audit_seq)
+            # cr1#1725: one index for the whole listing, built on the first
+            # audit, never one whole-log scan per audit.
+            if sent_index is None:
+                sent_index = _SentReconcileIndex(events)
+            sent_changes = sent_index.changes(audit_seq)
             n = len(sent_changes)
             if not n:
                 continue
@@ -3571,6 +3675,10 @@ _REFUSED_WHY = {
     "newer_date": "it has a newer date",
     # cr1#1371: the item the change names no longer resolves in the book.
     "not_found": "it is no longer where it was written",
+    # cr1#1586 (security review of #1653): a bring-in copy that is no longer
+    # in its folder, or could not be moved to the archive; it is left as it is.
+    "gone": "it is no longer in its folder",
+    "could_not_archive": "it could not be moved to the archive",
 }
 
 
@@ -4288,6 +4396,10 @@ _CLASS_PHRASES = {
     "reminder_deleted": "deleted a reminder",
     # cr1#1463 - the owner's own note on a commitment, never an auto detector's.
     "commitment_note": "added a note to a commitment",
+    # cr1#1586 - the owner's own bring-in, never an auto detector's.
+    "bring_in_link": "linked something you brought in",
+    "bring_in_copy": "copied in something you brought in",
+    "bring_in_left_at_source": "left something you brought in at its source",
     "person_link": "linked a name to an existing contact",
     "person_org_creation_structured_fact": "added a contact",
     "entity_fact_structured": "noted a fact",

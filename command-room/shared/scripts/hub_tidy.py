@@ -402,10 +402,12 @@ def loose_files_counted(workspace_root) -> Tuple[Dict[str, Dict[str, Any]], int]
 def clutter(workspace_root) -> Dict[str, Any]:
     """`{n, by_kind}`: Command Room's own leftovers the folder tidy would
     archive now (`cleanup_actions.plan_folder_tidy`, cr1#1019: released
-    lock folders, old plugin copies, surplus backups). Read only."""
+    lock folders, old plugin copies, surplus backups). Read only. A count:
+    it skips the walk of each old plugin copy's files (cr1#1714; the tidy
+    itself checks each one whole before it moves it)."""
     import cleanup_actions as ca
 
-    plan = ca.plan_folder_tidy(Path(str(workspace_root)))
+    plan = ca.plan_folder_tidy(Path(str(workspace_root)), deep=False)
     return {"n": len(plan.get("moves") or []), "by_kind": {k: int(v) for k, v in (plan.get("by_kind") or {}).items() if v}}
 
 

@@ -747,5 +747,43 @@ def screen_import(workspace_root, items: Optional[Dict[str, Any]] = None, *,
         return _stop(REASON_UNREADABLE)
 
 
-__all__ = ["screen_import", "wall", "left_out_line", "STOP_LINE", "ITEMS_REL",
+def text_checker(workspace_root):
+    """A function that answers whether one text names a walled person (an
+    id, an address or a name with a space, as `screen_import` reads free
+    text), with the wall read ONCE (cr1#1586 fix round 4: the bring-in door
+    screens each item as it reads it). None when the wall cannot be read:
+    fail closed. Read only; never raises."""
+    try:
+        w = wall(workspace_root)
+        if w is None:
+            return None
+        m = _Matcher(set(w["ids"]), set(w["addrs"]), set(w["identity"]))
+
+        def check(text) -> bool:
+            return True if not isinstance(text, str) else bool(m.touches(text))
+        return check
+    except Exception:  # noqa: BLE001 - fail closed
+        return None
+
+
+def walled_texts(workspace_root, texts: Any) -> Optional[List[bool]]:
+    """For each text, whether it names a walled person (an id, an address or
+    a name with a space, as `screen_import` reads free text), judged in ONE
+    pass against the wall read once (cr1#1586 fix round 3: a bring-in item's
+    own text, in chunks). None when the wall cannot be read or the texts are
+    not a list of strings: fail closed, nothing is written. Read only; never
+    raises."""
+    try:
+        if not isinstance(texts, list) or not all(isinstance(x, str) for x in texts):
+            return None
+        w = wall(workspace_root)
+        if w is None:
+            return None
+        m = _Matcher(set(w["ids"]), set(w["addrs"]), set(w["identity"]))
+        return [bool(m.touches(x)) for x in texts]
+    except Exception:  # noqa: BLE001 - fail closed
+        return None
+
+
+__all__ = ["screen_import", "wall", "walled_texts", "text_checker", "left_out_line", "STOP_LINE", "ITEMS_REL",
            "RECORD_COLLECTIONS", "REASON_UNREADABLE", "REASON_BAD_ITEMS"]

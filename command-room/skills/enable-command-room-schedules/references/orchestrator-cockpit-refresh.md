@@ -2,7 +2,7 @@
 
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** this run writes the cockpit page's plate feed from the book. It writes the book nothing but the plate's display numbers (building the plate mints them), and the feed through the artifact database tool. It posts NO widget and lands NO page of its own: the chat turn is one line, then STOP. The page is the surface; this run is one of its four engines (COCKPIT1, cr1#608; four tasks per cr1#619).
 
-**The whole run is one call beside the data (cr1#1530, cr1#1638).** Everything below runs in its order, and nothing else is read to do it: not `cockpit-shared.md`, not another task's file, not the workspace's brain file, no writing rules and no context loader (a refresh writes no words of the owner's). The sections after "When the one call is refused" are the same work in steps, for that case only.
+**The whole build is four calls beside the data, in order (cr1#1530, cr1#1638, cr1#1714).** Everything below runs in its order, and nothing else is read to do it: not `cockpit-shared.md`, not another task's file, not the workspace's brain file, no writing rules and no context loader (a refresh writes no words of the owner's). The sections after "When the one call is refused" are the same work in steps, for that case only.
 
 ## Fixed, never chosen
 
@@ -33,13 +33,21 @@ python3 "$RT/shared/scripts/cockpit_helpers.py" refresh-start --reads "<scratch>
 
 It reads the saved page in code and prints one JSON line. `ok: false`: the start could not run; the whole turn is its `line`; STOP, writing nothing. `stop: true`: another refresh holds this task's light now; the whole turn is its `line`; STOP, writing nothing. Otherwise send `batches[0]` (this run's claim of its own light, the page's own run id when the page fired this run) as ONE `batch`. Refused because `status/refresh` changed: another refresh claimed it a moment ago; the whole turn is "Another refresh is running now; this one stopped without changing anything."; STOP. Then send each later list in `batches` as ONE `batch` (the lights a dead run left, and the old applied choices to clear); a refusal there is left alone, the next refresh does it.
 
-## 4. One writer call
+## 4. Four writer calls, in this order
+
+The build is four parts, each its own call, so no call needs more than the door's time on a seat whose folder is read over the computer's mount (cr1#1714: the whole refresh in one call timed out there on every run). First the plate:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"run_id": "<step 3's run_id>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_all"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"run_id": "<step 3's run_id>", "stage": "plate", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_all"}'
 ```
 
-Its answer is small and carries no feed: `token` and `parts` (what to pull next), `pages` (each document, whether it was built, its size and its seconds), `failed` (the documents left out), `counts` and `line`. This task's own light is one of its documents, so the finish lands with the feeds.
+Its answer carries `token` and `next`. Then each next part with that token, `reads`, then `review`, then `record`, one call each, never two in one call:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"run_id": "<step 3's run_id>", "stage": "<the answer's next>", "token": "<the plate's token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_all"}'
+```
+
+A part that answers `not_finished` (it ran past its time and stopped itself, keeping nothing), or a `reads` or `review` call that fails, times out or answers `ok: false`, is NOT retried: go on to the next part, with the token its answer or the plate's carries; the `record` call names what did not finish on the light. The `record` answer is the run's: `token` and `parts` (what to pull next), `pages` (each document, whether it was built, its size and its seconds), `failed` (the documents left out), `counts` and `line`. This task's own light is one of its documents, so the finish lands with the feeds. A `plate` call that fails with no `token`, or a `record` call that fails with no `token`, is "When a call says no".
 
 ## 5. Pull each part, one call per part
 
@@ -73,7 +81,7 @@ The final response is the answer's `line`, one line, and nothing else. A documen
 
 ## When a call says no
 
-`refresh_all` answering `ok: false` with a `token` still sends its parts as above: its light is the error light with its sentence. An answer with no `token`, or a call that fails, writes the error light through this one call, then the receipt, and the final response is that line:
+The `record` call answering `ok: false` with a `token` (a part that did not finish, a document that did not update, or a `record` that answers `not_finished`, past its own time) still sends its parts as above: its light is the error light with its sentence, naming what did not land. A `plate` answer with no `token`, or a `plate` or `record` call that fails, writes the error light through this one call, then the receipt, and the final response is that line:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"leg": "refresh", "line": "<the answer's line, or the reason the call failed>", "run_id": "<step 3's run_id>", "state": "error", "stop_reason": "<the same line>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:status_doc"}'
@@ -81,7 +89,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"l
 
 `set` its answer on `status/refresh`, pinned to the version a `get` on `status/refresh` shows now.
 
-**When the one call is refused.** An answer that says the name is not on the list (a runtime staged before this call existed) means the one call cannot run here. Only then, do the feed sections below in their order, one call per feed. Never put two feed reads in one call: that is what was cut off. Step 3 has already run, so:
+**When the one call is refused.** An answer that says the name is not on the list (a runtime staged before this call existed), or a `plate` call refused because `stage` is not one of its arguments (a runtime staged before the four calls existed), means the four calls cannot run here. Only then, do the feed sections below in their order, one call per feed. Never put two feed reads in one call: that is what was cut off. Step 3 has already run, so:
 
 - **Skip "First: settle, then clear the old choices":** step 3's batches did both, from the saved reads.
 - **Skip `cockpit-shared.md`'s shared steps 0 and 1:** no Inbox phase, no loader, and the light is NOT rewritten. Step 3's claim is the running light, with step 3's `run_id` and its `claimed_by`; every write below keeps that run id, never this session's id.

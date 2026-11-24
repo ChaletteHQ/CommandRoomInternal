@@ -1425,11 +1425,17 @@ def _rel_posix(root: Path, p: Path) -> str:
     return p.relative_to(root).as_posix()
 
 
-def _tidy_refusal(root: Path, src: Path, kind: str) -> str | None:
+def _tidy_refusal(root: Path, src: Path, kind: str, *, keep: dict | None = None,
+                  deep: bool = True) -> str | None:
     """Why `src` must NOT be moved by the tidy, or None when it may be.
 
     Asked for every entry when the plan is made and by the mover immediately
-    before its one `os.replace`."""
+    before its one `os.replace`. The mover asks it whole. cr1#1714: the plan
+    passes the runtime pointer it already read (`keep`): on a seat with 150
+    old runtimes it parsed every manifest once per runtime. The Hub's count
+    may also skip the walk of a runtime copy's files (`deep=False`, some
+    60,000 files over the mount on every Hub refresh). The mover re-reads
+    the pointer and walks the copy before it moves it."""
     if kind not in _TIDY_AREAS:
         return "unknown_kind"
     try:
@@ -1446,10 +1452,10 @@ def _tidy_refusal(root: Path, src: Path, kind: str) -> str | None:
         return "live_file"
     if not src.exists():
         return "gone"
-    shape = _tidy_shape_refusal(src, kind)
+    shape = _tidy_shape_refusal(src, kind, keep=keep)
     if shape:
         return shape
-    if src.is_dir():
+    if src.is_dir() and (deep or kind != "runtime_copy"):
         return _tidy_subtree_refusal(src, kind)
     return None
 
@@ -1515,7 +1521,7 @@ def _runtime_keep(cache: Path) -> tuple[dict | None, str | None]:
     return {"in_use": current_dir, "floor": floor}, None
 
 
-def _tidy_shape_refusal(src: Path, kind: str) -> str | None:
+def _tidy_shape_refusal(src: Path, kind: str, *, keep: dict | None = None) -> str | None:
     """The check that `src` IS what its class moves, so a plan (or a
     manifest) naming anything else in a tidy area is refused: a released
     lease carries `.lease.released.`; a surplus backup is a file named after
@@ -1537,9 +1543,10 @@ def _tidy_shape_refusal(src: Path, kind: str) -> str | None:
         version = _runtime_stage_version(src)
     else:
         return "wrong_shape"
-    keep, why = _runtime_keep(src.parent)
     if keep is None:
-        return why
+        keep, why = _runtime_keep(src.parent)
+        if keep is None:
+            return why
     if name == keep["in_use"]:
         return "runtime_in_use"
     if _version_key(version) >= _version_key(keep["floor"]):
@@ -1568,7 +1575,7 @@ def _lease_age(p: Path, now: float) -> float | None:
     return age
 
 
-def _plan_runtime(root: Path, now: float, out: dict) -> None:
+def _plan_runtime(root: Path, now: float, out: dict, *, deep: bool = True) -> None:
     cache = root / _TIDY_RUNTIME_DIR
     if not cache.is_dir():
         return
@@ -1588,7 +1595,7 @@ def _plan_runtime(root: Path, now: float, out: dict) -> None:
         age = _entry_age(d, now)
         if age is None or age < TIDY_RUNTIME_MIN_AGE_S:
             continue
-        _plan_add(root, d, "runtime_copy", out)
+        _plan_add(root, d, "runtime_copy", out, keep=keep, deep=deep)
 
 
 def _backup_group(name: str) -> str | None:
@@ -1637,8 +1644,9 @@ def _plan_leases(root: Path, now: float, out: dict) -> None:
         _plan_add(root, p, "lease_folder", out)
 
 
-def _plan_add(root: Path, p: Path, kind: str, out: dict) -> None:
-    why = _tidy_refusal(root, p, kind)
+def _plan_add(root: Path, p: Path, kind: str, out: dict, *, keep: dict | None = None,
+              deep: bool = True) -> None:
+    why = _tidy_refusal(root, p, kind, keep=keep, deep=deep)
     rel = _rel_posix(root, p)
     if why:
         out["refused"].append({"kind": kind, "path": rel, "reason": why})
@@ -1698,9 +1706,15 @@ def _live_fingerprint(root: Path) -> list[dict]:
     return rows
 
 
-def plan_folder_tidy(workspace_root, *, now: float | None = None) -> dict:
+def plan_folder_tidy(workspace_root, *, now: float | None = None, deep: bool = True) -> dict:
     """READ-ONLY. What `tidy_folder` would move, what it refuses and why, and
     the re-count as it stands. Writes nothing, creates nothing.
+
+    `deep=False` (cr1#1714, the Hub's count only, `hub_tidy.clutter`) skips
+    the walk of each old runtime copy's files, the costly part on a seat
+    with many of them; a copy that holds an `_hq` folder is then counted
+    rather than refused. `tidy_folder` always plans deep, and asks every
+    entry again at the move.
 
     Returns `{moves: [{kind, from, is_dir}], refused: [{kind, path, reason}],
     skipped: [{kind, reason}], by_kind: {kind: n}, counts: {...}}`."""
@@ -1708,7 +1722,7 @@ def plan_folder_tidy(workspace_root, *, now: float | None = None) -> dict:
     now = time.time() if now is None else now
     out: dict = {"moves": [], "refused": [], "skipped": []}
     _plan_leases(root, now, out)
-    _plan_runtime(root, now, out)
+    _plan_runtime(root, now, out, deep=deep)
     _plan_backups(root, out)
     out["by_kind"] = {k: sum(1 for m in out["moves"] if m["kind"] == k)
                       for k in _TIDY_KINDS}

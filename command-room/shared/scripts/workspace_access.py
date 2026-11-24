@@ -554,6 +554,11 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # `SESSION_NOTES_<folder name>.md` or the older spelling a folder already
     # holds. Lists one folder and writes nothing; the skill writes the file.
     "session_notes_file:notes_file",
+    # cr1#1586: the bring-in door's four sources, and its whole-batch preview
+    # (the wall first, then the source listed and every name screened);
+    # both write nothing
+    "bring_in:sources",
+    "bring_in:plan",
     # KEEP THIS NAME LAST, directly above the closing brace.
     # `run_access1_test`'s B-1 removal proof anchors on the exact two-line
     # string `"workspace_root:find_workspace_root",` + `})` and puts the
@@ -758,6 +763,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "release_actions.claude_md_nomd_rule_v1:claude_md_nomd_rule_v1",  # FILECARD1 (cr1#610): the no-Markdown line into CLAUDE.md, one applied row
     "release_actions.claude_md_notes_line_v1:claude_md_notes_line_v1",  # cr1#1580: the "Project notes" line in CLAUDE.md rewritten to the one notes name, one applied row
     "release_actions.discuss_list_retired_v1:discuss_list_retired_v1",  # cr1#552: the retired discuss-later list emptied into notes and My Plate tasks, one applied row
+    "bring_in:accept",  # cr1#1586 - a bring-in batch after its preview was accepted; see the writer table row
     "deliverables:export_claude_doc",  # DOCS lane (DOCS1 D-2): a Claude Doc landed in the folder + its receipt row
     "lifecycle_pass:bring_back",  # cr1#753 - see the writer table row
     "cockpit_helpers:feed_plate",  # COCKPIT1 (cr1#608) - see the writer table row
@@ -915,6 +921,8 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "craft_capture:write_craft",  # cr1#398 - see the writer table row
     "craft_contract:add_scope",  # cr1#398 - see the writer table row
     "craft_capture:move_renamed_scope_files",  # cr1#1391 - see the writer table row
+    "craft_confirm:render_confirm_page",  # cr1#1649 - see the writer table row
+    "craft_confirm:render_test_page",  # cr1#1649 - see the writer table row
     "deliverables:land",
 })
 
@@ -2119,10 +2127,14 @@ def _read_args_file(args_file: Any) -> Tuple[Any, Optional[str]]:
         # refusal (`args_file: RecursionError`), never a raise out of the door
         return None, "args_file: " + type(exc).__name__
 
-#: Argument keys whose VALUE is a document's bytes, never a path: the export
-#: payload's `content_base64` (DOCS1 D-2). The key itself is still walked;
-#: the value is decoded by the writer and meets `land`'s fences as bytes.
-CONTENT_KEY_SUFFIXES = ("_base64",)
+#: Argument keys whose VALUE is content, never a path: the export payload's
+#: `content_base64` (DOCS1 D-2), whose value the writer decodes and `land`
+#: fences as bytes; and craft-capture's two page messages (cr1#1649, review
+#: of #1688, M2), `confirm_reply` and `verdict_reply`, JSON text the owner's
+#: words are escaped into (`\"`), which the writer parses and checks against
+#: its preview and which names no file. Matched with `endswith`, so the two
+#: whole names match only themselves. The key itself is still walked.
+CONTENT_KEY_SUFFIXES = ("_base64", "confirm_reply", "verdict_reply")
 
 #: cr1#931: the read helpers that take the scheduler's listing as DATA, and
 #: the argument that carries it. A listing record's `folders` (or the
@@ -2162,6 +2174,56 @@ def listing_fence_view(name: str, args: Any) -> Any:
         return out
 
     return dict(args, **{key: [_without_folders(r) for r in args[key]]})
+
+
+#: cr1#1586 (coordinator ruling on its fork A, for the owner to confirm): the
+#: bring-in door reads "a folder on this computer", which is outside the
+#: workspace by definition. Exactly these two names may carry ONE path outside
+#: the workspace, in exactly this one argument, and only for a source kind the
+#: door has built. `bring_in.source_refusal` judges it before anything runs:
+#: it must exist and be the kind's shape (a folder, or an export file), on
+#: Windows a drive path (never a device or network spelling), and it is never
+#: a hidden folder or dotfile (by name or attribute), a system or secrets
+#: area, the workspace, inside it, or a folder that holds it, each compared
+#: by identity. The `computer:` link
+#: refusal runs first. It is never a write target: the writer writes only
+#: inside the workspace, and every OTHER argument of both names is fenced
+#: exactly as before.
+OUTSIDE_SOURCE_HELPERS = frozenset({"bring_in:plan", "bring_in:accept"})
+OUTSIDE_SOURCE_ARG = "source"
+OUTSIDE_SOURCE_KINDS = frozenset({"folder", "export"})
+
+
+def outside_source_view(name: str, args: Any, vm_path: Path
+                        ) -> Tuple[Any, Optional[Tuple[str, str, str]]]:
+    """`(arguments as the path fence sees them, refusal or None)`.
+
+    For a name in `OUTSIDE_SOURCE_HELPERS` whose `kind` is built, the
+    `source` argument is judged by `bring_in.source_refusal` and, when it
+    passes, left out of the fence's view; a refusal is `(value, reason,
+    line)`. Any other name, kind or argument: the arguments unchanged, no
+    refusal, and the fence judges everything as before."""
+    if (name not in OUTSIDE_SOURCE_HELPERS or not isinstance(args, dict)
+            or OUTSIDE_SOURCE_ARG not in args or args.get("kind") not in OUTSIDE_SOURCE_KINDS):
+        return args, None
+    value = args[OUTSIDE_SOURCE_ARG]
+    if isinstance(value, str) and _carries_computer_link(value):
+        return args, (value, R_REFUSED_COMPUTER_LINK, "")
+    try:
+        _ensure_scripts_on_path()
+        import bring_in as _bring_in  # type: ignore
+
+        why = _bring_in.source_refusal(value, args.get("kind"), vm_path)
+        lines = {"protected": _bring_in.PROTECTED_LINE,
+                 "in_workspace": _bring_in.IN_WORKSPACE_LINE,
+                 "not_local": _bring_in.NOT_LOCAL_LINE,
+                 "linked": _bring_in.LINKED_LINE}
+        line = lines.get(why, _bring_in.NO_SOURCE_LINE.format(what="anything"))
+    except Exception:  # noqa: BLE001 - what cannot be judged is refused
+        why, line = "unjudged", ""
+    if why is not None:
+        return args, (str(value), R_REFUSED_PATH, line)
+    return {k: v for k, v in args.items() if k != OUTSIDE_SOURCE_ARG}, None
 
 
 #: cr1#1058: the `computer:` link scheme in any of its spellings
@@ -2357,7 +2419,11 @@ def run_helper(name: str, args: Optional[Dict[str, Any]] = None, *,
     if wrong_root is not None:
         return _refuse("run_helper", ctx, started, wrong_root[1], name=name,
                        arg=wrong_root[0], line=path_refusal_line("run_helper"))
-    offender = fence_helper_args(Path(ctx["vm_path"]), listing_fence_view(name, dict(args or {})))
+    view, outside = outside_source_view(name, dict(args or {}), Path(ctx["vm_path"]))
+    if outside is not None:  # cr1#1586: the bring-in door's one outside source
+        return _refuse("run_helper", ctx, started, outside[1], name=name, arg=outside[0],
+                       **({"line": outside[2]} if outside[2] else _path_line("run_helper", outside[1])))
+    offender = fence_helper_args(Path(ctx["vm_path"]), listing_fence_view(name, view))
     if offender is not None:
         return _refuse("run_helper", ctx, started, offender[1], name=name,
                        arg=offender[0], **_path_line("run_helper", offender[1]))
@@ -2578,7 +2644,11 @@ def run_writer(name: str, args: Optional[Dict[str, Any]] = None, *,
     if wrong_root is not None:
         return _refuse("run_writer", ctx, started, wrong_root[1], name=name,
                        arg=wrong_root[0], line=path_refusal_line("run_writer"))
-    offender = fence_helper_args(Path(ctx["vm_path"]), bound)
+    view, outside = outside_source_view(name, bound, Path(ctx["vm_path"]))
+    if outside is not None:  # cr1#1586: the bring-in door's one outside source
+        return _refuse("run_writer", ctx, started, outside[1], name=name, arg=outside[0],
+                       **({"line": outside[2]} if outside[2] else _path_line("run_writer", outside[1])))
+    offender = fence_helper_args(Path(ctx["vm_path"]), view)
     if offender is not None:
         return _refuse("run_writer", ctx, started, offender[1], name=name,
                        arg=offender[0], **_path_line("run_writer", offender[1]))

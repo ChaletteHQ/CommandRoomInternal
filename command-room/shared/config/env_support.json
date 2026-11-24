@@ -50,6 +50,12 @@
       "claude_code_local": "full",
       "unknown": "refuse"
     },
+    "bring-in": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
     "calendar-writer": {
       "legacy_cowork": "full",
       "merged_cloud": "full",

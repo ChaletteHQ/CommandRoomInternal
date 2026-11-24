@@ -175,6 +175,9 @@ _NOOP_STATUSES = frozenset({
     # cr1#1289: a Hub "Assign to" press already written, or a promise that
     # already has a home; nothing written either way.
     "already_written", "has_home",
+    # cr1#1658 part 3: a Hub "Put in..." move onto the project the item is
+    # already in; nothing written.
+    "same_home",
     # cr1#1341: an Undo after Apply whose item has moved again since; the
     # later move is the newer truth, nothing written.
     "moved_since",

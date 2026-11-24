@@ -989,14 +989,29 @@ def _effective_ingest_rows(root: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+#: The bring-in door's own log (cr1#1586, security review of #1653 note 12):
+#: kept apart from workspace-ingest's, whose "undo migration" renames that
+#: whole log. Its rows are `left_at_source` and `bring_in_undone`.
+BRING_IN_LOG_REL = "_hq/_bring-in.jsonl"
+
+
 def _left_at_source(root: Path) -> List[Dict[str, Any]]:
     """The imports recorded as left at their source, the newest word on each
     source winning: a later run that filed the same file takes it off, and a
-    run that was undone says nothing."""
+    run that was undone says nothing. The bring-in door's word on a source
+    wins over workspace-ingest's when it is newer (`ts`), or when the ingest
+    row carries no time."""
     latest: Dict[str, Dict[str, Any]] = {}
     for row in _effective_ingest_rows(root):
         src = str(row.get("source") or "").strip()
         if src:
+            latest[src] = row
+    for row in _log_rows(root / BRING_IN_LOG_REL):
+        src = str(row.get("source") or "").strip()
+        if not src:
+            continue
+        had = latest.get(src)
+        if had is None or str(row.get("ts") or "") >= str(had.get("ts") or ""):
             latest[src] = row
     out = []
     for src, row in latest.items():

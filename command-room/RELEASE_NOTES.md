@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.9.0 (2026-11-24)
+
+Every item on the Hub has one Move / Make menu: day buttons, move to another project, and make a to-do, a reminder or a meeting from a message, a person or a meeting, with anyone off limits always left out. Bring things in from a folder or an export through one door with a preview and Undo. The Hub's Refresh now finishes on a large book, so the page stays current through the day, and the Hub reads cleaner throughout. After updating, say "update my hub".
+
 ## v6.8.0 (2026-11-23)
 
 Meetings get their own pages on the Hub. Open an upcoming meeting for a live prep page: what to cover, what is owed both ways and what was left open last time, saved with one Undo; attach a link or a file, which shows in the next brief. Past meetings lists the last seven days with what each still needs, and one press opens its wrap-up to place your promises and close it out. Refresh builds in about a quarter of the time, a move never hides work out of sight, and every scheduled task records how long each step took. After updating, say "update my hub".

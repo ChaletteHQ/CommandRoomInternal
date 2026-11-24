@@ -832,7 +832,7 @@ def _wo_title_key(value: Any) -> str:
 
 def _wo_add_item(workspace_root: str, *, actor: str, title: Any,
                  owner_name: Any, owner_id: Any, n: Any,
-                 commitment_id: Any) -> Dict[str, Any]:
+                 commitment_id: Any, about_ref: Any = None) -> Dict[str, Any]:
     """`add an item: [name] owes me [thing]` (WOADD1, cr1#520), reached only
     through `apply_row_action` once its actor check has passed.
 
@@ -892,7 +892,7 @@ def _wo_add_item(workspace_root: str, *, actor: str, title: Any,
 
     res = cs.create_owed_to_me_item(
         workspace_root, title=thing, owner_id=owner["person_id"],
-        user_id=actor, source_skill=SOURCE_SKILL)
+        user_id=actor, source_skill=SOURCE_SKILL, about_ref=about_ref)
     out = dict(res or {})
     written = out.get("commitment") or {}
     out["commitment_id"] = str((written.get("data") or {}).get("id") or "")

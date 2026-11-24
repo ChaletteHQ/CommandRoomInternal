@@ -119,7 +119,7 @@
   .notetext { min-width: 0; overflow-wrap: anywhere; }
   .noterow a.act, .noterow button.act { font-size: 12.5px; padding: 3px 11px; }
   .light.rise { animation: rise .45s ease both; }
-  .light .name { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--band-soft); }
+  .light .name { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--band-soft); }
   .light .dot { display: inline-block; width: 8px; height: 8px; border-radius: 1px; background: var(--band-rule); flex: none; transition: background .4s ease; }
   .light.running .dot { background: var(--band-ink); animation: blink 1.2s ease-in-out infinite; }
   .light.done .dot { background: var(--band-olive); }
@@ -150,6 +150,11 @@
   /* cr1#1017 behaviour 8: a first-time note, shown until its tab is opened. */
   details.more summary { cursor: pointer; color: var(--ink-soft); font-size: 13px; }
   details.more .sub { margin-top: 3px; }
+  /* cr1#1658: the one Move / Make menu: a heading, its day buttons, one line */
+  .mm { margin-top: 6px; }
+  .mm .mmh { font: 600 12.5px var(--font-sans); color: var(--ink-soft); }
+  .mm .parts { margin-top: 3px; }
+  .sub.refused { color: var(--ink); }
   /* cr1#1013 part 4: the thread and work-stream panel, under its row. */
   .tlink, .wlink { cursor: pointer; }
   .tlink:hover, .wlink:hover { text-decoration: underline; }
@@ -252,8 +257,9 @@
   .tippop[hidden] { display: none; }
   .tippop.up { top: auto; bottom: calc(100% + 6px); }
   .tippop a { color: var(--olive); }
-  .tabtip { display: flex; justify-content: flex-end; margin: -6px 0 2px; }
-  .tabtip .tippop { left: auto; right: -6px; }
+  /* cr1#1645 item 9 (cr1#1636 item 7): a tab's info icon sits beside its heading, never alone */
+  .tabtip { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+  .tabtip .tabh { margin: 0; }
   .hhead { display: flex; align-items: center; gap: 4px; margin: 14px 0 4px; }
   div.hhead h2 { margin: 0; }
   .tcal div.hhead, .tside div.hhead { margin-top: 0; }
@@ -365,6 +371,9 @@
   .beatdot.live { animation: blink 1.6s ease-in-out infinite; }
   /* cr1#1635: what is running, by name, behind the icon beside the status line */
   .beatrow { display: inline-flex; align-items: center; min-width: 0; }
+  /* review round 1 of cr1#1645: between the phone and the wide layout the chip
+     says "Update", so it fits beside the status and the theme button keeps its row. */
+  @media (max-width: 1100px) { .updchip .upready { display: none; } }
   .beattip { display: inline-flex; align-items: center; flex: none; }
   .beattip[hidden] { display: none; }
   button.ghost { background: none; border: 1px solid var(--line); border-radius: var(--pill); padding: 6px 12px; font: 500 13px var(--font-sans); color: var(--ink); display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
@@ -378,7 +387,22 @@
   .tabside [hidden] { display: none; }
   .lookrow { margin: 0 0 10px; }
   .lookrow .viewseg { margin: 0; }
-  #updatebar:not([hidden]) { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+  /* cr1#1645 item 11: the update chip, by the status line */
+  .updwrap:not([hidden]) { display: inline-flex; align-items: center; flex: 0 0 auto; margin-left: 8px; }
+  a.updchip { display: inline-flex; align-items: center; padding: 4px 11px; border-radius: var(--pill); border: 1px solid var(--go); color: var(--go-text); font: 600 12.5px var(--font-sans); text-decoration: none; white-space: nowrap; }
+  a.updchip:hover { background: var(--raise); }
+  .drawer footer.foot { margin: 22px 0 0; }
+  .footinst { color: var(--ink-soft); font-size: 12px; margin: 4px 0 0; }
+  details.mfilt { margin: 8px 0 4px; }
+  details.mfilt > summary { list-style: none; display: inline-flex; cursor: pointer; }
+  details.mfilt > summary::-webkit-details-marker { display: none; }
+  details.mfilt .monthfilter { margin-top: 8px; }
+  /* cr1#1645 item 2: a person's open edit box, full width under the card, its name above it */
+  .row:has(> .edrow) { flex-wrap: wrap; }
+  .row .edrow { flex-basis: 100%; width: 100%; display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .edfull { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; width: 100%; }
+  .edfull .edlab { flex-basis: 100%; font-size: 12.5px; font-weight: 600; color: var(--ink-soft); }
+  .edfull input.when { flex: 1 1 240px; min-width: 0; }
   /* Run details: the lights and the notes, behind the status line (Go is in the top bar since cr1#1591). */
   .rundetails { background: var(--raise); border-radius: var(--card); padding: 0 18px; margin: 0 0 12px; }
   .rundetails:not([open]) { display: none; }
@@ -464,6 +488,11 @@
   .tside .row.one > details.rmore[open] > summary { color: var(--ink); }
   .tside .row.one > details.rmore .sub { margin-top: 3px; }
   .tside .row.one > details.rmore .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  /* review round 1 of cr1#1645: Am I ready's More, as the rows above draw theirs */
+  #wkready details.rmore > summary { cursor: pointer; list-style: none; font: 500 12.5px var(--font-sans); color: var(--ink-soft); }
+  #wkready details.rmore > summary::-webkit-details-marker { display: none; }
+  #wkready details.rmore[open] > summary { color: var(--ink); }
+  #wkready details.rmore .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
   /* cr1#1636 item 6: the title comes first on its line and is cut only at a
      word (the words that do not fit go to a second line that is not shown;
      the whole text is its hover); the when takes only the room the title
@@ -581,7 +610,16 @@
 
   /* cr1#1540: Work's Triage: the plate, the piles, the lanes, priorities in order, threads and updates. */
   /* cr1#1591: three tiles; the age of the open list sits in the Late tile's popover. */
-  .tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 6px; }
+  .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 6px; }
+  /* cr1#1645 item 4: a tile is a press */
+  .tile .tilebtn { all: unset; display: flex; flex-direction: column; cursor: pointer; border-radius: var(--card); }
+  .tile .tilebtn:focus-visible { outline: 2px solid var(--go); outline-offset: 4px; }
+  .tile:has(.tilebtn:hover) { box-shadow: 0 0 0 1px var(--line); }
+  h2.boardh { margin-top: 18px; }
+  .cmenu .cmrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .cmenu .cmrow + .cmrow { margin-top: 6px; }
+  .runacts { margin-top: 10px; }
+  .rnone { margin: 2px 0 6px; }
   .tile { background: var(--raise); border-radius: var(--card); padding: 14px 16px; display: flex; flex-direction: column; min-width: 0; position: relative; }
   .tile b { font: 600 26px var(--font-display); letter-spacing: -.02em; line-height: 1.1; }
   .tile span { font-size: 13.5px; font-weight: 500; }
@@ -655,7 +693,7 @@
   /* cr1#1632 slice 1: the live prep page, two columns, one on a phone */
   .mlive { display: grid; grid-template-columns: 1.25fr 1fr; gap: 20px; margin-top: 14px; }
   @media (max-width: 720px) { .mlive { grid-template-columns: 1fr; } }
-  .mlive .ph { font-weight: 700; font-size: 13px; margin-top: 16px; }
+  .mlive .ph, #meetlive > .ph { font-weight: 700; font-size: 13px; margin-top: 16px; }   /* cr1#1671: the no-brief Attached heading too */
   .mlive .walk { font-size: 1.05em; margin: 4px 0 12px; }
   .mlive .dcard { padding: 8px 0; }
   .mlive .dcard .opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
@@ -676,6 +714,10 @@
   .wkwrap { overflow-x: auto; overflow-y: hidden; margin: 0 0 18px; padding-bottom: 10px; }
   .wk { position: relative; display: grid; grid-template-columns: 28px repeat(7, minmax(96px, 1fr)); }
   .wkh { position: relative; }
+  .wkall { display: grid; grid-template-columns: 28px repeat(7, minmax(96px, 1fr)); border-bottom: 1px solid var(--line); }
+  .wkalh { font-size: 10.5px; color: var(--ink-soft); padding: 4px 2px 0 0; text-align: right; line-height: 1.1; }
+  .wkac { border-left: 1px solid var(--line); padding: 3px 3px 4px; min-width: 0; }
+  .wkad { font-size: 11.5px; line-height: 1.3; padding: 1px 5px; margin-bottom: 2px; border-radius: 4px; background: color-mix(in srgb, var(--line) 60%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* cr1#1591: the drag note's icon, in the corner above the hours. */
   .wkcorner { position: absolute; top: 4px; left: 0; z-index: 3; }
   .wkcorner .tippop { left: 0; }
@@ -804,6 +846,7 @@
     nav.tabs button[data-tab] { padding: 6px 8px; font-size: 13.5px; }
     .mastsp { display: none; }
     .beatrow { order: 6; flex: 1 1 0; }
+    .updchip .upready { display: inline; }   /* on a phone the chip has its row's room: Update ready */
     button.beat { flex: 0 1 auto; max-width: none; }
     .ringwrap { order: 7; }
     .daysent, .dayhead .daysent { font-size: 21px; }
@@ -859,7 +902,7 @@
   <button role="tab" aria-selected="false" aria-controls="tab-record" tabindex="-1" data-tab="record">Record</button>
   </nav>
   <span class="mastsp"></span>
-  <span class="beatrow"><button class="beat" id="beatBtn" type="button" aria-expanded="false" aria-controls="rundetails" title="How the day's run stands. Press for Run details: the lights and any note."><span class="beatdot" id="beatDot"></span><span class="dayline" id="dayline" aria-live="polite">Loading the day.</span></button><span class="beattip" id="beatTip" hidden></span></span>
+  <span class="beatrow"><button class="beat" id="beatBtn" type="button" aria-expanded="false" aria-controls="rundetails" title="How the day's run stands. Press for Run details: the lights and any note."><span class="beatdot" id="beatDot"></span><span class="dayline" id="dayline" aria-live="polite">Loading the day.</span></button><span class="beattip" id="beatTip" hidden></span><!-- cr1#1389, cr1#1645 item 11: shown only when the installed plugin is newer than this page; one chip inside the status line's row (review round 1: so it wraps with it at every width). The link opens a chat with "finish update" typed in; nothing runs until the owner sends it. --><span class="updwrap" id="updatebar" hidden><a class="updchip" id="finishUpdate" href="#" target="_blank" rel="noopener" title="Open a chat with finish update typed in. Nothing runs until you send it."><span id="updatetext"></span></a></span></span>
   <div class="ringwrap idle" id="ringwrap">
     <span class="halo"></span>
     <svg aria-hidden="true" focusable="false">
@@ -886,6 +929,8 @@
   <div class="runside">
     <div class="runmeta"><span class="meta" id="metaline">{{WORKSPACE_BASENAME}}</span><span class="clock" id="clock"></span><span class="waiting none" id="waiting"></span></div>
     <div class="lights" id="lights"></div>
+    <!-- cr1#1645 item 7: the Inbox tab has one Check now; the full inbox read runs from here. -->
+    <div class="parts runacts"><button class="act" data-part="inbox" disabled title="Run the whole inbox read again in the background">Run the inbox read</button></div>
     <div class="maintnote" id="oknote" hidden></div>
     <div class="maintnote" id="maintnote" hidden></div>
     <div class="maintnote" id="holdernote" hidden></div>
@@ -904,8 +949,7 @@
   <div id="missrows"></div>
 </div>
 
-<!-- cr1#1389: shown only when the installed plugin is newer than this page. The link opens a chat with "finish update" typed in; nothing runs until the owner sends it. -->
-<div class="banner" id="updatebar" hidden><span class="noteic info" role="img" aria-label="Information"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="7" fill="currentColor"></circle><path d="M8 7.3v4.2" fill="none" stroke="var(--raise)" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="var(--raise)"></circle></svg></span><span class="notetext" id="updatetext"></span> <a class="act primary" id="finishUpdate" href="#" target="_blank" rel="noopener" title="Open a chat with finish update typed in. Nothing runs until you send it.">Finish update</a></div>
+<!-- cr1#1645 item 11: the update is one chip in the top bar, by the status line (see #updatebar there). -->
 
 <section class="tab on" id="tab-today" role="tabpanel">
   <!-- cr1#1636 item 7: Today's own line sits in the headline's icon (renderSentence), beside
@@ -932,6 +976,7 @@
       <!-- cr1#1632 slice 1: the live prep page (design E1), from the brief's parts -->
       <div id="meetlive"></div>
       <div id="meetattach" class="attach"></div>
+      <div id="meetmake"></div>
     </div>
     <!-- cr1#1632 slice 3: a past meeting's wrap-up page (design E2) -->
     <div id="wrapview" hidden>
@@ -941,7 +986,7 @@
     <div id="todaymid">
     <div id="nextmeeting"></div>
     <!-- cr1#1591 B4: one heading, one count (the day's needs-you number), one quiet switch to Everything and back -->
-    <div class="needhead"><h2 id="needhead">Needs you<span class="needn" id="needN"></span></h2><span id="todayseg"><button type="button" class="viewswitch" data-tview="all" title="Show everything open, not only what needs you now">Everything</button></span></div>
+    <div class="needhead"><h2 id="needhead">Needs you<span class="needn" id="needN"></span></h2><span id="todayseg"><button type="button" class="viewswitch" data-tview="all" title="Show everything open, not only what needs you now">Show all open</button></span></div>
     <div id="todayFocus">
       <div id="focusrows"></div>
       <div class="fquiet" id="focusquiet"></div>
@@ -983,11 +1028,8 @@
 </section>
 
 <section class="tab" id="tab-inbox" role="tabpanel">
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-inbox" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-inbox" hidden>Mail that may need you, to reply to, put in your drafts or set aside.</span></span></div>
+  <div class="tabtip"><h2 class="tabh">Inbox</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-inbox" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-inbox" hidden>Mail that may need you, to reply to, put in your drafts or set aside.</span></span></div>
   <!-- cr1#1643: no Apply on a tab; the top bar's Apply shows while a choice waits, with its count -->
-  <div class="parts">
-    <button class="act" data-part="inbox" disabled>Check inbox</button>
-  </div>
   <div class="quiet" id="inboxhead" hidden></div>
   <!-- cr1#1538: what the page lists itself while it is open, and when it last looked.
        cr1#1591: the inbox read's own sentence sits behind the icon beside it (renderInbox). -->
@@ -1007,7 +1049,7 @@
 
 <!-- cr1#1537: the week board, on its own tab (it sat inside Today as a second view until now). -->
 <section class="tab" id="tab-week" role="tabpanel">
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-week" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-week" hidden>The next seven days: your meetings, your time away and what is due each day, then your priorities across them.</span></span></div>
+  <div class="tabtip"><h2 class="tabh">Week</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-week" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-week" hidden>The next seven days: your meetings, your time away and what is due each day, then your priorities across them.</span></span></div>
   <!-- cr1#1539: the week drawn to scale; a meeting you organise drags to another time or day. -->
   <div class="wkwrap"><div id="weekgrid"></div></div>
   <div id="weekpick"></div>
@@ -1028,11 +1070,12 @@
       <div id="wkpanels" hidden></div>
     </div>
   </div>
-  <div id="todayWeek"><div class="board" id="board"></div><div class="quiet" id="boardnote"></div><div class="lanes" id="boardLanes"></div></div>
+  <!-- cr1#1645 item 9: the board has its heading -->
+  <div id="todayWeek"><h2 class="boardh">Due this week</h2><div class="board" id="board"></div><div class="quiet" id="boardnote"></div><div class="lanes" id="boardLanes"></div></div>
 </section>
 
 <section class="tab" id="tab-people" role="tabpanel">
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-people" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-people" hidden>The people in your book, to find, add or rename someone, add context, set their role, email or company, or star them.</span></span></div>
+  <div class="tabtip"><h2 class="tabh">People</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-people" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-people" hidden>The people in your book, to find, add or rename someone, add context, set their role, email or company, or star them.</span></span></div>
   <input class="search" id="peoplesearch" placeholder="Search people" aria-label="Search people">
   <div id="peoplehead" class="quiet"></div>
   <div id="peoplerows" class="col"></div>
@@ -1043,15 +1086,15 @@
 <section class="tab" id="tab-work" role="tabpanel">
   <div class="viewseg workseg" id="workseg" role="group" aria-label="Show triage, your commitments, your priorities, your work streams or your updates"><button type="button" data-work="triage" aria-pressed="true">Triage</button><button type="button" data-work="plate" aria-pressed="false">Commitments<span class="count info" id="plateCount">0</span></button><button type="button" data-work="priorities" aria-pressed="false">Priorities<span class="count info" id="priorityCount">0</span></button><button type="button" data-work="projects" aria-pressed="false">Work streams<span class="count info" id="projectCount">0</span></button><button type="button" data-work="updates" aria-pressed="false">Updates</button></div>
 <div class="workview" id="tab-triage">
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-triage" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-triage" hidden>Everything you have open: the big piles to clear in one press each, then the rest by what each one wants next.</span></span></div>
+  <div class="tabtip"><h2 class="tabh" data-work="triage">Triage</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-triage" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-triage" hidden>Everything you have open: the big piles to clear in one press each, then the rest by what each one wants next.</span></span></div>
   <div id="wkplate"></div>
   <div id="wkpiles"></div>
   <div id="wklanes"></div>
 </div>
 <div class="workview" id="tab-plate" hidden>
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-plate" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-plate" hidden>Promises you made and promises made to you, to mark done, snooze to hide, drop or edit its words or date before Apply.</span></span></div>
+  <div class="tabtip"><h2 class="tabh" data-work="plate">Commitments</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-plate" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-plate" hidden>Promises you made and promises made to you, to mark done, snooze to hide, drop or edit its words or date before Apply.</span></span></div>
   <!-- cr1#1286: Overdue and Review are filters here, in the owner's order. Only a filter that needs the owner carries a count. -->
-  <div class="overdueswitch" role="group" aria-label="Show part of your commitments"><button class="act" id="showOverdue" type="button">Late <span id="overdueCount">0</span></button><button class="act" id="showConfirm" type="button">To confirm <span id="reviewCount">0</span></button><button class="act" id="showWaiting" type="button">Waiting on</button><button class="act on" id="showAll" type="button">All open</button></div>
+  <div class="overdueswitch" role="group" aria-label="Show part of your commitments"><button class="act" id="showOverdue" type="button">Late <span id="overdueCount">0</span></button><button class="act" id="showConfirm" type="button">To confirm <span id="reviewCount">0</span></button><button class="act" id="showWaiting" type="button">Waiting on</button><button class="act" id="showLater" type="button" title="What is hidden until a day">Later <span id="laterCount">0</span></button><button class="act on" id="showAll" type="button">All open</button></div>
   <div id="platewrap">
   <input class="search" id="search" placeholder="Search the list" aria-label="Search the list">
   <button class="act" id="allProjects" type="button" hidden>All projects</button>
@@ -1071,9 +1114,13 @@
   <div id="waithead" class="quiet"></div>
   <div id="waitrows" class="col"></div>
   </div>
+  <div id="laterwrap" hidden>
+  <div id="laterhead" class="quiet"></div>
+  <div id="laterrows" class="col"></div>
+  </div>
 </div>
 <div class="workview" id="tab-priorities" hidden>
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-priorities" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-priorities" hidden>The goals you are working toward, to add one or change the wording of yours, and the ones suggested for your yes.</span></span></div>
+  <div class="tabtip"><h2 class="tabh" data-work="priorities">Priorities</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-priorities" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-priorities" hidden>The goals you are working toward, to add one or change the wording of yours, and the ones suggested for your yes.</span></span></div>
   <div id="wkprio"></div>
   <!-- cr1#1591: wording, adding and suggestions, folded under one header -->
   <details class="wkfold" id="prioedit"><summary id="prioeditsum">Edit priorities</summary>
@@ -1082,7 +1129,7 @@
   </details>
 </div>
 <div class="workview" id="tab-projects" hidden>
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-projects" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-projects" hidden>Your ongoing work, such as a client or a deal, with its meetings, emails and promises, to add, rename or add context.</span></span></div>
+  <div class="tabtip"><h2 class="tabh" data-work="projects">Work streams</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-projects" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-projects" hidden>Your ongoing work, such as a client or a deal, with its meetings, emails and promises, to add, rename or add context.</span></span></div>
   <div class="filters">
     <input class="search" id="psearch" placeholder="Search work streams and threads" aria-label="Search work streams and threads">
     <select class="prio" id="pcompany" aria-label="Show one company's threads"><option value="">Every company</option></select>
@@ -1093,21 +1140,20 @@
   <div id="tidy"></div>
 </div>
 <div class="workview" id="tab-updates" hidden>
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-updates" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-updates" hidden>Short notes from you on your work, each with its date, to post one or take one back.</span></span></div>
+  <div class="tabtip"><h2 class="tabh" data-work="updates">Updates</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-updates" aria-label="About this view"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-updates" hidden>Short notes from you on your work, each with its date, to post one or take one back.</span></span></div>
   <div id="wkupdates"></div>
 </div>
 </section>
 
 <!-- cr1#1537: Record is the Done tab's body, unchanged (its feed is still feed/week). -->
 <section class="tab" id="tab-record" role="tabpanel">
-  <div class="tabtip"><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-record" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-record" hidden>What was done this month, then this week's changes for you and by you, with Put it back on any you disagree with.</span></span></div>
+  <div class="tabtip"><h2 class="tabh">Record</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-tab-record" aria-label="About this tab"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-tab-record" hidden>What was done this month, then this week's changes for you and by you, with Undo on any you disagree with.</span></span></div>
   <div id="weekmonth"></div>
   <div id="weekmeasure" class="quiet"></div>
   <div id="weekhead" class="quiet"></div>
   <div id="weekrows" class="col"></div>
 </section>
 
-<footer class="foot" id="foot">Command Room {{PLUGIN_VERSION}}{{RUNTIME_VERSION_LINE}} · published {{PUBLISHED_AT}}</footer>
 
 <!-- cr1#1537: the two side panels, one at a time. Brief is this morning's
      brief as written; the gear holds what the Settings tab held, with its Apply. -->
@@ -1127,6 +1173,10 @@
   <div id="settingshead" class="quiet"></div>
   <div id="settingsrows" class="col"></div>
   <div id="settingsguide" class="col"></div>
+  <!-- cr1#1641 item 5 (cr1#1645): the version and publish time live in Settings, not under every tab. -->
+  <footer class="foot" id="foot">Command Room {{PLUGIN_VERSION}}{{RUNTIME_VERSION_LINE}} · published {{PUBLISHED_AT}}</footer>
+  <!-- review round 1: the installed version a touch cannot hover for, when an update is ready -->
+  <div class="footinst" id="footinst" hidden></div>
 </aside>
 <!-- cr1#1539: the three calendar panels. Nothing in them changes a calendar until its own button is pressed. -->
 <aside class="drawer" id="drawer-book" role="dialog" aria-modal="true" aria-labelledby="bookTitleHead" hidden>
@@ -1310,10 +1360,29 @@
     if (wide < 2 || !letters || titleLetters(s, true) * 5 < letters * 4) return s;
     return words.map(function (w) { return titleCapsWord(w, names); }).join(" ");
   }
+  // cr1#1641 item 6 (cr1#1645): a chat emoji code (":saluting_face:", or one
+  // cut short, ":saluting_face") shows as the emoji, or as its words.
+  var EMOJI_CODES = { "+1": "\ud83d\udc4d", thumbsup: "\ud83d\udc4d", "-1": "\ud83d\udc4e", pray: "\ud83d\ude4f", tada: "\ud83c\udf89",
+    white_check_mark: "\u2705", heavy_check_mark: "\u2714\ufe0f", eyes: "\ud83d\udc40", fire: "\ud83d\udd25", rocket: "\ud83d\ude80",
+    smile: "\ud83d\ude04", slightly_smiling_face: "\ud83d\ude42", joy: "\ud83d\ude02", heart: "\u2764\ufe0f", clap: "\ud83d\udc4f",
+    raised_hands: "\ud83d\ude4c", saluting_face: "\ud83e\udee1", wave: "\ud83d\udc4b", ok_hand: "\ud83d\udc4c", muscle: "\ud83d\udcaa",
+    thinking_face: "\ud83e\udd14", warning: "\u26a0\ufe0f", x: "\u274c", 100: "\ud83d\udcaf" };
+  function emojiWords(s) {
+    // review round 1: ":tada:" only when the code is known (":note:" stays as
+    // written); the cut-short form only leading, and only for a name with an
+    // underscore and three letters or more (":saluting_face"), never ":30 sync",
+    // ":p that was fun" or ":x marks it".
+    return String(s).replace(/(^|\s):([a-z0-9_+-]{1,40})(:?)(?=\s|$)/g, function (m, pre, name, close) {
+      var known = Object.prototype.hasOwnProperty.call(EMOJI_CODES, name);
+      if (close) return known ? pre + EMOJI_CODES[name] : m;
+      if (pre !== "" || name.indexOf("_") < 0 || name.length < 3) return m;
+      return pre + (known ? EMOJI_CODES[name] : name.replace(/_/g, " "));
+    });
+  }
   function showTitle(t, opts) {
     opts = opts || {};
     var kind = Object.prototype.hasOwnProperty.call(TITLE_KINDS, opts.kind) ? opts.kind : "item", K = TITLE_KINDS[kind], hit = false, prev;
-    var s = String(t == null ? "" : t).replace(TITLE_SPACE_RE, " ").replace(/^ +| +$/g, "");
+    var s = emojiWords(String(t == null ? "" : t).replace(TITLE_SPACE_RE, " ").replace(/^ +| +$/g, ""));
     var names = K.drop ? (opts.drop || []).map(function (n) { return String(n || "").replace(TITLE_SPACE_RE, " ").replace(/^ +| +$/g, ""); }).filter(Boolean) : [];
     // An internal id leaves a space, never glued words or doubled punctuation.
     s = s.replace(TITLE_ID_RE, function () { hit = true; return " "; });
@@ -1567,7 +1636,7 @@
   function noteAct(a) {
     if (!a || typeof a !== "object") return "";
     if (a.chat) return noteChat(String(a.label || a.chat), String(a.chat));
-    if (a.part === "apply" || a.part === "confirm" || a.part === "inbox") return '<button class="act" type="button" data-part="' + a.part + '">' + esc(a.label || (a.part === "inbox" ? "Check inbox" : "Apply")) + "</button>";
+    if (a.part === "apply" || a.part === "confirm" || a.part === "inbox") return '<button class="act" type="button" data-part="' + a.part + '">' + esc(a.label || (a.part === "inbox" ? "Run the inbox read" : "Apply")) + "</button>";
     return "";
   }
   // ---- end notes
@@ -1847,9 +1916,14 @@
   // that line. Only these presses do; a note, a reply or a rule leaves the
   // row as it was. Nothing more is written than before: the press is the
   // page's own waiting choice until Apply carries it to the book.
-  var PRESS_WORDS = { done: "Done", confirm: "Confirmed", drop: "Dropped", snooze: "Snoozed" };
+  // cr1#1658 change 7: one name per press; a Snooze is "Later" everywhere.
+  var PRESS_WORDS = { done: "Done", confirm: "Confirmed", drop: "Dropped", snooze: "Later" };
   // A snooze the Week plan saved places the item on a day, so it reads Planned.
-  function pressVerb(c) { var w = c && !c.applied ? PRESS_WORDS[c.action] || "" : ""; return w && c.action === "snooze" && c.plan ? "Planned" : w; }
+  // Review round 1 of #1697: the Inbox's own Snooze is not a Later (its Later is another press);
+  // part 2 names it "Later, 3 days", and its fold says the same.
+  function pressWord(c) { return c && c.kind === "inbox" && c.action === "snooze" ? "Later, 3 days" : PRESS_WORDS[c.action] || ""; }
+  // A Later on something someone owes the owner reads "Check back", as its menu says.
+  function pressVerb(c) { var w = c && !c.applied ? pressWord(c) : ""; if (w && c.action === "snooze" && c.plan) return "Planned"; return w && c.kind === "commitment" && c.action === "snooze" && typeof owedHere === "function" && owedHere(c.n) ? "Check back" : w; }
   function pressTail(c) { return claimed(c) ? "being applied" : "sent at Apply"; }
   function pressWords(c) { var w = pressVerb(c); return w ? w + ", " + pressTail(c) : ""; }
   // cr1#1644, the owner's request of 2026-11-22 ("when a selection is made it
@@ -1864,7 +1938,7 @@
     var o = res && res.result ? res.result.outcome : "";
     return (o === "applied" || o === "already") && feed && feed.generated_at && after(res.applied_at || res.created_at, feed.generated_at) ? res : null;
   }
-  function doneVerb(c) { return c ? (c.action === "snooze" && c.plan ? "Planned" : PRESS_WORDS[c.action] || "") : ""; }
+  function doneVerb(c) { return c ? (c.action === "snooze" && c.plan ? "Planned" : pressWord(c)) : ""; }
   // cr1#1644 review: what else waits on a folded commitment (a reminder made
   // from it, a note, an edit of its words or date) stays in sight under its
   // one line, each with its own Undo.
@@ -2801,7 +2875,7 @@
   // The reminder whose Push box is open, and its day: a redraw keeps it open.
   var PUSH = { rid: null, day: "" };
   function pushSlot(rid) {
-    return '<div class="addrow"><input class="when" type="date" data-pushday value="' + esc(PUSH.day) + '"><button class="act primary" data-rsave="' + esc(rid) + '">Push</button><button class="act" data-rsave="">Cancel</button></div>';
+    return '<div class="addrow"><input class="when" type="date" data-pushday value="' + esc(PUSH.day) + '"><button class="act primary" data-rsave="' + esc(rid) + '">Move it</button><button class="act" data-rsave="">Cancel</button></div>';
   }
   function todayIso() { var d = new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
   // cr1#1643: a date alone is that calendar day; a full timestamp is a time,
@@ -2850,15 +2924,21 @@
   function todoRow(t, i) {
     var cid = t.id, w = choiceFor("commitment", cid), res = latestResult("commitment", cid), shut = closedHere(cid);
     var pr = PRIO[num(t.priority)] ? num(t.priority) : 2;
-    var tag = w ? waitTag(w, w.action === "context" ? "note waiting" : w.action + " waiting") : resultTag(res);
+    // review round 1 of #1697: a press waiting for Apply folds the row to one line, as a Commitments row does
+    var verb = typeof pressVerb === "function" && typeof chosenLine === "function" ? pressVerb(w) : "";
+    if (verb) return '<div class="row one chosenrow" data-row="' + esc(cid) + '"><div class="cfold">' + chosenLine(verb, showTitle(t.title), pressTail(w), undoBtn(w, "Take this back before it reaches your book"))
+      + (typeof foldUnder === "function" ? foldUnder(cid, t) : "") + "</div></div>";
+    var tag = (w ? waitTag(w, w.action === "context" ? "note waiting" : w.action === "rehome" ? "move waiting" : w.action + " waiting") : resultTag(res)) + (typeof remindTag === "function" ? remindTag(cid) : "")
+      + (w || typeof mmMoveState !== "function" ? "" : mmMoveState(cid));
     var acts = w ? undoBtn(w, "Take this back before it reaches your book")
       : shut ? '<button class="act undo" data-cact="reopen" data-cid="' + esc(cid) + '" title="Open this commitment again">Undo</button>'
       : looksDoneBtn(cid) + '<button class="act primary" data-cact="' + (t.pending ? "confirm" : "done") + '" data-cid="' + esc(cid) + '">' + (t.pending ? "Confirm" : "Done") + "</button>";
     var last = typeof lastActionLine === "function" ? lastActionLine(t.last_action) : "";
     var more = (last ? '<div class="sub lastact">' + esc(last) + "</div>" : "") + '<div class="sub">' + esc([PRIO[pr] + " priority", t.due ? "due " + fmtDate(t.due) : ""].filter(Boolean).join(" · ")) + "</div>";
     return '<div class="row one' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + (i * 60) + 'ms"><div class="main"><div class="title" title="' + esc(showTitle(t.title)) + '"><span class="tt">' + esc(showTitle(t.title)) + "</span>"
-      + (pr === 1 ? '<span class="tag">High</span>' : "") + tag + '</div><div class="slot"></div></div><div class="acts">' + acts + "</div>"
-      + '<details class="rmore"><summary title="Its priority, its date and its last action">More</summary>' + more + "</details></div>";
+      + (pr === 1 ? '<span class="tag">High</span>' : "") + tag + '</div><div class="slot">' + (!w && !shut && typeof slotHtml === "function" ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div>"
+      + '<details class="rmore"><summary title="Later, Remind me, its priority, its date and its last action">More</summary>' + more
+      + (w || shut ? "" : moveMenu({ n: cid, later: true, remind: true, move: t.project_id && (S.mine || {}).lanes_known === true ? { here: t.project || "", id: t.project_id, personal: !!t.personal_lane } : null, extra: '<button class="act" data-cact="drop" data-cid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>' })) + "</details></div>";
   }
   // cr1#1591 Part A 6: a reminder is one line, its words and when, and Done;
   // Push and Delete are under its More.
@@ -2875,15 +2955,16 @@
     var back = !!(res && res.action === "push" && res.input && res.input.restore === true && res.result && res.result.outcome === "applied");
     var when = r.status === "pinned" ? (r.days_pinned > 1 ? "on your list " + r.days_pinned + " days" : "today") : "from " + fmtDate(r.remind_from);
     if (r.undated) when = "no date" + (r.days_pinned > 1 ? " · on your list " + r.days_pinned + " days" : "");
-    var tag = w ? waitTag(w, w.action === "push" ? ((w.input || {}).restore === true ? "undo waiting" : "push to " + fmtDate((w.input || {}).when) + " waiting") : w.action === "delete" ? "delete waiting" : "done waiting")
+    var tag = w ? waitTag(w, w.action === "push" ? ((w.input || {}).restore === true ? "undo waiting" : "later to " + fmtDate((w.input || {}).when) + " waiting") : w.action === "delete" ? "delete waiting" : "done waiting")
       : back || (!cleared && res && res.action === "done" && res.result && res.result.outcome === "applied") ? "" : resultTag(res);
     // cr1#1221: Delete is for good (a repeat never comes back); Done clears.
     // cr1#1636 item 6: a cleared one offers only its Undo, which puts it back
     // on the list (a push to the day it showed, or today if that is past).
     var acts = w ? undoBtn(w) : cleared ? '<button class="act undo" data-ract="restore" data-rid="' + esc(r.id) + '" data-rfrom="' + esc(r.remind_from || "") + '" title="Put it back on your reminders">Undo</button>'
       : '<button class="act primary" data-ract="done" data-rid="' + esc(r.id) + '" data-rfrom="' + esc(r.remind_from || "") + '">Done</button>';
-    var more = w || cleared ? "" : '<details class="rmore"><summary title="Push it to another day, or delete it">More</summary>' + (r.repeat ? '<div class="sub">Repeats.</div>' : "")
-      + '<div class="acts"><button class="act" data-ract="push" data-rid="' + esc(r.id) + '">Push</button><button class="act" data-ract="delete" data-rid="' + esc(r.id) + '" title="Delete for good; a repeating reminder stops too">Delete</button></div></details>';
+    // cr1#1658: its More is the one menu: Later... (day buttons), then Delete
+    var more = w || cleared ? "" : '<details class="rmore"><summary title="Move it to another day, or delete it">More</summary>' + (r.repeat ? '<div class="sub">Repeats.</div>' : "")
+      + moveMenu({ n: r.id, push: true, extra: '<button class="act" data-ract="delete" data-rid="' + esc(r.id) + '" title="Delete for good; a repeating reminder stops too">Delete</button>' }) + "</details>";
     return '<div class="row one' + riseClass("r" + r.id) + (r.status === "pinned" ? " pinned" : "") + (more ? "" : " nomore") + '" style="animation-delay:' + (i * 50) + 'ms"><div class="main"><div class="title" title="' + esc(r.summary + " · " + when) + '"><span class="tt">' + esc(r.summary) + "</span>"
       + (cleared ? "" : '<span class="when"><i class="w0"></i><wbr><span class="w1"> · ' + esc(when) + "</span></span>") + tag + '</div><div class="slot">' + (PUSH.rid === r.id && !w ? pushSlot(r.id) : "") + '</div></div><div class="acts">' + acts + "</div>" + more + "</div>";
   }
@@ -2976,16 +3057,18 @@
     var verb = typeof pressVerb === "function" && typeof chosenLine === "function" ? pressVerb(w) : "";
     if (verb) return '<div class="row chosenrow" data-row="' + esc(cid) + '"><div class="cfold">' + chosenLine(verb, showTitle(r.title), pressTail(w), undoBtn(w, "Take this back before it reaches your book"))
       + (typeof foldUnder === "function" ? foldUnder(cid, r) : "") + "</div></div>";
-    var tag = (w ? waitTag(w, w.action === "context" ? "note waiting" : w.action + " waiting") : resultTag(res)) + (compact ? "" : remindTag(cid));
+    var tag = (w ? waitTag(w, w.action === "context" ? "note waiting" : w.action === "rehome" ? "move waiting" : w.action + " waiting") : resultTag(res)) + (compact ? "" : remindTag(cid))
+      + (compact || w || typeof mmMoveState !== "function" ? "" : mmMoveState(cid));
     var acts = "", more = "";
     if (w) acts += undoBtn(w, "Take this back before it reaches your book");
     else if (shut) acts += '<button class="act undo" data-cact="reopen" data-cid="' + esc(cid) + '" title="Open this commitment again">Undo</button>';
     if (!w && !nw && !shut) {
       acts += looksDoneBtn(cid) + '<button class="act primary" data-cact="' + (r.pending ? "confirm" : "done") + '" data-cid="' + esc(cid) + '">' + (r.pending ? "Confirm" : "Done") + "</button>";
       // cr1#1591: Done (or Confirm) on the row; its other presses under its More
-      if (!compact) more = '<button class="act" data-cact="context" data-cid="' + esc(cid) + '">Add context</button><button class="act" data-cact="snooze" data-cid="' + esc(cid) + '">Snooze</button>'
-        + '<button class="act" data-cact="remind" data-cid="' + esc(cid) + '" title="Put this on your reminders, with a day or without">Remind</button>'
-        + (r.pending ? "" : '<button class="act" data-cact="drop" data-cid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>');
+      // cr1#1658: the one menu, Later... and Remind me... first
+      if (!compact) more = moveMenu({ n: cid, later: true, theirs: typeof owedHere === "function" && owedHere(cid), remind: true, move: mmMoveSpec(r),
+        extra: '<button class="act" data-cact="context" data-cid="' + esc(cid) + '">Add context</button>'
+          + (r.pending ? "" : '<button class="act" data-cact="drop" data-cid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>') });
     }
     var fold = compact ? "" : shut || typeof cEdMore !== "function" || /^obs_/.test(String(cid)) ? (more ? moreFoldActs(more) : "") : cEdMore(cid, r.title, more, r.due);
     var subParts = [r.project, r.context, (r.horizon === "past_due" || (r.horizon === "overdue" && "counted" in r && !r.counted)) ? "" : r.horizon];
@@ -2994,7 +3077,269 @@
     return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + esc(showTitle(r.title)) + (compact ? "" : originBox(r)) + tag + '</div><div class="sub">' + esc(plainSub(subParts)) + "</div>" + fold + (compact || typeof cCtxShown !== "function" ? "" : cCtxShown(cid)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
   }
   // A row's More: presses that would crowd the row, folded under one word.
-  function moreFoldActs(acts) { return acts ? '<details class="more"><summary>More</summary><div class="parts">' + acts + "</div></details>" : ""; }
+  function moreFoldActs(acts) { return acts ? '<details class="more"><summary>More</summary>' + (acts.indexOf('class="mm"') >= 0 ? acts : '<div class="parts">' + acts + "</div>") + "</details>" : ""; }
+  // ---- cr1#1658: the one Move / Make menu ----------------------------------
+  // Every row's More that moves an item, or makes a reminder from it, is drawn
+  // by moveMenu, and only by it (MOVEMENU1's fence): "Later..." and "Remind
+  // me...", each a row of day buttons (Tomorrow, the working days left this
+  // week, Next week) with one line saying what happens, Pick a date for any
+  // other day, then the row's own presses. A day button is a press like any
+  // other: it waits for Apply, folds the row (cr1#1660) and has its Undo.
+  // Later never offers today: a late item is never moved to today (cr1#1663).
+  // Each function stands alone: suites run parts of the page on their own.
+  var MM_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  function mmIso(d) { return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
+  // Review round 1: today is the workspace's (its zone from the Week board's
+  // feed, else the Today feed's week), so a day button and the box name the
+  // day the book will; this browser's own day only when no feed names a zone.
+  function mmWsToday() {
+    var s = typeof S !== "undefined" && S ? S : {};
+    // review round 2 of #1697: the Week board's zone, the Today feed's, then the brief's
+    var tz = (s.board && s.board.tz) || (s.today && s.today.week && s.today.week.tz) || (s.brief && s.brief.tz) || null;
+    if (tz) {
+      try {
+        var v = {};
+        new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).forEach(function (x) { v[x.type] = x.value; });
+        if (v.year && v.month && v.day) return new Date(+v.year, +v.month - 1, +v.day, 12);
+      } catch (e) {}
+    }
+    // with no zone read yet, the workspace's own day the Commitments or reminders feed names (the plate draws before the others arrive)
+    var day = String((s.plate && s.plate.today) || (s.mine && s.mine.today) || ""), m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+    return m ? new Date(+m[1], +m[2] - 1, +m[3], 12) : null;
+  }
+  function mmNoon(d) { var x = d ? new Date(d.getTime()) : (mmWsToday() || new Date()); x.setHours(12, 0, 0, 0); return x; }
+  function mmPlus(d, k) { var x = new Date(d.getTime()); x.setDate(x.getDate() + k); return x; }
+  // The Monday of next week, as the book reads "next week" (commitment_state.day_word).
+  function mmNextWeek(t) { return mmPlus(t, ((8 - t.getDay()) % 7) || 7); }
+  // The day buttons: Today (a reminder only), Tomorrow, the working days of
+  // this week after it, then Next week. On a weekend the working days are the
+  // coming week's, so Next week is one of them and is not drawn again.
+  function mmDays(withToday, now) {
+    var t = mmNoon(now), nw = mmNextWeek(t), wkend = t.getDay() === 0 || t.getDay() === 6, end = wkend ? mmPlus(nw, 5) : nw, out = [], seen = {};
+    if (withToday) out.push({ label: "Today", iso: mmIso(t) });
+    out.push({ label: "Tomorrow", iso: mmIso(mmPlus(t, 1)) }); seen[mmIso(mmPlus(t, 1))] = true;
+    for (var k = 2; k < 8; k++) { var d = mmPlus(t, k); if (d >= end) break; if (d.getDay() > 0 && d.getDay() < 6) { out.push({ label: MM_DAYS[d.getDay()], iso: mmIso(d) }); seen[mmIso(d)] = true; } }
+    if (!seen[mmIso(nw)]) out.push({ label: "Next week", iso: mmIso(nw) });
+    return out;
+  }
+  var MM_MONTHS = { jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8,
+    sep: 9, sept: 9, september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12 };
+  var MM_WEEKDAYS = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2, wed: 3, weds: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4,
+    fri: 5, friday: 5, sat: 6, saturday: 6 };
+  function mmYmd(y, m, d) { var x = new Date(y, m - 1, d, 12); return x.getFullYear() === y && x.getMonth() === m - 1 && x.getDate() === d ? x : null; }
+  // A typed day read as the book reads it (commitment_state.parse_later_when
+  // with day_word): days from today, a date, a month and a day, tomorrow, a
+  // weekday, next week; `todayOk` adds today for a reminder. Anything else is
+  // null, and the page refuses it before saving (cr1#1658 change 1).
+  function readDay(text, todayOk, now) {
+    var s = String(text || "").trim().toLowerCase().replace(/\s+/g, " "), t = mmNoon(now), m, d, own = Object.prototype.hasOwnProperty;
+    if (!s) return null;
+    if (todayOk && (s === "today" || s === "0")) return mmIso(t);
+    if ((m = /^(\d{1,3}) ?(?:d|day|days)?$/.exec(s))) return +m[1] > 0 ? mmIso(mmPlus(t, +m[1])) : null;
+    if ((m = /^(\d{4})-(\d{2})-(\d{2})(?:[t ].*)?$/.exec(s))) { d = mmYmd(+m[1], +m[2], +m[3]); return d ? mmIso(d) : null; }
+    var md = /^([a-z]+)\.? (\d{1,2})(?:st|nd|rd|th)?(?:,? (\d{4}))?$/.exec(s), dm = /^(\d{1,2})(?:st|nd|rd|th)? (?:of )?([a-z]+)\.?(?:,? (\d{4}))?$/.exec(s);
+    var mo = md && own.call(MM_MONTHS, md[1]) ? MM_MONTHS[md[1]] : dm && own.call(MM_MONTHS, dm[2]) ? MM_MONTHS[dm[2]] : 0, dd = md ? +md[2] : dm ? +dm[1] : 0, yy = md ? md[3] : dm ? dm[3] : "";
+    if (mo) {
+      if (yy) { d = mmYmd(+yy, mo, dd); return d ? mmIso(d) : null; }
+      // as commitment_state._month_day: this year; if gone by, next year; an impossible day is none
+      d = mmYmd(t.getFullYear(), mo, dd); if (!d) return null;
+      if (mmIso(d) < mmIso(t)) { d = mmYmd(t.getFullYear() + 1, mo, dd); if (!d) return null; }
+      return mmIso(d);
+    }
+    s = s.replace(/\.$/, "");   // a day word may end in a period, as the book's day_word allows
+    if (s === "tomorrow") return mmIso(mmPlus(t, 1));
+    if (s === "next week") return mmIso(mmNextWeek(t));
+    if (s.indexOf("this ") === 0) s = s.slice(5);
+    if (own.call(MM_WEEKDAYS, s)) { var ahead = (MM_WEEKDAYS[s] - t.getDay() + 7) % 7; return mmIso(mmPlus(t, ahead || 7)); }
+    return null;
+  }
+  // Words that set or end a wait on an event (commitment_wait._WAIT_RE, _CLEAR_RE): Later reads them, not as a day.
+  function mmWaitWords(text) { return /^\s*(?:still\s+)?wait(?:ing)?\s+(?:on|for)\b/i.test(String(text || "")) || /^\s*(?:not\s+waiting|no\s+longer\s+waiting|stop\s+waiting|done\s+waiting|clear\s+(?:the\s+)?wait)\b/i.test(String(text || "")); }
+  var MM_REFUSE = 'I could not read "{t}" as a day. Type a date like Dec 1, a day like Thursday, or a number of days. Nothing was saved.';
+  var MM_PAST = { later: "Later needs a day after today. Nothing was saved.", remind: "That day has passed; pick today or a later day. Nothing was saved." };
+  function mmRefuse(text) { return MM_REFUSE.replace("{t}", String(text || "").replace(/\s+/g, " ").trim().slice(0, 60)); }
+  // What each part does, said once on the menu so a phone shows it too.
+  var MM_LINE = { later: "Moves it to the day you pick and keeps it off your lists until then.",
+    theirs: "Check back on the day you pick; their date stays as it is.",
+    remind: "Adds a reminder on the day you pick; the item stays where it is.",
+    push: "Moves the reminder to the day you pick.",
+    move: "Moves it to that project, with its date and its people. Undo puts it back.",
+    make: "To-do puts it on your list; Waiting on them tracks what they owe you. Each keeps a link to this message.",
+    make_todo: "To-do puts it on your list, with a link to this message. Waiting on them needs the sender in your People.",
+    remind_mail: "Adds a reminder on the day you pick, with a link to this message.",
+    make_person: "To-do puts a follow-up with them on your list; Book a meeting opens Book, filled in with them.",
+    make_meeting: "To-do puts a follow-up on your list, linked to this meeting; Book a meeting opens Book for a follow-up." };
+  function mmDayWord(iso) { return typeof fmtDate === "function" ? fmtDate(iso) : iso; }
+  function mmButtons(what, n, days, line) {
+    return days.map(function (d) { return '<button class="act mmday" type="button" data-mm="' + what + '" data-mmn="' + esc(n) + '" data-mmday="' + esc(d.iso) + '" title="' + esc(line(d.iso)) + '">' + esc(d.label) + "</button>"; }).join("");
+  }
+  // spec: { n, later, theirs, remind, push, mail, extra }. `later` and
+  // `remind` are for a commitment (Pick a date opens its Later or Remind me
+  // box); `push` is for a reminder (Pick a date opens its own date box).
+  // `mail` (cr1#1658 change 4) is an Inbox message: { title, thread, addr,
+  // who, known }; its part is Make... (To-do, Waiting on them when the
+  // sender is in People) and Remind me... (day buttons, No date), each
+  // pointing at the message's thread. `extra` is the row's other presses,
+  // drawn after the menu's own.
+  var MM_SEQ = 0;
+  function mmHead(words) { MM_SEQ += 1; return { id: "mmh" + MM_SEQ, html: '<div class="mmh" id="mmh' + MM_SEQ + '">' + words + "</div>" }; }
+  function mmOpen(part, hd) { return '<div class="mm" data-mmpart="' + part + '" role="group" aria-labelledby="' + hd.id + '">' + hd.html; }
+  function mmMailAttrs(m) { return ' data-mmthread="' + esc(m.thread) + '" data-mmtitle="' + esc(m.title) + '" data-mmaddr="' + esc(m.addr || "") + '"'; }
+  // review round 1 of #1699 (B3): a make from this thread already waiting for Apply is not offered twice
+  function mmWaitingMake(kind, thread) { return (S.choices || []).some(function (c) { return !c.applied && c.kind === kind && c.action === "add" && c.input && String(c.input.thread_id || "") === String(thread); }); }
+  function moveMenu(spec) {
+    var h = "", n = spec.n, hd, ml = spec.mail;
+    if (ml && ml.thread) {
+      hd = mmHead("Make...");
+      h += mmOpen("make", hd) + '<div class="parts">'
+        + (mmWaitingMake("todo", ml.thread) ? "" : '<button class="act" type="button" data-mm="todo" data-mmn="' + esc(n) + '"' + mmMailAttrs(ml) + ' title="A to-do on your list, linked to this message">To-do</button>')
+        + (ml.known && !mmWaitingMake("waiting", ml.thread) ? '<button class="act" type="button" data-mm="waiting" data-mmn="' + esc(n) + '"' + mmMailAttrs(ml) + ' title="Track what ' + esc(ml.who) + ' owes you, linked to this message">Waiting on them</button>' : "")
+        + '</div><div class="sub">' + (ml.known ? MM_LINE.make : MM_LINE.make_todo) + "</div></div>";
+      if (!mmWaitingMake("reminder", ml.thread)) {
+        hd = mmHead("Remind me...");
+        h += mmOpen("remind", hd) + '<div class="parts">'
+          + mmDays(true).map(function (d) { return '<button class="act mmday" type="button" data-mm="remind" data-mmn="' + esc(n) + '"' + mmMailAttrs(ml) + ' data-mmday="' + esc(d.iso) + '" title="Reminds you on ' + esc(mmDayWord(d.iso)) + '">' + esc(d.label) + "</button>"; }).join("")
+          + '<button class="act" type="button" data-mm="remind" data-mmn="' + esc(n) + '"' + mmMailAttrs(ml) + ' data-mmday="" title="On your reminders until you clear it">No date</button></div><div class="sub">' + MM_LINE.remind_mail + "</div></div>";
+      }
+    }
+    var mk = spec.make;
+    if (mk && mk.key && (mk.for === "person" || mk.for === "meeting")) {
+      // cr1#1658 change 8: a person's card or a meeting: To-do, Book a meeting, Remind me
+      var ma = ' data-mmfor="' + mk.for + '" data-mmkey="' + esc(mk.key) + '"' + (mk.calendar ? ' data-mmcal="' + esc(mk.calendar) + '"' : "");
+      hd = mmHead("Make...");
+      h += mmOpen("make", hd) + '<div class="parts">'
+        + '<button class="act" type="button" data-mm="todo" data-mmn="' + esc(n) + '"' + ma + ' data-mmtitle="' + esc(mk.todo) + '" title="' + esc(mk.todo) + ', on your list">To-do</button>'
+        + (typeof calBookState === "function" ? '<button class="act" type="button" data-mm="book" data-mmn="' + esc(n) + '"' + ma + ' data-mmq="' + esc(mk.q || "") + '" data-mmtitle="' + esc(mk.book || "") + '" title="Open Book a meeting, filled in">Book a meeting</button>' : "")
+        + '</div><div class="sub">' + MM_LINE["make_" + mk.for] + "</div></div>";
+      hd = mmHead("Remind me...");
+      h += mmOpen("remind", hd) + '<div class="parts">'
+        + mmDays(true).map(function (d) { return '<button class="act mmday" type="button" data-mm="remind" data-mmn="' + esc(n) + '"' + ma + ' data-mmtitle="' + esc(mk.remind) + '" data-mmday="' + esc(d.iso) + '" title="Reminds you on ' + esc(mmDayWord(d.iso)) + '">' + esc(d.label) + "</button>"; }).join("")
+        + '<button class="act" type="button" data-mm="remind" data-mmn="' + esc(n) + '"' + ma + ' data-mmtitle="' + esc(mk.remind) + '" data-mmday="" title="On your reminders until you clear it">No date</button></div><div class="sub">' + (mk.for === "person" ? "Adds a reminder about them on the day you pick." : MM_LINE.remind_mail.replace("this message", "this meeting")) + "</div></div>";
+    }
+    if (spec.later) {
+      var th = !!spec.theirs;
+      hd = mmHead("Later...");
+      h += mmOpen("later", hd) + '<div class="parts">' + mmButtons("later", n, mmDays(false), function (iso) { return th ? "Check back " + mmDayWord(iso) : "Moves it to " + mmDayWord(iso) + " and keeps it off your lists until then"; })
+        + '<button class="act" type="button" data-cact="snooze" data-cid="' + esc(n) + '" title="Type a day, or waiting on something">Pick a date</button></div><div class="sub">' + (th ? MM_LINE.theirs : MM_LINE.later) + "</div></div>";
+    }
+    if (spec.remind) {
+      hd = mmHead("Remind me...");
+      h += mmOpen("remind", hd) + '<div class="parts">' + mmButtons("remind", n, mmDays(true), function (iso) { return "Reminds you on " + mmDayWord(iso) + "; the item stays where it is"; })
+        + '<button class="act" type="button" data-cact="remind" data-cid="' + esc(n) + '" title="Type a day">Pick a date</button>'
+        + '<button class="act" type="button" data-mm="remind" data-mmn="' + esc(n) + '" data-mmday="" title="On your reminders until you clear it">No date</button></div><div class="sub">' + MM_LINE.remind + "</div></div>";
+    }
+    if (spec.move) {
+      // cr1#1658 change 6: Put in..., any live project but the one it is on
+      var places = mmPlaces(spec.move.here, spec.move.id, spec.move.personal);
+      if (places.length) {
+        hd = mmHead("Put in...");
+        h += mmOpen("move", hd) + '<div class="parts"><select class="act" data-mmmove="' + esc(n) + '" aria-labelledby="' + hd.id + '"><option value="">Another ' + esc(typeof word === "function" ? word("thread") : "project") + "</option>"
+          + places.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + "</option>"; }).join("") + '</select></div><div class="sub">' + MM_LINE.move + "</div></div>";
+      }
+    }
+    if (spec.push) {
+      hd = mmHead("Later...");
+      h += mmOpen("push", hd) + '<div class="parts">' + mmButtons("push", n, mmDays(false), function (iso) { return "Moves the reminder to " + mmDayWord(iso); })
+        + '<button class="act" type="button" data-ract="push" data-rid="' + esc(n) + '">Pick a date</button></div><div class="sub">' + MM_LINE.push + "</div></div>";
+    }
+    return h + (spec.extra ? '<div class="parts">' + spec.extra + "</div>" : "");
+  }
+  // cr1#1658 change 6: the projects an item can move to: every live project
+  // and work stream the Work feed lists, by name, but the one it is on.
+  // review round 1 of #1700: the item's own project is left out by id (by name
+  // only on an older feed), and so is any project across the personal line
+  // (`personal`: the item is on the personal lane; a project row says `work_lane`).
+  function mmPlaces(here, hereId, personal) {
+    var pj = typeof S !== "undefined" && S ? S.projects || {} : {}, seen = {}, out = [], h = String(here || "").trim().toLowerCase();
+    (pj.rows || []).concat(pj.work_streams || []).forEach(function (p) {
+      if (!p || !p.id || seen[p.id] || /^(archived|closed)$/i.test(String(p.status || ""))) return;
+      var nm = String(p.name || "").trim(); if (!nm) return;
+      if (hereId ? String(p.id) === String(hereId) : nm.toLowerCase() === h) return;
+      if (typeof personal === "boolean" && "work_lane" in p && !!p.work_lane === personal) return;
+      seen[p.id] = true; out.push({ id: String(p.id), name: nm });
+    });
+    return out.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  }
+  // A move's state on its row: waiting with its Undo; once applied, its line
+  // and an Undo that saves `unassign` naming it (the Assign to Undo).
+  function mmMoveState(cid) {
+    var w = null, done = null;
+    (S.choices || []).forEach(function (c) { if (c.kind === "commitment" && c.action === "rehome" && String(c.n) === String(cid)) { if (!c.applied) w = c; else if (!done || (c.applied_at || "") > (done.applied_at || "")) done = c; } });
+    if (w) return waitTag(w, "move waiting") + undoBtn(w, "Take this back before it reaches your book");
+    if (!done || !done.result) return "";
+    var u = (S.choices || []).filter(function (c) { return c.kind === "commitment" && c.action === "unassign" && c.input === done.id; })[0];
+    if (u) return u.applied ? resultTag(u) : waitTag(u, "undo waiting") + undoBtn(u, "Keep the move: take this back before it reaches your book");
+    return resultTag(done) + (done.result.outcome === "applied" ? '<button class="act undo" type="button" data-mmunmove="' + esc(done.id) + '" title="Put it back on the project it was on; it is done when you press Apply">Undo</button>' : "");
+  }
+  // cr1#1658 change 4: what this page made from a message's thread, each
+  // with its Undo while it waits for Apply and its line once Apply ran.
+  var MM_MADE = { todo: "to-do", reminder: "reminder", waiting: "waiting on them" };
+  function mmMadeFor(thread, field) {
+    if (!thread) return "";
+    var h = "", f = field || "thread_id";
+    (S.choices || []).forEach(function (c) {
+      if (!MM_MADE[c.kind] || c.action !== "add" || !c.input || String(c.input[f] || "") !== String(thread)) return;
+      h += '<div class="parts">' + (!c.applied ? waitTag(c, MM_MADE[c.kind] + " waiting") + undoBtn(c, "Take this back before it reaches your book") : resultTag(c)) + "</div>";
+    });
+    return h;
+  }
+  // A press on a menu's day button: the same choices the boxes save.
+  function mmTitle(b) { var row = b && b.closest ? b.closest(".row") : null, tt = row ? row.querySelector(".tt") || row.querySelector(".title") : null; return tt ? String(tt.textContent || "").trim() : ""; }
+  // A row's Put in...: by its project's id on a feed that names it, with its
+  // lane; none on a row with no project (ruling 86: Assign to gives it one) or
+  // when the fence could not be read; an older feed falls back on the name.
+  function mmMoveSpec(r) {
+    var p = typeof S !== "undefined" && S ? S.plate || {} : {};
+    if (!p.project_ids) return r.project ? { here: r.project } : null;
+    if (!r.project_id || p.lanes_known === false) return null;
+    return { here: r.project, id: r.project_id, personal: !!r.personal_lane };
+  }
+  function onMovePick(sel) {
+    var n = sel.getAttribute("data-mmmove"), to = sel.value;
+    if (!n || !to) return;
+    saveChoice({ kind: "commitment", src: "commitment-triage", n: n, action: "rehome", input: to, title: (typeof titleOf === "function" && titleOf(n)) || mmTitle(sel) });
+  }
+  function onMoveUndo(b) {
+    var id = b.getAttribute("data-mmunmove"), press = (S.choices || []).filter(function (c) { return c.id === id; })[0];
+    if (press) saveChoice({ kind: "commitment", src: "commitment-triage", n: press.n, action: "unassign", input: press.id, from: "open", title: press.title || "" });
+  }
+  function onMoveMenu(b) {
+    var what = b.getAttribute("data-mm"), n = b.getAttribute("data-mmn"), day = b.getAttribute("data-mmday") || "";
+    if (what === "later") {
+      if (!day) return;
+      if (typeof needBackFrom === "function") needBackFrom(b, "undo");   // cr1#1644: the keyboard follows the press
+      saveChoice({ kind: "commitment", src: "commitment-triage", n: n, action: "snooze", input: day, title: (typeof titleOf === "function" && titleOf(n)) || mmTitle(b) });
+      return;
+    }
+    var thread = b.getAttribute("data-mmthread") || "", mtitle = b.getAttribute("data-mmtitle") || "";
+    // cr1#1658 change 8: made from a person's card or a meeting
+    var mfor = b.getAttribute("data-mmfor") || "", mkey = b.getAttribute("data-mmkey") || "";
+    if (mfor && mkey) {
+      var about = {}; about[mfor] = mkey;
+      if (mfor === "meeting" && b.getAttribute("data-mmcal")) about.calendar = b.getAttribute("data-mmcal");   // the server honours a personal calendar too
+      if (what === "todo") { saveChoice({ kind: "todo", src: "hub", n: "new", action: "add", input: Object.assign({ title: mtitle, priority: 2 }, about), title: mtitle }); return; }
+      if (what === "remind") { var ri = Object.assign({ summary: mtitle, when: day }, about); if (!day) ri.undated = true; saveChoice({ kind: "reminder", src: "hub", n: "new", action: "add", input: ri, title: mtitle }); return; }
+      if (what === "book" && typeof calBookState === "function") {
+        // Book stays the page's own: its off-limits check decides who can be added; ruling 50's working hours stand
+        if (typeof S !== "undefined" && S.cal) S.cal.book = null;
+        var bk = calBookState(); bk.q = b.getAttribute("data-mmq") || ""; bk.title = mtitle;
+        if (typeof renderCalBook === "function") renderCalBook();
+        if (typeof openDrawer === "function") openDrawer("book", b);
+        return;
+      }
+      return;
+    }
+    if (what === "remind") {
+      // cr1#1658 change 4: from a message, the reminder names its thread, not an item
+      var title = thread ? mtitle : (typeof titleOf === "function" && titleOf(n)) || mmTitle(b), input = thread ? { summary: title, when: day, thread_id: thread, addr: b.getAttribute("data-mmaddr") || "" } : { summary: title, when: day, ref: String(n) };
+      if (!day) input.undated = true;
+      saveChoice({ kind: "reminder", src: "hub", n: "new", action: "add", input: input, title: title });
+      return;
+    }
+    if (what === "todo" && thread) { saveChoice({ kind: "todo", src: "hub", n: "new", action: "add", input: { title: mtitle, priority: 2, thread_id: thread, addr: b.getAttribute("data-mmaddr") || "" }, title: mtitle }); return; }
+    if (what === "waiting" && thread) { saveChoice({ kind: "waiting", src: "hub", n: "new", action: "add", input: { title: mtitle, addr: b.getAttribute("data-mmaddr") || "", thread_id: thread }, title: mtitle }); return; }
+    if (what === "push" && day) saveChoice({ kind: "reminder", src: "hub", n: n, action: "push", input: { when: day }, title: (typeof reminderTitle === "function" && reminderTitle(n)) || mmTitle(b) });
+  }
   // cr1#1285 item 7: plain rows. One short line under the title: no row
   // number, no machine date ("captured Nov 16", "2026-11-16"), each word
   // once ("Overdue" and "late" say the same), at most three parts.
@@ -3041,7 +3386,7 @@
     renderPlate();
   }
   function renderPlate() {
-    var p = S.plate; if (!p) { $("platehead").textContent = isRunning("refresh") ? "Reading your commitments." : "Nothing read yet. Press Go."; $("platerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; renderOverdue(); renderWaitingOn(); renderConfirmPlate(); return; }
+    var p = S.plate; if (!p) { $("platehead").textContent = isRunning("refresh") ? "Reading your commitments." : "Nothing read yet. Press Go."; $("platerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; renderOverdue(); renderWaitingOn(); renderLaterView(); renderConfirmPlate(); return; }
     var q = S.query.toLowerCase();
     var rows = (p.rows || []).filter(function (r) { return !q || (r.title + " " + r.project + " " + r.context).toLowerCase().indexOf(q) >= 0; });
     // cr1#1540: the open count Triage's Open tile shows and, whenever the
@@ -3070,6 +3415,7 @@
     if (reopen) $("platerows").innerHTML += "<h2>Closed from this page</h2>" + reopen;
     renderOverdue();
     renderWaitingOn();
+    renderLaterView();
     renderConfirmPlate();
     if (typeof keyFollow === "function") keyFollow("data-row");   // cr1#1644: the keyboard follows a press on any of these rows
   }
@@ -3086,6 +3432,24 @@
     $("waithead").innerHTML = '<div class="summary"><b>' + rows.length + "</b> waiting on a reply" + (plateHeld(p) < plateTotal(p) ? ", of those shown" : "") + "</div>";
     var h = ""; rows.forEach(function (r, i) { h += plateRow(r, false, i); });
     $("waitrows").innerHTML = h || '<div class="quiet">Nobody owes you a reply.</div>';
+  }
+  // cr1#1658 change 5: Later: what a Later hid until a day (yours, moved to
+  // that day; theirs, to check back), soonest back first. It only shows: each
+  // comes back on its own on its day, and Record's Undo takes a Later back.
+  function renderLaterView() {
+    var p = S.plate, head = $("laterhead"), rows = $("laterrows"), cnt = $("laterCount");
+    var list = p && p.later_rows ? p.later_rows : [], n = p && p.n_later != null ? num(p.n_later) : null;
+    if (cnt) cnt.textContent = n == null ? "" : String(n);
+    if (!p) { head.textContent = isRunning("refresh") ? "Reading your commitments." : "Nothing read yet. Press Go."; rows.innerHTML = ""; return; }
+    // review round 1 of #1699: a feed from before this view names none ("next refresh"); a read that failed says so
+    if (n == null) { head.textContent = p && !("n_later" in p) ? "Shows after the next refresh." : "What is hidden could not be read this time."; rows.innerHTML = ""; return; }
+    if (!n) { head.textContent = ""; rows.innerHTML = '<div class="quiet">Nothing is hidden by a Later.</div>'; return; }
+    head.innerHTML = '<div class="summary"><b>' + n + "</b> hidden until a day" + (n > list.length ? ", showing the first " + list.length : "") + "</div>"
+      + '<div class="sub">Each comes back on its own on its day.</div>';
+    rows.innerHTML = list.map(function (r) {
+      var who = r.mine ? "Yours" : "Check back" + (r.with ? " with " + r.with : "");
+      return '<div class="row one" data-later="' + esc(r.id) + '"><div class="main"><div class="title"><span class="tt">' + esc(showTitle(r.title)) + '</span></div><div class="sub">' + esc(who + " · back " + fmtDate(r.back)) + "</div></div></div>";
+    }).join("") || '<div class="quiet">Nothing is hidden by a Later.</div>';
   }
   // To confirm: every question Review held (renderReview draws them into this
   // view), then the commitments waiting for your yes (the plate's Confirm lane).
@@ -3175,7 +3539,12 @@
     parts.forEach(function (g) { var list = of(g[0]); if (!list.length) return; h += "<h2>" + g[1] + " (" + promises(list) + ")</h2>"; list.forEach(function (r) { h += plateRow(r, false, i, true); i += 1; }); });
     $("overduerows").innerHTML = h || '<div class="quiet">Nothing is past its date.</div>';
   }
-  function titleOf(cid) { var p = S.plate; if (p) { var all = (p.rows || []).concat(p.late_rows || []); for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(cid)) return all[i].title; } return ""; }
+  function titleOf(cid) {
+    var p = S.plate; if (p) { var all = (p.rows || []).concat(p.late_rows || []); for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(cid)) return all[i].title; }
+    // review round 1 of #1697: a to-do's own row is on the to-do list
+    var td = S.mine && S.mine.todos ? S.mine.todos : []; for (var j = 0; j < td.length; j++) if (String(td[j].id) === String(cid)) return td[j].title;
+    return "";
+  }
   function onPlateAct(btn) {
     var act = btn.getAttribute("data-cact"), cid = btn.getAttribute("data-cid"), row = btn.closest(".row"), slot = row ? row.querySelector(".slot") : null;
     // cr1#1644: from a Needs you row, the keyboard follows the press (needBackFrom)
@@ -3192,13 +3561,27 @@
     var o = S.open[cid]; if (!o) return "";
     if (o.kind === "context") return '<textarea class="note" data-slot="' + esc(cid) + '" maxlength="' + NOTE_CAP + '" title="Up to ' + NOTE_CAP + ' characters" aria-label="Note for your book" placeholder="What should the book know about this?">' + esc(o.value) + '</textarea><div class="parts"><button class="act primary" data-save="context" data-scid="' + esc(cid) + '">Save note</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>';
     // cr1#1020: a reminder from this commitment, with a day or with none.
-    if (o.kind === "remind") return '<input class="when" data-slot="' + esc(cid) + '" aria-label="Remind me on" placeholder="A date (2026-12-01), days from today, or leave empty for no date" value="' + esc(o.value) + '"><div class="parts"><button class="act primary" data-save="remind" data-scid="' + esc(cid) + '">' + (String(o.value || "").trim() ? "Add reminder" : "Add reminder with no date") + '</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>';
-    return '<input class="when" data-slot="' + esc(cid) + '" aria-label="Snooze until" placeholder="Days from today, a date (2026-12-01), or waiting on an event" value="' + esc(o.value) + '"><div class="parts"><button class="act primary" data-save="snooze" data-scid="' + esc(cid) + '">Snooze</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>';
+    // cr1#1658: a day the page cannot read is refused here, before anything is saved
+    var refused = o.refused ? '<div class="sub refused" role="alert">' + esc(o.refused) + "</div>" : "";
+    if (o.kind === "remind") return '<input class="when" data-slot="' + esc(cid) + '" aria-label="Remind me on" placeholder="Thursday, Dec 1, days from today, or empty for no date" value="' + esc(o.value) + '"><div class="parts"><button class="act primary" data-save="remind" data-scid="' + esc(cid) + '">' + (String(o.value || "").trim() ? "Remind me" : "Remind me, no date") + '</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>' + refused + '<div class="sub">' + MM_LINE.remind + "</div>";
+    return '<input class="when" data-slot="' + esc(cid) + '" aria-label="Later until" placeholder="Thursday, Dec 1, days from today, or waiting on something" value="' + esc(o.value) + '"><div class="parts"><button class="act primary" data-save="snooze" data-scid="' + esc(cid) + '">Later</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>' + refused + '<div class="sub">' + (typeof owedHere === "function" && owedHere(cid) ? MM_LINE.theirs : MM_LINE.later) + "</div>";
   }
   function onSlotSave(b) {
     var kind = b.getAttribute("data-save"), cid = b.getAttribute("data-scid"), o = S.open[cid];
     if (kind === "cancel" || !o) { delete S.open[cid]; renderAll(); return; }
     var v = String(o.value || "").trim();
+    // cr1#1658 change 1: a day typed that the book could not read stays in its box, said why, and nothing is saved
+    var refuse = "", day = v ? readDay(v, kind === "remind") : null, today = mmIso(mmNoon());
+    if (kind === "remind" && v) refuse = !day ? mmRefuse(v) : day < today ? MM_PAST.remind : "";
+    if (kind === "snooze" && v && !mmWaitWords(v)) refuse = !day ? mmRefuse(v) : day <= today ? MM_PAST.later : "";
+    if (refuse) {
+      // review round 2: the keyboard goes back to this view's box, not the first copy of the item anywhere on the page
+      var holder = b && b.closest ? b.closest("[id]") : null, holderId = holder ? holder.id : "";
+      o.refused = refuse; renderAll();
+      // review round 1: the keyboard stays in the box it was typing in
+      if (typeof document !== "undefined" && document.querySelectorAll) { var root = (holderId && document.getElementById(holderId)) || document, ins = root.querySelectorAll("input[data-slot]"); for (var k = 0; k < ins.length; k++) if (ins[k].getAttribute("data-slot") === String(cid)) { ins[k].focus(); break; } }
+      return;
+    }
     if (kind === "remind") {
       // A reminder is the owner's own list (cr1#662): it rides the reminder
       // add the Today page uses, naming the commitment it came from.
@@ -3271,11 +3654,11 @@
   // stays one press away, word for word, behind the icon beside the status
   // line, with which of the two checks does what. On the page it shows only
   // before the first read.
-  var INBOX_CHECKS_LINE = "Check inbox runs the inbox read again in the background. Check now looks for new mail and messages from this page.";
+  var INBOX_CHECKS_LINE = "Check now looks for new mail and messages from this page. The whole inbox read runs again from Run details.";
   var inboxTipSaid = null;
   function renderInbox() {
     var ib = S.inbox, head = $("inboxhead"), said = "";
-    if (!ib) { head.textContent = isRunning("inbox") ? "Reading the inbox." : "No inbox read yet. Press Check inbox."; head.hidden = false; }
+    if (!ib) { head.textContent = isRunning("inbox") ? "Reading the inbox." : "No inbox read yet. Run the inbox read from Run details."; head.hidden = false; }
     else {
       said = "At the inbox read " + fmtWhen(ib.generated_at) + ": " + String(ib.header || (ib.n_items + " threads")).replace(/[.\s]+$/, "") + ". The list below also shows mail and messages that read did not include.";
       head.textContent = ""; head.hidden = true;
@@ -3309,10 +3692,10 @@
     var acts = "", a = r.actions || [];
     if (a.indexOf("back") >= 0) {
       var wb = ruleChoice("back", r.thread_id);
-      if (wb) return waitTag(wb, "bring back waiting") + undoBtn(wb, "Leave it dropped");
+      if (wb) return waitTag(wb, "undo waiting") + undoBtn(wb, "Leave it dropped");
       // Brought back since this read: the rules list no longer holds it.
       if (S.mailrules && !(S.mailrules.dropped || []).some(function (d) { return d.thread_id === r.thread_id; })) return '<span class="tag">Back from the next read</span>';
-      return '<button class="act" data-mract="back" data-tid="' + esc(r.thread_id) + '">Bring back</button>';
+      return '<button class="act" data-mract="back" data-tid="' + esc(r.thread_id) + '">Undo</button>';
     }
     if (a.indexOf("keep") >= 0) {
       var wk = ruleChoice("keep", r.thread_id), wu = ruleChoice("unkeep", r.thread_id);
@@ -3448,8 +3831,8 @@
     h += rows || '<div class="quiet">No mail rules yet. Teach one from an email above, or add one here.</div>';
     (mr.dropped || []).forEach(function (d) {
       var w = ruleChoice("back", d.thread_id);
-      var acts = w ? undoBtn(w, "Leave it dropped") : '<button class="act" data-mract="back" data-tid="' + esc(d.thread_id) + '">Bring back</button>';
-      h += '<div class="row"><div class="main"><div class="title">' + esc(showTitle(d.title, { kind: "mail", empty: "A dropped thread" })) + (w ? waitTag(w, "bring back waiting") : "") + '</div><div class="sub">Dropped ' + esc(fmtDate(d.dropped_at)) + '</div></div><div class="acts">' + acts + "</div></div>";
+      var acts = w ? undoBtn(w, "Leave it dropped") : '<button class="act" data-mract="back" data-tid="' + esc(d.thread_id) + '">Undo</button>';
+      h += '<div class="row"><div class="main"><div class="title">' + esc(showTitle(d.title, { kind: "mail", empty: "A dropped thread" })) + (w ? waitTag(w, "undo waiting") : "") + '</div><div class="sub">Dropped ' + esc(fmtDate(d.dropped_at)) + '</div></div><div class="acts">' + acts + "</div></div>";
     });
     var f = S.ruleForm, kinds = RULE_KINDS.map(function (x) { return '<option value="' + x + '"' + (f.value === x ? " selected" : "") + ">" + x.replace("_", "-") + "</option>"; }).join("");
     var place = { sender: "name@example.com", domain: "example.com", subject: "words in the subject" }[f.match] || "";
@@ -4414,7 +4797,7 @@
     }
     var opts = noHomeStreams().map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name || s.id) + "</option>"; }).join("");
     var pick = '<select class="act" data-nhassign="' + esc(r.id) + '" aria-label="Assign to a ' + esc(word("work_stream")) + '" title="Give this a home"><option value="">Assign to</option>' + opts + '<option value="' + NEW_STREAM + '">New ' + esc(word("work_stream")) + "</option></select>";
-    return { tag: tag, acts: pick + '<button class="act" data-nhact="notwork" data-nhid="' + esc(r.id) + '" data-nhfrom="' + esc(r.from || "") + '" title="Not a work item: take it off the list">Not work</button>' };
+    return { tag: tag, acts: pick + '<button class="act" data-nhact="notwork" data-nhid="' + esc(r.id) + '" data-nhfrom="' + esc(r.from || "") + '" title="Take it off the list">Not a work item</button>' };
   }
   function noHomeChoice(r, action, value) {
     // The doc a press saves; null when there is nothing to save.
@@ -4472,15 +4855,30 @@
     return '<div class="row' + riseClass("nh" + r.id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms"><div class="main"><div class="title">' + esc(showTitle(r.title)) + nh.tag + '</div><div class="sub">' + quiet + "</div>"
       + moreFold([r.waiting_for_yes ? "Waiting for your yes" : "", "No " + esc(word("thread")) + " yet: assign it to a " + esc(word("work_stream")) + ", or it stays here", onPlate ? "" : "To find it, ask for your loose ends in a chat", from]) + '</div><div class="acts">' + btn + nh.acts + "</div></div>";
   }
+  // cr1#1645 item 3: the No home yet pile's one move (a work stream and
+  // Move all), drawn under the section; its items are the rows above it.
+  // review round 1: the items are in the card's closed fold, with Take out;
+  // during a search the card offers no press (it would move rows the
+  // search hides); after Apply, its Undo stays while the press stands.
+  var TD_SEARCH_LINE = "Clear the search to move them all.";
+  function nhPile() {
+    if (typeof tdCard !== "function" || typeof tdPile !== "function" || !tdFeed() || !tdFresh()) return "";
+    var d = tdPile("no_home"), c = d ? tdCard(d, !!S.nhQ) : "";
+    return c ? '<div class="piles">' + c + "</div>" : "";
+  }
   function noHomeSection(pj, q) {
     var nh = (pj && pj.no_home) || { rows: [], n: 0 };
     if ((pj && pj.errors || []).indexOf("no_home") >= 0) return '<h2>No home yet</h2><div class="quiet">' + NO_HOME_UNREAD.replace("no thread", function () { return "no " + esc(word("thread")); }) + "</div>";
     var rows = (nh.rows || []).filter(function (r) { return !q || String(r.title || "").toLowerCase().indexOf(q) >= 0; });
     var h = "<h2>No home yet (" + num(nh.n) + ")</h2>";
-    // cr1#1591: with nothing at all without a home the section is not drawn
-    if (!num(nh.n) && !rows.length) return movedSection(nh, q);
-    if (!rows.length) return h + '<div class="quiet">Nothing here matches.</div>' + movedSection(nh, q);
+    S.nhQ = q || "";
+    var pile = '<div id="nhpile">' + nhPile() + "</div>";
+    // cr1#1591: with nothing at all without a home the section is not drawn,
+    // but a pile press that stands keeps its Undo (review round 1)
+    if (!num(nh.n) && !rows.length) return (pile.indexOf("data-tdcard") >= 0 ? pile : "") + movedSection(nh, q);
+    if (!rows.length) return h + '<div class="quiet">Nothing here matches.</div>' + pile + movedSection(nh, q);
     rows.forEach(function (r, i) { h += noHomeRow(r, i); });
+    h += pile;
     return h + (num(nh.n_hidden) ? '<div class="quiet">And ' + num(nh.n_hidden) + " more; ask for your loose ends in a chat.</div>" : "") + movedSection(nh, q);
   }
   // ---- add and edit from the page (cr1#1383 part 2) ------------------------
@@ -4542,7 +4940,7 @@
   function edDue() { if (!S.edDue) S.edDue = {}; return S.edDue; }
   function edDueWas() { if (!S.edDueWas) S.edDueWas = {}; return S.edDueWas; }
   function edDueInput(k) {
-    return '<input type="date" class="when" data-eddue="' + esc(k) + '" aria-label="Due date" title="Change the date; the row keeps showing. Snooze hides a row until a day." value="' + esc(edDue()[k] || "") + '">';
+    return '<input type="date" class="when" data-eddue="' + esc(k) + '" aria-label="Due date" title="Change the date; the row keeps showing. Later hides a row until a day." value="' + esc(edDue()[k] || "") + '">';
   }
   function edActs(kind, n, current, due) {
     // A row's Rename (or Edit wording): the newest press on the row while it
@@ -4578,6 +4976,8 @@
   function cEdMore(cid, title, extra, due) {
     var last = edPresses("commitment_edit", cid).sort(edNewest)[0], acts = edActs("commitment_edit", cid, title, due);
     if (edHas(edKey("commitment_edit", cid)) || (last && (!last.applied || (edLanded(last) && !edUndone(last))))) return moreFoldActs(extra) + '<div class="parts">' + acts + "</div>";
+    // cr1#1658: with the one menu, Edit sits on the row's own line of presses, beside Add context and Drop
+    if (extra && extra.indexOf('class="mm"') >= 0 && extra.slice(-6) === "</div>") return moreFoldActs(extra.slice(0, -6) + acts + "</div>");
     return moreFoldActs((extra || "") + acts);
   }
   // cr1#1383, Add context: a free note on a thread or a person, under the
@@ -4585,7 +4985,7 @@
   // outside the fold: "You told it: <note>" with Take back, the note's Undo.
   var CTX_LABEL = "Add context";
   function ctxPresses(kind, n) { return (S.choices || []).filter(function (c) { return c.kind === kind && c.action === "context" && String(c.n || "") === String(n || ""); }); }
-  function ctxTakeBack(c) { return '<button class="act undo" data-edact="undo" data-edid="' + esc(c.id) + '" title="Take the note off your book; it is done when you press Apply">Take back</button>'; }
+  function ctxTakeBack(c) { return '<button class="act undo" data-edact="undo" data-edid="' + esc(c.id) + '" title="Take the note off your book; it is done when you press Apply">Undo</button>'; }
   function ctxActs(c) {
     if (!c.applied) return waitTag(c, "note waiting") + undoBtn(c, "Take this back before it reaches your book");
     if (!edLanded(c)) return resultTag(c);
@@ -4664,7 +5064,7 @@
     var coName = ""; (pj.companies || []).forEach(function (c) { if (c.id === S.pcompany) coName = c.name || c.id; });
     // cr1#1591: one short line; a part at 0 and the page's own row limit are left out
     var nNoHome = num((pj.no_home || {}).n);
-    $("projecthead").innerHTML = '<div class="summary"><b>' + num(pj.n_rows) + "</b> live " + esc(word("thread", true)) + " · <b>" + openTotal + "</b> open" + (pj.n_hidden ? ", of those shown" : "") + (coName ? " · " + esc(coName) + " only" : "") + (q ? " · " + rows.length + " match" : "") + ((pj.errors || []).indexOf("no_home") >= 0 ? " · items with no " + esc(word("thread")) + " not read" : nNoHome ? " · <b>" + nNoHome + "</b> with no home yet" : "") + " · read " + esc(wkReadAt(pj.generated_at)) + "</div>"
+    $("projecthead").innerHTML = '<div class="summary"><b>' + num(pj.n_rows) + "</b> live " + esc(word("thread", true)) + " · <b>" + openTotal + "</b> open" + (pj.n_hidden ? ", of those shown" : "") + (coName ? " · " + esc(coName) + " only" : "") + (q ? " · " + rows.length + " match" : "") + ((pj.errors || []).indexOf("no_home") >= 0 ? " · items with no " + esc(word("thread")) + " not read" : nNoHome ? " · <b>" + nNoHome + "</b> with no home yet" : "") + "</div>"
       + ((pj.errors || []).indexOf("open") >= 0 ? '<div class="quiet">What is open could not be read on the last run; the next refresh tries again.</div>' : "")
       + (typeof edAddBar !== "function" ? "" : edAddBar("stream_edit", "New " + word("work_stream"), "Name of the new " + word("work_stream")));
     // Grouped by work stream (a parent thread, ruling A3); threads under no
@@ -4686,10 +5086,6 @@
     if (typeof renderTidy === "function") renderTidy();   // cr1#1584
   }
   // cr1#1591: when a feed was read: the time alone on its own day, else the day too.
-  function wkReadAt(iso) {
-    var d = new Date(iso); if (!iso || isNaN(d)) return "";
-    return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : fmtWhen(iso);
-  }
   function renderPriorities() {
     var pj = S.projects, pr = pj && pj.priorities;
     $("priorityCount").textContent = pr ? (pr.confirmed || []).length : 0;
@@ -4714,7 +5110,7 @@
         h += '<div class="row' + riseClass("ps" + p.id) + '" style="animation-delay:' + (i * 40) + 'ms"><div class="main"><div class="title">' + esc(showTitle(p.statement)) + '</div><div class="sub">' + esc(cap1(p.why)) + " · waits for your yes</div>" + moreFold(["To make it a priority, say `confirm objective` in a chat."]) + '</div><div class="acts"></div></div>';
       });
     }
-    $("priorityhead").innerHTML = '<div class="summary"><b>' + num(pr.n_confirmed) + "</b> priorities" + ((pr.suggested || []).length ? " · " + (pr.suggested || []).length + " suggested" : "") + " · read " + esc(fmtWhen(pj.generated_at)) + "</div>"
+    $("priorityhead").innerHTML = '<div class="summary"><b>' + num(pr.n_confirmed) + "</b> priorities" + ((pr.suggested || []).length ? " · " + (pr.suggested || []).length + " suggested" : "") + "</div>"
       + (typeof edAddBar !== "function" ? "" : edAddBar("priority_edit", "Add a priority", "The priority in your words"));
     $("priorityrows").innerHTML = h || '<div class="quiet">No priorities yet. Say `new objective` in a chat to set one.</div>';
     prioFold(pr);
@@ -4773,6 +5169,9 @@
     if (w && Array.isArray(w.tabs)) w.tabs.forEach(function (t) {
       var b = t && /^[a-z_]+$/.test(String(t.key || "")) && t.label ? document.querySelector('#workseg button[data-work="' + t.key + '"]') : null;
       if (b && b.firstChild && b.firstChild.nodeType === 3) b.firstChild.nodeValue = String(t.label);
+      // cr1#1645 item 9: the view's heading says the same name as its switch.
+      var hd = b ? document.querySelector('.tabh[data-work="' + t.key + '"]') : null;
+      if (hd) hd.textContent = String(t.label);
     });
     var ph = "Search " + word("work_stream", true) + " and " + word("thread", true);
     var ps = $("psearch"); if (ps) { ps.placeholder = ph; if (ps.setAttribute) ps.setAttribute("aria-label", ph); }
@@ -4811,7 +5210,8 @@
       }
       guide += '<div class="row"><div class="main"><div class="sub">' + esc(text) + "</div></div></div>";
     });
-    var box = $("settingsguide"); if (box) box.innerHTML = "<h2>What the buttons do</h2>" + guide;
+    // cr1#1645 item 1: one row, opened when wanted, like How to use this.
+    var box = $("settingsguide"); if (box) box.innerHTML = '<details class="secfold guidefold" data-wrfold="set:buttons"' + (typeof wrFoldOpen === "function" && wrFoldOpen("set:buttons") ? " open" : "") + '><summary><h2 role="heading" aria-level="2">What the buttons do</h2></summary>' + guide + "</details>";
   }
   // ---- end of the seat's words ------------------------------------------
   // ---- people (cr1#1020) -----------------------------------------------------
@@ -4939,17 +5339,22 @@
     var last = (f ? edSetPresses(n, f) : edPresses("person_edit", n)).sort(edNewest)[0];
     return !!last && !(edLanded(last) && edUndone(last));
   }
+  // cr1#1645 item 2: an open edit box is its own full-width line on the
+  // card, with its name said above it, never one more control among the rest.
+  var P_ED_LABEL = { "": "New name", role: "Their role", email: "Their email", company: "Their company", context: "What should it know?" };
+  function pEdBox(f, h) { return '<div class="edfull"><span class="edlab">' + esc(P_ED_LABEL[f]) + "</span>" + h + "</div>"; }
   function personEdits(p) {
-    var r = { card: "", more: "" };
+    var r = { card: "", more: "", box: "" };
     if (typeof edActs !== "function") return r;
     ["", "role", "email", "company"].forEach(function (f) {
       var h = f ? edFieldActs(p.id, f, p[f]) : edActs("person_edit", p.id, p.name);
-      if (pEdStays(p.id, f)) r.card += h; else r.more += h;
+      if (h.indexOf("data-edname=") >= 0) r.box += pEdBox(f, h);
+      else if (pEdStays(p.id, f)) r.card += h; else r.more += h;
     });
     // Add context, as `ctxFold` draws it: the open line and the notes waiting
     // or standing on the card, the button under More.
     ctxPresses("person_edit", p.id).sort(edNewest).reverse().forEach(function (c, i, all) { if (!c.applied || (edLanded(c) && !edUndone(c)) || i === all.length - 1) r.card += '<div class="parts">' + ctxActs(c) + "</div>"; });
-    if (edHas(edKey("person_edit", p.id + "|context"))) r.card += '<div class="parts">' + edInput("person_edit", p.id, "What should it know?", "context") + "</div>";
+    if (edHas(edKey("person_edit", p.id + "|context"))) r.box += pEdBox("context", edInput("person_edit", p.id, "What should it know?", "context"));
     else r.more += '<button class="act" data-edact="open" data-edkind="person_edit" data-edn="' + esc(p.id) + '" data-edfield="context" title="A note for your book; it is written when you press Apply">' + CTX_LABEL + "</button>";
     return r;
   }
@@ -4960,6 +5365,7 @@
     var seen = '<div class="sub">' + (p.last_contact ? "Last in touch " + esc(touchDay(p.last_contact, (S.people || {}).generated_at)) : "No contact on file") + "</div>";
     var listed = p.n_listed == null ? num(p.n_open) : num(p.n_listed);
     var list = open && listed ? openLines(p, 12) : "";
+    var nu = num(p.n_unlinked), unl = !home && open && nu ? '<div class="sub">' + nu + (nu === 1 ? " more item names them" : " more items name them") + " without being linked to them</div>" : "";
     var nxt = p.next_step ? '<div class="sub">Next: ' + esc(showTitle(nameDropped(p.next_step.title, p.name))) + (p.next_step.due ? " · " + esc(fmtDate(p.next_step.due)) : "") + (p.next_step.overdue ? ' · <span class="late">late</span>' : "") + "</div>" : "";
     // cr1#1636 item 5: Today's card is the next item and the counts ("You owe
     // 2 · they owe you 1"); the rest of what is open, and who they are, one
@@ -4970,12 +5376,21 @@
       var inside = list + (who ? '<div class="sub">' + esc(who) + "</div>" : "") + known + seen;
       fold = inside ? '<details class="pfold"><summary>' + (nRest > 0 ? nRest + " more" : "More") + "</summary>" + inside + "</details>" : "";
     }
-    // cr1#1012 part 3d: rows that name them without being linked, apart from what is open.
-    var nu = num(p.n_unlinked), unl = !home && nu ? '<div class="sub">' + nu + (nu === 1 ? " more item names them" : " more items name them") + " without being linked to them</div>" : "";
-    var ed = home ? { card: "", more: "" } : personEdits(p), more = !home && !!(S.personMore || {})[p.id];
+    // cr1#1645 item 2 (cr1#1641 item 14): the card's one line, who they are,
+    // what is open and when last in touch; "Nothing open" is not said there.
+    // The line about rows naming them without a link (cr1#1012 part 3d) is
+    // left off the card and kept one press away, under What is open.
+    var owes = owesLine(p), line = [who, p.how_known ? cap1(p.how_known) : "", owes === "Nothing open" ? "" : owes,
+      p.last_contact ? "Last in touch " + touchDay(p.last_contact, (S.people || {}).generated_at) : ""].filter(Boolean).join(" · ");
+    var ed = home ? { card: "", more: "", box: "" } : personEdits(p), more = !home && !!(S.personMore || {})[p.id];
+    // cr1#1658 change 8: the card's More opens the one menu's Make... and Remind me...,
+    // on its own line under the card; what it made shows there too, with its Undo
+    var made = !home && typeof mmMadeFor === "function" ? mmMadeFor(p.id, "person") : "";
+    // review round 1 of #1717: none for someone off limits, or while the wall cannot be read (liveOffLimits fails closed)
+    var make = !home && more && typeof moveMenu === "function" && !(typeof liveOffLimits === "function" && liveOffLimits(p.email || "", p.name || "")) ? moveMenu({ n: p.id, make: { for: "person", key: p.id, todo: "Follow up with " + p.name, remind: "Follow up with " + p.name, q: p.name, book: "Meeting with " + p.name } }) : "";
     var acts = (w ? undoBtn(w, "Take this back before it is applied") : "")
-      + (w ? "" : '<button class="act pstar" data-pact="' + (on ? "unstar" : "star") + '" data-pid="' + esc(p.id) + '" aria-label="Star" aria-pressed="' + (on ? "true" : "false") + '" title="' + (on ? "Take them off Home" : "Pin them to Home") + '">' + STAR_ICON + "</button>")
-      + (!home && listed ? '<button class="act" data-popen="' + esc(p.id) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide open items" : "What is open") + "</button>" : "")
+      + (w ? "" : '<button class="act pstar" data-pact="' + (on ? "unstar" : "star") + '" data-pid="' + esc(p.id) + '" aria-label="Star" aria-pressed="' + (on ? "true" : "false") + '" title="' + (on ? "Unstar them; they leave Today" : "Star them; they show on Today") + '">' + STAR_ICON + "</button>")
+      + (!home && (listed || num(p.n_unlinked)) ? '<button class="act" data-popen="' + esc(p.id) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide open items" : "What is open") + "</button>" : "")
       + ed.card
       + (ed.more ? '<button class="act" data-pact="more" data-pid="' + esc(p.id) + '" aria-expanded="' + (more ? "true" : "false") + (more ? '" aria-controls="pmore-' + esc(p.id) : "") + '">More</button>' : "")
       + (more && ed.more ? '<div class="pmore" id="pmore-' + esc(p.id) + '">' + ed.more + "</div>" : "");
@@ -4985,14 +5400,15 @@
     // cr1#1591: a card Show all brings in rises with the first, not after the 300th.
     return '<div class="row' + riseClass((home ? "h" : "p") + p.id) + '" data-person="' + esc(p.id) + '" style="animation-delay:' + (Math.min(i || 0, 12) * 40) + 'ms"><div class="main"><div class="title">' + esc(p.name) + tag + "</div>"
       + (home ? '<div class="sub">' + esc(owesLine(p)) + "</div>" + nxt + fold
-        : (who ? '<div class="sub">' + esc(who) + "</div>" : "") + known + seen + '<div class="sub">' + esc(owesLine(p)) + "</div>" + nxt + unl + list + sendList) + '</div><div class="acts">' + acts + "</div></div>";
+        : (line ? '<div class="sub pline">' + esc(line) + "</div>" : "") + nxt + list + unl + sendList) + '</div><div class="acts">' + acts + "</div>" + (ed.box ? '<div class="edrow">' + ed.box + "</div>" : "") + (make || made ? '<div class="edrow pmake">' + make + made + "</div>" : "") + "</div>";
   }
   function personKept(p) {
     // Shown wherever they sit in the list: the starred, a star press waiting,
     // someone opened from elsewhere (Work's "Ask for an update"), and anyone
     // with an edit on their card (a box open, a press waiting, failed or
     // standing with its Undo), so nothing pressed hides behind Show all.
-    return isStarred(p) || !!starChoice(p.id) || !!S.personOpen[p.id] || !!personEdits(p).card;
+    var ed = personEdits(p);
+    return isStarred(p) || !!starChoice(p.id) || !!S.personOpen[p.id] || !!ed.card || !!ed.box;
   }
   function personListed(p) { return (p.n_listed == null ? num(p.n_open) : num(p.n_listed)) > 0; }
   function peopleFirst(rows) {
@@ -5010,8 +5426,11 @@
     var q = String(S.peoplequery || "").toLowerCase();
     var rows = (pp.people || []).filter(function (p) { return !q || (p.name + " " + p.company + " " + p.role + " " + p.email).toLowerCase().indexOf(q) >= 0; });
     var nStar = (pp.people || []).filter(isStarred).length;
-    $("peoplehead").innerHTML = '<div class="summary"><b>' + num(pp.n_people) + "</b> people" + (nStar ? " · " + nStar + " starred to Home" : "") + (q ? " · " + rows.length + " match" : "") + " · read " + esc(fmtWhen(pp.generated_at)) + "</div>"
+    // cr1#1645 items 2 and 8 (cr1#1641 item 14): no Home, no read time.
+    $("peoplehead").innerHTML = '<div class="summary"><b>' + num(pp.n_people) + "</b> people" + (nStar ? " · " + nStar + " starred" : "") + (q ? " · " + rows.length + " match" : "") + "</div>"
       + ((pp.errors || []).indexOf("open") >= 0 ? '<div class="quiet">What is open could not be read on the last run; the next refresh tries again.</div>' : "")
+      // cr1#1715: the feed was cut to fit the page; the rest are in a chat.
+      + (pp.cut_to_fit ? '<div class="quiet">This page holds ' + (pp.people || []).length + " of your " + num(pp.n_people) + " people; ask in a chat for the rest.</div>" : "")
       + (typeof edAddBar !== "function" ? "" : edAddBar("person_edit", "Add a person", "Their first and last name"));
     // Only the cards shown are built; Show all builds the rest.
     var first = peopleFirst(rows), h = "";
@@ -5039,7 +5458,8 @@
   // reads it there and sends it themselves. The book records the draft on the
   // next run (`record_page_sends`, kind "list").
   var LIST_DIRS = ["owed_to_you", "you_owe"];
-  var LIST_OPEN_LABEL = { owed_to_you: "Send them their list", you_owe: "Send them what you owe" };
+  // cr1#1645 item 2: the two presses read apart, by what each one does.
+  var LIST_OPEN_LABEL = { owed_to_you: "Chase what they owe", you_owe: "Update them on yours" };
   var LIST_WHAT = { owed_to_you: "they owe you", you_owe: "you owe them" };
   var LIST_DRAFTED = { owed_to_you: "Their list is in your Drafts", you_owe: "What you owe them is in your Drafts" };
   var LIST_NOTHING_SENT = "Nothing is sent. It goes to your Drafts, and you send it from your mail.";
@@ -5307,7 +5727,7 @@
       var rows = wk[lane[0]] || [], b = "";
       if (!rows.length) return;
       rows.forEach(function (d) {
-        var a = weekActs(d.id, d.reversible ? [{ action: "undo", label: "Put it back" }] : []);
+        var a = weekActs(d.id, d.reversible ? [{ action: "undo", label: "Undo" }] : []);
         b += recRow("w:" + d.id, esc(cap(d.label)), a.tag, [esc(d.at ? fmtDate(d.at) : "") + (d.reversible ? "" : " · cannot be put back from here"),
           (d.items || []).length ? esc(d.items.join(" · ")) + (d.n_more ? " and " + num(d.n_more) + " more" : "") : ""], a.acts);
       });
@@ -5316,7 +5736,7 @@
     if ((wk.rules || []).length) {
       var rb = "";
       wk.rules.forEach(function (d) {
-        var a = weekActs(d.id, [{ action: "undo", label: "Put it back" }]);
+        var a = weekActs(d.id, [{ action: "undo", label: "Undo" }]);
         rb += recRow("w:" + d.id, esc(cap(d.label)), a.tag, [esc(d.effect), esc(d.rests_on)], a.acts);
       });
       sec("rules", "Rules it learned", Math.max(num(wk.n_rules), wk.rules.length), rb);
@@ -5402,11 +5822,19 @@
       if (s[3].length < 2) { f[s[0]] = ""; return; }
       fh += monthSelect(s[0], s[1], s[2], s[3], f[s[0]]);
     });
-    if (fh) h += '<div class="filters monthfilter">' + fh + "</div>";
-    var rows = monthRows(m, f), capped = num(m.n_items) > (m.items || []).length;
+    // cr1#1641 item 16 (cr1#1645): one Filter control, its choices inside it.
+    var nOn = sel.filter(function (s) { return !!f[s[0]]; }).length;
+    // review round 1 (ruling 19): a capped list says so, inside the Filter fold
+    // (or on its own line with no filter to fold it into), never in the list.
+    var capped = num(m.n_items) > (m.items || []).length;
+    var capLine = capped ? '<div class="quiet mcap">Newest ' + (m.items || []).length + " shown; the counts are the whole month.</div>" : "";
+    // review round 1: open after a filter changes, then as the owner leaves it
+    var fOpen = wrFoldOpen("rec:filter") || !!S.monthFilterJust; S.monthFilterJust = false;
+    if (fh) h += '<details class="mfilt" data-wrfold="rec:filter"' + (fOpen ? " open" : "") + '><summary class="act">Filter' + (nOn ? " · " + nOn + " on" : "") + '</summary><div class="filters monthfilter">' + fh + "</div>" + capLine + "</details>";
+    else h += capLine;
+    var rows = monthRows(m, f);
     if (!(m.items || []).length) h += '<div class="quiet">Nothing done yet this month.</div>';
     else if (!rows.length) h += '<div class="quiet">Nothing this month matches that filter.</div>';
-    else if (capped) h += '<div class="quiet">The newest ' + (m.items || []).length + " of " + num(m.n_items) + " items; the counts above are the whole month.</div>";
     rows.forEach(function (it) {
       var k = byKey[it.kind] || {}, src = it.source || {};
       var who = (it.people || []).map(function (p) { return p.name; }).filter(Boolean).join(", ");
@@ -5438,6 +5866,7 @@
     var key = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-mfilter");
     if (!key || !S.monthFilter || !(key in S.monthFilter)) return;
     S.monthFilter[key] = String(ev.target.value || "");
+    S.monthFilterJust = true;
     renderMonth();
   });
 
@@ -5567,12 +5996,13 @@
     if (!w.opens && !w.mornings && !w.handled && !w.misses) return "The Hub keeps its own count each week: times opened, mornings, items handled and problems reported.";
     var pl = function (k, one, many) { return k + " " + (k === 1 ? one : many); };
     // cr1#1591: a count at zero is not said ("Last 7 days: opened once.").
+    // cr1#1645 item 10: how often the page was opened is not said; with
+    // nothing else to say, the line is empty.
     var parts = [];
-    if (w.opens) parts.push("opened " + (w.opens === 1 ? "once" : w.opens + " times"));
     if (w.mornings) parts.push(pl(w.mornings, "morning started", "mornings started") + (w.typical_minutes != null ? ", the typical one took about " + pl(w.typical_minutes, "minute", "minutes") : ""));
     if (w.handled) parts.push(pl(w.handled, "item handled", "items handled"));
     if (w.misses) parts.push(pl(w.misses, "problem reported", "problems reported"));
-    return "Last 7 days: " + parts.join(" · ") + ".";
+    return parts.length ? "Last 7 days: " + parts.join(" · ") + "." : "";
   }
   function renderMeasure() {
     var el = $("weekmeasure");
@@ -5592,8 +6022,32 @@
   // and the question budget, are choices the Apply run writes; the rest is
   // read-only in this version (owner ruling D3 of 2026-11-04).
   function settingsVal(v) { return v === true ? "on" : (v === false ? "off" : (v == null || v === "" ? "not set" : String(v))); }
+  // cr1#1645 item 1: where a setting came from is said only when it was
+  // changed; a setting still at its default says nothing about it.
+  var SETTINGS_DEFAULT_SOURCE = "a default";
+  function fromLine(source) { var s = String(source || "").trim(); return s && s !== SETTINGS_DEFAULT_SOURCE ? '<div class="sub">From: ' + esc(s) + "</div>" : ""; }
   function settingsRow(title, sub, source, acts) {
-    return '<div class="row"><div class="main"><div class="title">' + esc(title) + '</div>' + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + '<div class="sub">From: ' + esc(source || "a default") + "</div></div>" + (acts ? '<div class="acts">' + acts + "</div>" : "") + "</div>";
+    return '<div class="row"><div class="main"><div class="title">' + esc(title) + '</div>' + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + fromLine(source) + "</div>" + (acts ? '<div class="acts">' + acts + "</div>" : "") + "</div>";
+  }
+  // cr1#1645 item 1: how it talks to you, in plain words, never the stored
+  // keys ("explanation depth: answers_first"). The wording follows the style
+  // card's (`style_card._PERSONA_EN`); a setting this page does not know
+  // keeps its own name with its underscores spaced.
+  var PERSONA_WORDS = {
+    brevity: { label: "Length", values: { terse: "Short and direct", standard: "Standard", guided: "Walks you through the thinking" } },
+    explanation_depth: { label: "Explanations", values: { answers_first: "The answer first", reasoned: "The reasoning after the answer", teaching: "Teaches as it goes" } },
+    formality: { label: "Tone", values: { informal: "Conversational", standard: "Standard", formal: "Formal" } },
+    encouragement: { label: "Encouragement", values: { minimal: "Straight to substance", standard: "Standard", warm: "Says wins out loud" } },
+    humor_ok: { label: "Humor", values: { "true": "Allowed", "false": "None" } },
+    jargon_level: { label: "Words", values: { plain: "Plain words", industry: "Your shorthand", technical: "Technical is fine" } },
+    language: { label: "Language", values: { en: "English" } },
+    never_line: { label: "A line it never crosses", values: { "": "None set" } }
+  };
+  function personaRow(k) {
+    var key = String(k.knob || ""), w = PERSONA_WORDS[key], v = k.value, vs = v === true ? "true" : v === false ? "false" : v == null ? "" : String(v);
+    var label = w ? w.label : cap(key.replace(/_/g, " "));
+    var said = w && Object.prototype.hasOwnProperty.call(w.values, vs) ? w.values[vs] : (vs ? vs.replace(/_/g, " ") : "None set");
+    return settingsRow(label + ": " + said, "", k.source);
   }
   function ruleRow(r) {
     var w = choiceFor("settings", r.id), res = latestResult("settings", r.id);
@@ -5614,13 +6068,14 @@
     var opts = "";
     (b.options || []).forEach(function (o) { opts += '<option value="' + esc(o.n) + '"' + (num(o.n) === num(b.n) ? " selected" : "") + ">" + esc(o.n) + " a week</option>"; });
     var pick = w ? "" : '<div class="addrow"><select class="prio" id="budgetPick" aria-label="Questions a week">' + opts + '</select><button class="act primary" data-setting="budget" data-verb="budget">Change</button></div>';
-    return '<div class="row"><div class="main"><div class="title">Question budget: ' + esc(b.n) + " a week" + tag + '</div><div class="sub">How many questions the system may ask you in a week. It is the posture it works to (' + esc(b.preset || "") + '), so changing it also sets how much it writes on its own.' + (b.stepped_down ? " Stepped down for now because questions went unanswered." : "") + '</div><div class="sub">From: ' + esc(b.source) + "</div>" + pick + '</div><div class="acts">' + acts + "</div></div>";
+    return '<div class="row"><div class="main"><div class="title">Question budget: ' + esc(b.n) + " a week" + tag + '</div><div class="sub">How many questions it may ask you in a week. Fewer questions also means it writes less on its own.' + (b.stepped_down ? " Fewer for now, because questions went unanswered." : "") + "</div>" + fromLine(b.source) + pick + '</div><div class="acts">' + acts + "</div></div>";
   }
   function renderSettings() {
     var st = S.settings;
     if (!st) { $("settingshead").textContent = isRunning("refresh") ? "Reading your settings." : "No settings read yet. Press Go."; $("settingsrows").innerHTML = ""; return; }
     var errs = st.errors || [];
-    $("settingshead").textContent = (errs.length ? "Part of this could not be read just now; the next refresh tries again. " : "") + "Read " + fmtWhen(st.generated_at) + ".";
+    // cr1#1645 item 8: no "Read <time>." head; only a part that could not be read is said.
+    $("settingshead").textContent = errs.length ? "Part of this could not be read just now; the next refresh tries again." : "";
     var h = "<h2>Rules it learned" + (num(st.n_rules) > (st.rules || []).length ? " (first " + st.rules.length + " of " + num(st.n_rules) + ")" : "") + "</h2>";
     if ((st.rules || []).length) st.rules.forEach(function (r) { h += ruleRow(r); });
     else h += '<div class="quiet">' + (errs.indexOf("rules") >= 0 ? "The rules could not be read just now." : "Nothing learned yet.") + "</div>";
@@ -5646,18 +6101,19 @@
     if (l.ask_at != null) h += settingsRow("Learning from your edits " + settingsVal(l.on), "asks after " + num(l.ask_at) + " corrections of the same thing, applies on its own after " + num(l.apply_at), l.source);
     (st.voice || []).forEach(function (v) { h += settingsRow("Voice block for " + String(v.skill || "").replace(/-/g, " "), [v.calibration_level, v.sample_count != null ? v.sample_count + " samples" : "", v.last_refreshed ? "refreshed " + fmtDate(v.last_refreshed) : ""].filter(Boolean).join(" · "), v.source); });
     (st.prep || []).forEach(function (pw) { h += settingsRow("Prep weight: " + pw.section + " in " + pw.meeting_type + " prep is " + settingsVal(pw.weight), "", pw.source); });
-    if ((st.persona || []).length) { h += "<h2>How it talks to you</h2>"; st.persona.forEach(function (k) { h += settingsRow(String(k.knob || "").replace(/_/g, " ") + ": " + settingsVal(k.value), "", k.source); }); }
+    if ((st.persona || []).length) { h += "<h2>How it talks to you</h2>"; st.persona.forEach(function (k) { h += personaRow(k); }); }
     h += guideHtml(st.guide);
     $("settingsrows").innerHTML = h;
   }
   // cr1#187: the usage guide, from the feed, the same text a typed "how do I use this" says.
   function guideHtml(g) {
     if (!g || !(g.ways || []).length) return "";
-    var h = "<h2>How to use this</h2>";
+    // cr1#1645 item 1: the guide is one row, its heading, opened when wanted.
+    var h = '<details class="secfold guidefold" data-wrfold="set:guide"' + (typeof wrFoldOpen === "function" && wrFoldOpen("set:guide") ? " open" : "") + '><summary><h2 role="heading" aria-level="2">How to use this</h2></summary>';
     g.ways.forEach(function (w) { h += '<div class="row"><div class="main"><div class="title">' + esc(w.way) + '</div><div class="sub">' + esc(w.habit) + '</div><div class="sub">Try: ' + (w.phrases || []).map(function (p) { return "&quot;" + esc(p) + "&quot;"; }).join(" · ") + "</div></div></div>"; });
     if (g.loop) h += '<div class="row"><div class="main"><div class="title">' + esc(g.loop_title) + '</div><div class="sub">' + esc(g.loop) + '</div><div class="sub">' + esc(g.ask_why) + "</div></div></div>";
     if ((g.known || []).length) h += '<div class="row"><div class="main"><div class="title">' + esc(g.known_title) + "</div>" + g.known.map(function (k) { return '<div class="sub">' + esc(k.title) + ": " + esc(k.line) + "</div>"; }).join("") + "</div></div>";
-    return h;
+    return h + "</details>";
   }
   // end guideHtml
   function settingsItem(id) { var st = S.settings; if (st) for (var i = 0; i < (st.rules || []).length; i++) if (String(st.rules[i].id) === String(id)) return st.rules[i]; return null; }
@@ -5886,13 +6342,19 @@
   function finishHref() {
     return chatHref(wellFormed(FINISH_UPDATE_TEXT)) || "#";
   }
+  var UPDATE_CHIP = "Update ready";
   function renderUpdate() {
     var bar = $("updatebar"), txt = $("updatetext"), a = $("finishUpdate"); if (!bar || !txt || !a) return;
     var inst = S.settings && S.settings.installed_version;
     var show = !!inst && verNewer(inst, CFG.version);
     bar.hidden = !show;
-    // cr1#1590: the bar is a note row: the information mark, a few words, and Finish update
-    txt.textContent = show ? "Updated to v" + String(inst).replace(/^\s+|\s+$/g, "").replace(/^[vV]/, "") : "";
+    // cr1#1645 item 11: one chip, "Update ready"; the version is in its hover words.
+    var ver = String(inst || "").replace(/^\s+|\s+$/g, "").replace(/^[vV]/, "");
+    // review round 1: "ready" folds away at mid widths (.upready); the words stay "Update ready"
+    txt.innerHTML = show ? UPDATE_CHIP.replace(" ", '<span class="upready"> ') + "</span>" : "";
+    a.title = show ? "Version " + ver + " is installed. Open a chat with finish update typed in; nothing runs until you send it." : "";
+    // review round 1: the version a touch cannot hover for, at the foot of Settings
+    var fi = $("footinst"); if (fi) { fi.textContent = show ? "v" + ver + " installed; Update ready finishes it." : ""; fi.hidden = !show; }
     a.href = show ? finishHref() : "#";
   }
   // ---- end of the update bar ------------------------------------------------
@@ -5979,15 +6441,20 @@
       var open = S.boardMenu === cid;
       acts = '<button class="act" data-bmore="' + esc(cid) + '" aria-expanded="' + (open ? "true" : "false") + '" aria-label="More for ' + esc(showTitle(c.title)) + '">More</button>';
       if (open) {
-        menu = '<div class="cmenu" role="group" aria-label="Move or close this">';
+        // cr1#1645 item 6: Done and one day picker, then the rest under them
+        // (was: a Move to button for every day, eleven stacked buttons).
         // cr1#1657: a check-back moves only later (Apply refuses a nearer day)
-        days.forEach(function (d) { if ((d.date !== here || c.late) && !(c.check_back && d.date <= c.check_back)) menu += '<button class="act" data-bmove="' + esc(d.date) + '" data-bcid="' + esc(cid) + '">Move to ' + esc(d.name || fmtDate(d.date)) + "</button>"; });
-        menu += '<button class="act primary" data-bact="done" data-bcid="' + esc(cid) + '">Done</button>'
+        var opts = "";
+        days.forEach(function (d) { if ((d.date !== here || c.late) && !(c.check_back && d.date <= c.check_back)) opts += '<option value="' + esc(d.date) + '">' + esc(d.name || fmtDate(d.date)) + "</option>"; });
+        menu = '<div class="cmenu" role="group" aria-label="Move or close this"><div class="cmrow">'
+          + '<button class="act primary" data-bact="done" data-bcid="' + esc(cid) + '">Done</button>'
+          + (opts ? '<select class="prio" data-bmovepick="' + esc(cid) + '" aria-label="Move to a day"><option value="">Move to…</option>' + opts + "</select>"
+            + '<button class="act" data-bmovego="' + esc(cid) + '" disabled title="Move it to the day picked">Move</button>' : "") + '</div><div class="cmrow">'
           + '<button class="act" data-bact="drop" data-bcid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>'
           // cr1#1216: Jump in, as on a Plan row: a new chat naming the item and
           // where it came from. Inside More, so the card itself says no more.
           + (typeof jumpLink === "function" ? jumpLink(itemText(c.title, plSource(cid)), "Jump in") : "")
-          + '<button class="act" data-bact="close" data-bcid="' + esc(cid) + '">Close</button></div>';
+          + '<button class="act" data-bact="close" data-bcid="' + esc(cid) + '">Close</button></div></div>';
       }
     }
     // cr1#1591 (Part A 8): the text shows two lines; More opens the rest of
@@ -6087,12 +6554,14 @@
     // A redraw (any device's press, a new feed) keeps a focused menu
     // focused; a menu whose card left the board, or lost its More, is
     // forgotten, so it never reopens unasked.
-    var ae = document.activeElement, keep = ae && el.contains && el.contains(ae) ? ae.getAttribute("data-bmove") || ae.getAttribute("data-bact") || (ae.hasAttribute("data-bmore") ? "more" : "") : "";
+    // cr1#1645 item 6: the day picker keeps the focus through a redraw too
+    var ae = document.activeElement, keep = ae && el.contains && el.contains(ae) ? (ae.getAttribute("data-bmovepick") ? "pick" : "") || ae.getAttribute("data-bmove") || ae.getAttribute("data-bact") || (ae.hasAttribute("data-bmore") ? "more" : "") : "";
     el.innerHTML = h;
     if (S.boardMenu && h.indexOf('class="cmenu"') < 0) S.boardMenu = null;
     if (keep && S.boardMenu) {
       var q = '#board .card[data-card="' + cssq(S.boardMenu) + '"] ';
-      var back = keep === "more" ? null : document.querySelector(q + '.cmenu button[' + (/^\d{4}-/.test(keep) ? 'data-bmove="' : 'data-bact="') + cssq(keep) + '"]');
+      var back = keep === "more" ? null : keep === "pick" ? document.querySelector(q + '.cmenu select[data-bmovepick]')
+        : document.querySelector(q + '.cmenu button[' + (/^\d{4}-/.test(keep) ? 'data-bmove="' : 'data-bact="') + cssq(keep) + '"]');
       if (back) back.focus(); else boardFocusMore(S.boardMenu);
     }
     var local = boardToday(S.board && S.board.tz);
@@ -6130,6 +6599,21 @@
     return wkCovers(d, m, sh, eh);
   }
   // ---- end week view
+  // cr1#1645 item 6: the board's day picker, then Move, is the Move to press,
+  // the same choice a Move to button saved (a snooze to that day). Review
+  // round 1: picking a day only readies Move (an arrow key on a closed list
+  // fires change in some browsers); nothing moves until Move is pressed.
+  document.addEventListener("change", function (ev) {
+    var sel = ev.target && ev.target.closest ? ev.target.closest("#board select[data-bmovepick]") : null;
+    if (!sel) return;
+    var go = sel.parentNode && sel.parentNode.querySelector ? sel.parentNode.querySelector("button[data-bmovego]") : null;
+    if (go) go.disabled = !sel.value;
+  });
+  function boardMoveGo(btn) {
+    var cid = btn.getAttribute("data-bmovego"), row = btn.parentNode, sel = row && row.querySelector ? row.querySelector("select[data-bmovepick]") : null, day = sel ? sel.value : "";
+    if (!cid || !day) return;
+    onBoardPress({ getAttribute: function (k) { return k === "data-bcid" ? cid : k === "data-bmove" ? day : null; }, hasAttribute: function () { return false; } });
+  }
   // A fold's toggle does not bubble, so it is heard on the way down.
   document.addEventListener("toggle", function (ev) {
     var d = ev.target, k = d && d.getAttribute ? d.getAttribute("data-wrfold") : "";
@@ -6204,7 +6688,10 @@
     // cr1#1644: after an Undo the keyboard stays on the row it brought back (a Needs you row's main press, the Inbox's picked line)
     var u = ev.target.closest("button[data-undo]"); if (u) { needBackFrom(u, "main"); inboxBackFrom(u); undoChoice(u.getAttribute("data-undo")); return; }
     var c = ev.target.closest("button[data-cact]"); if (c) { onPlateAct(c); return; }
+    var mm = ev.target.closest("button[data-mm]"); if (mm) { onMoveMenu(mm); return; }
+    var mu = ev.target.closest("button[data-mmunmove]"); if (mu) { onMoveUndo(mu); return; }
     var nb = ev.target.closest("button[data-nhact]"); if (nb) { onNoHomePress(nb); return; }
+    var mg = ev.target.closest("#board button[data-bmovego]"); if (mg) { boardMoveGo(mg); return; }
     var bp = ev.target.closest("#board button[data-bmore], #board button[data-bmove], #board button[data-bact]"); if (bp) { onBoardPress(bp); return; }
     var ch = ev.target.closest("button[data-chase]"); if (ch) { var cr = plateRowOf(ch.getAttribute("data-chase")); if (cr) chaseDirect(cr); return; }
     var th = ev.target.closest("button[data-thread]"); if (th) { toggleThread(th.getAttribute("data-thread")); return; }
@@ -6243,10 +6730,12 @@
     if (t.hasAttribute && t.hasAttribute("data-tmatch")) { var tm = S.teach[t.getAttribute("data-tmatch")]; if (tm) tm.match = t.value; return; }
     if (t.hasAttribute && t.hasAttribute("data-rform")) { var fk = t.getAttribute("data-rform"); S.ruleForm[fk] = t.value; if (fk === "match") S.ruleForm.value = ""; if (fk === "match" || fk === "value") { var btn = document.querySelector('button[data-mract="add"]'); if (fk === "match" || t.tagName === "SELECT") renderMailRules(); else if (btn) btn.disabled = !String(t.value).trim(); } return; }
     if (t.hasAttribute && t.hasAttribute("data-slot")) {
-      var o = S.open[t.getAttribute("data-slot")]; if (o) o.value = t.value;
-      if (o && o.kind === "remind") { var sb = t.parentNode && t.parentNode.querySelector ? t.parentNode.querySelector('button[data-save="remind"]') : null; if (sb) sb.textContent = String(t.value).trim() ? "Add reminder" : "Add reminder with no date"; }
+      var o = S.open[t.getAttribute("data-slot")]; if (o) { o.value = t.value; o.refused = ""; }
+      if (o && o.kind === "remind") { var sb = t.parentNode && t.parentNode.querySelector ? t.parentNode.querySelector('button[data-save="remind"]') : null; if (sb) sb.textContent = String(t.value).trim() ? "Remind me" : "Remind me, no date"; }
     }
   });
+  // cr1#1658 change 6: a project picked under Put in... on any row
+  document.body.addEventListener("change", function (ev) { var s = ev.target && ev.target.closest ? ev.target.closest("select[data-mmmove]") : null; if (s) onMovePick(s); });
   // A review row's typed value, under To confirm or in the morning section (cr1#782).
   document.body.addEventListener("input", function (ev) { var lk = ev.target.getAttribute && ev.target.getAttribute("data-listkey"); if (lk) S.listText[lk] = ev.target.value; });
   document.body.addEventListener("input", function (ev) { var id = ev.target.getAttribute && ev.target.getAttribute("data-rtext"); if (id) { S.reviewText = S.reviewText || {}; S.reviewText[id] = ev.target.value; } });
@@ -6269,7 +6758,7 @@
   $("reviewrows").addEventListener("toggle", function (ev) { if (ev.target.id === "reviewmore") S.reviewMore = ev.target.open; }, true);
   // cr1#1286: one view at a time; `showOverdue(false)` is All open, as before.
   // A function, not a var, so the remembered-tab restore above can call it.
-  function plateViews() { return { late: ["overduewrap", "showOverdue"], confirm: ["confirmwrap", "showConfirm"], wait: ["waitwrap", "showWaiting"], all: ["platewrap", "showAll"] }; }
+  function plateViews() { return { late: ["overduewrap", "showOverdue"], confirm: ["confirmwrap", "showConfirm"], wait: ["waitwrap", "showWaiting"], later: ["laterwrap", "showLater"], all: ["platewrap", "showAll"] }; }
   function showPlateView(name) {
     var pv = plateViews(); if (!pv[name]) name = "all";
     Object.keys(pv).forEach(function (k) { $(pv[k][0]).hidden = k !== name; $(pv[k][1]).classList.toggle("on", k === name); });
@@ -6600,7 +7089,7 @@
     // cr1#1591: a pile with nothing in it, nothing beyond the page and no
     // press of its own to show is not drawn.
     if (!rows.length && !last.length && !beyond) return "";
-    var h = '<div class="pile' + (n || last.length ? "" : " off") + '" data-pile="' + k + '"><div class="pn">' + n + '</div><div class="t">' + esc(def.title) + '<span class="wktip">' + infoTip(def.title, esc(def.what(w) + (beyond ? " " + wkN(beyond, "more is", "more are") + " past the rows this page holds, so not in this press. They show here once the list is shorter and read again." : ""))) + "</span>" + '</div><div class="sub">' + esc(def.short(w)) + "</div>";
+    var h = '<div class="pile' + (n || last.length ? "" : " off") + '" data-pile="' + k + '"><div class="pn">' + n + '</div><div class="t">' + esc(def.title) + '<span class="wktip">' + infoTip(def.title, esc(def.what(w) + " " + def.undo + (beyond ? " " + wkN(beyond, "more is", "more are") + " past the rows this page holds, so not in this press. They show here once the list is shorter and read again." : ""))) + "</span>" + '</div><div class="sub">' + esc(def.short(w)) + "</div>";
     if (def.effect) h += '<div class="sub peffect">' + esc(def.effect) + "</div>";
     if (beyond) h += '<div class="sub pbeyond">' + esc(rows.length ? beyond + " more not in this press." : beyond + " not on this page; ask in a chat.") + "</div>";
     if (rows.length) {
@@ -6610,7 +7099,8 @@
         h += '<div class="pit' + (isOut ? " out" : "") + '"><span>' + esc(showTitle(r.title)) + (cp ? " (and " + esc(wkN(cp, "copy", "copies")) + " of it)" : "") + '</span><button class="act" data-wkout="' + k + '" data-wkid="' + esc(r.id) + '" title="' + (isOut ? "Put it back in the pile" : "Leave this one out of the press") + '">' + (isOut ? "Put back in" : "Take out") + "</button></div>";
       });
       // said before the press: what its Undo brings back, and what it does not
-      h += '</details><div class="sub pundo">' + esc(def.undo) + '</div><div class="parts"><button class="act primary" data-wkpile="' + k + '"' + (n && !S.wk.busy[k] ? "" : " disabled") + ">" + esc(n ? def.press(n, w) : "Nothing left in the pile") + "</button></div>";
+      // cr1#1641 item 15 (cr1#1645): what its Undo does is behind the icon, not on the card before a press.
+      h += '</details><div class="parts"><button class="act primary" data-wkpile="' + k + '"' + (n && !S.wk.busy[k] ? "" : " disabled") + ">" + esc(n ? def.press(n, w) : "Nothing left in the pile") + "</button></div>";
     }
     if (last.length) {
       var bits = [];
@@ -6637,7 +7127,23 @@
       confirm: olc ? num(olc.to_confirm) : null, late: olc && p.overdue_ok ? num(olc.overdue) : null, unowned: w ? num(w.unowned) : null,
       lateYou: dir && p.overdue_ok ? num(dir.you_owe) : null, lateOwed: dir && p.overdue_ok ? num(dir.owed_to_you) : null };
   }
-  function wkTile(n, label, note, tip) { return n == null ? "" : '<div class="tile"><b>' + esc(n) + "</b><span>" + esc(label) + "</span><i>" + esc(note || "") + "</i>" + (tip || "") + "</div>"; }
+  // review round 1 of cr1#1645: the lanes each tile owns, in the order a press tries them.
+  var WK_TILE_LANES = { you_owe: ["do_it", "schedule", "confirm"], owed_to_you: ["chase", "wait"] };
+  function wkTileLane(dir) {
+    var piled = wkPiled(), lanes = WK_TILE_LANES[dir] || [];
+    for (var i = 0; i < lanes.length; i++) if (wkLaneRows(lanes[i], piled).length) return lanes[i];
+    return "";
+  }
+  function wkTile(n, label, note, tip, lane) {
+    if (n == null) return "";
+    // cr1#1645 item 4: a tile is a press that opens its lane below.
+    var inner = "<b>" + esc(n) + "</b><span>" + esc(label) + "</span><i>" + esc(note || "") + "</i>";
+    // ruling 72: the tile keeps the open list's own number; its press says what it opens below
+    var laneName = "", laneN = 0;
+    if (lane) { WK_LANES.forEach(function (l) { if (l[0] === lane) laneName = l[1]; }); laneN = wkLaneRows(lane, wkPiled()).length; }
+    return lane ? '<div class="tile"><button type="button" class="tilebtn" data-wktile="' + lane + '" title="' + esc("Show the " + laneN + " in " + laneName + " below") + '">' + inner + "</button>" + (tip || "") + "</div>"
+      : '<div class="tile">' + inner + (tip || "") + "</div>";
+  }
   var WK_AGES = ["Under a week", "1 to 4 weeks", "1 to 3 months", "Over 3 months"];
   // cr1#1591: three tiles, You owe, Owed to you and Late; a "0 late" note is
   // not drawn. Open (their sum) goes, and To confirm is its lane. How old the
@@ -6646,11 +7152,14 @@
     var c = wkCounts(p), part = c.whole ? "" : "of the rows on this page";
     var ages = p.work && Array.isArray(p.work.ages) ? p.work.ages.map(num) : null, total = 0;
     if (ages) ages.forEach(function (a) { total += a; });
-    var tip = ages && total ? '<span class="tiletip">' + infoTip("the age of your open commitments", "How old your open commitments are <br>" + esc(ages.map(function (a, i) { return WK_AGES[i] + " " + a; }).join(" · "))) + "</span>" : "";
+    var tip = ages && total ? '<span class="tiletip">' + infoTip("the age of all your open commitments", "How old all your open commitments are, both ways <br>" + esc(ages.map(function (a, i) { return WK_AGES[i] + " " + a; }).join(" · "))) + "</span>" : "";
     function lateNote(n) { return n == null ? part : n ? n + " late" : ""; }
-    return '<div class="tiles">' + wkTile(c.you, "You owe", lateNote(c.lateYou), c.late == null ? tip : "")
-      + wkTile(c.owed, "Owed to you", lateNote(c.lateOwed))
-      + wkTile(c.late, "Late", "", tip) + "</div>" + wkBesideTiles(p, c);
+    // cr1#1645 item 4: two tiles, each with its own late count; the late
+    // count is never a third tile beside them (it counted the same items twice).
+    // review round 1 of cr1#1645: each tile owns its direction's lanes and
+    // opens the first that has rows; with none, it is no press.
+    return '<div class="tiles">' + wkTile(c.you, "You owe", lateNote(c.lateYou), tip, wkTileLane("you_owe"))
+      + wkTile(c.owed, "Owed to you", lateNote(c.lateOwed), "", wkTileLane("owed_to_you")) + "</div>" + wkBesideTiles(p, c);
   }
   // Review round 1: what the two tiles do not count, said in a line under
   // them whenever it is not 0. An item with no owner is open (You owe, Owed
@@ -6662,9 +7171,9 @@
     var bits = [];
     if (c.unowned) bits.push(esc(c.unowned + (c.unowned === 1 ? " needs your call" : " need your call")));
     if (c.confirm) {
-      var here = wkRows().filter(function (r) { return r.pending; }).length, gone = Math.max(0, c.confirm - here);
-      bits.push((here ? '<button type="button" class="act link" data-wkconfirm="1" title="Show what waits for your yes">' + esc(c.confirm + " waiting for your yes") + "</button>" : esc(c.confirm + " waiting for your yes"))
-        + (gone ? esc(", " + gone + " not on this page; ask in a chat") : ""));
+      var here = wkRows().filter(function (r) { return r.pending; }).length;
+      // cr1#1641 item 15 (cr1#1645): one plain line; what the page does not hold is not said.
+      bits.push(here ? '<button type="button" class="act link" data-wkconfirm="1" title="Show what waits for your yes">' + esc(c.confirm + (c.confirm === 1 ? " waits" : " wait") + " for your yes") + "</button>" : esc(c.confirm + (c.confirm === 1 ? " waits" : " wait") + " for your yes"));
     }
     return bits.length ? '<div class="quiet wkbeside">' + bits.join(" · ") + "</div>" : "";
   }
@@ -6695,8 +7204,10 @@
     else if (shut) btn = '<button class="act undo" data-cact="reopen" data-cid="' + esc(cid) + '" title="Open this commitment again">Undo</button>';
     else if (r.pending) btn = '<button class="act primary" data-cact="confirm" data-cid="' + esc(cid) + '">Confirm</button>';
     else if (lane === "chase" && r.chase && canChase() && !chaseChoice(cid) && !S.sending["chase:" + cid]) btn = '<button class="act primary" data-chase="' + esc(cid) + '" title="Make a draft to ' + esc(r.chase.to) + ' in your Drafts. Nothing is sent.">Chase</button>';
-    else btn = '<button class="act primary" data-cact="done" data-cid="' + esc(cid) + '">' + (lane === "chase" || lane === "wait" ? "Got it" : "Done") + "</button>";
-    var sub = plainSub([S.wk.group === "thread" ? "" : r.project, r.context, late ? "late" : ""]);
+    else btn = '<button class="act primary" data-cact="done" data-cid="' + esc(cid) + '">' + "Done" + "</button>";
+    // cr1#1645 item 4: the "Later" or "This week" word goes where a date already says when.
+    var ctx = /\bdue\b/.test(String(r.context || "")) ? String(r.context || "").replace(/^(Later|This week) · /, "") : r.context;
+    var sub = plainSub([S.wk.group === "thread" ? "" : r.project, ctx, late ? "late" : ""]);
     if (lane === "chase" && chaseChoice(cid)) sub = [sub, "chase in your Drafts"].filter(Boolean).join(" · ");
     return '<div class="fr lr" data-lane-row="' + esc(cid) + '"><span class="fnum" aria-hidden="true">' + (late ? '<i class="ldot"></i>' : "") + '</span><div class="frline" role="button" tabindex="0" data-wkopen="' + esc(cid) + '" aria-expanded="' + (on ? "true" : "false") + '" title="' + (on ? "Close" : "Open the rest: every other action for this one") + '">'
       + '<div class="frt">' + titleLine(r.title) + tag + '</div><div class="frw">' + esc(cap(sub || "On your list")) + '</div></div><div class="fact">' + (on ? "" : btn) + "</div>"
@@ -6709,7 +7220,7 @@
     WK_LANES.forEach(function (l) { by[l[0]] = wkLaneRows(l[0], piled); if (by[l[0]].length) shown.push(l); });
     if (!shown.length) return '<div class="quiet">Nothing in any lane.</div>';
     if (!by[S.wk.lane] || !by[S.wk.lane].length) S.wk.lane = shown[0][0];
-    h += '<h2>Lanes</h2><div class="lanebar"><div class="lanepick"><div class="chips" role="group" aria-label="Pick a lane">' + shown.map(function (l) {
+    h += '<h2>What each needs next</h2><div class="lanebar"><div class="lanepick"><div class="chips" role="group" aria-label="Pick a lane">' + shown.map(function (l) {
       return '<button type="button" class="chip" data-wklane="' + l[0] + '" aria-pressed="' + (S.wk.lane === l[0] ? "true" : "false") + '">' + l[1] + ' <span class="n">' + by[l[0]].length + "</span></button>"; }).join("")
       + "</div>" + (plateHeld(p) < plateTotal(p) ? '<span class="quiet wkpart">of those shown</span>' : "")
       + '<span class="wktip">' + infoTip("this lane", esc(WK_LANE_WHAT[S.wk.lane])) + "</span></div>"
@@ -6736,7 +7247,7 @@
     var cards = WK_PILES.map(wkPileCard).join(""), head;
     if (why) head = "<h2>Big piles</h2>" + '<div class="quiet">' + esc(why) + "</div>";
     else if (cards) head = '<div class="wkhead"><h2>Big piles</h2>' + (inPiles ? '<span class="wktip">' + infoTip("Big piles", esc("One press each. Together they are " + inPiles + " of the " + wkCounts(p).open + " open, and nothing is written until you press Apply.")) + "</span>" : "") + "</div>";
-    else head = '<div class="quiet">No piles to clear.</div>';
+    else head = "";   // cr1#1645 item 4: nothing is said when no big pile is offered
     putHtml(b, head + (cards ? '<div class="piles">' + cards + "</div>" : ""));
     putHtml(c, wkLanesHtml(p));
   }
@@ -6894,7 +7405,7 @@
     if (c && !c.applied) return waitTag(c, "update waiting") + undoBtn(c, "Take this back before it reaches your book");
     var b = wkUndoOf("stream_edit", u.id);
     if (b && !b.applied) return waitTag(b, "take back waiting") + undoBtn(b, "Keep the update: take this back before it reaches your book");
-    return (b && b.result && b.result.outcome === "error" ? resultTag(b) : "") + '<button class="act undo" data-wktake="' + esc(u.id) + '" data-wktid="' + esc(u.thread_id) + '" title="Take this update off the thread; it is done when you press Apply">Take back</button>';
+    return (b && b.result && b.result.outcome === "error" ? resultTag(b) : "") + '<button class="act undo" data-wktake="' + esc(u.id) + '" data-wktid="' + esc(u.thread_id) + '" title="Take this update off the thread; it is done when you press Apply">Undo</button>';
   }
   // The day an update was posted, where the viewer is (the moment is the book's).
   function wkDay(iso) { var d = new Date(iso); return !iso || isNaN(d) ? "" : d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }); }
@@ -6961,6 +7472,8 @@
       // cr1#1541: Jump in opens a new chat on this thread, through the one link builder
       + (typeof jumpLink === "function" ? jumpLink(jumpText("thread", r.name), "Jump in") : "") + "</div>"
       + (S.wk.note ? '<div class="quiet wknote" role="status">' + esc(S.wk.note) + "</div>" : "")
+      // cr1#1658 change 6: a to-do added here is on this project; none on a personal project (fix check of round 1)
+      + (r.work_lane === false ? "" : '<div class="ph">Add a to-do here</div><div class="addrow"><input class="when" data-wktodo="' + esc(r.id) + '" maxlength="240" aria-label="A to-do on this ' + esc(word("thread")) + '" placeholder="A to-do on this ' + esc(word("thread")) + '" value="' + esc((S.wk.todo || {})[r.id] || "") + '"><button class="act" type="button" data-wktodoadd="' + esc(r.id) + '">Add</button></div>')
       + '<div class="ph">Updates</div>' + wkPostBox("t:" + r.id, r.id);
     ups.forEach(function (u) { h += wkUpdateRow(u, false); });
     if (!ups.length) h += '<div class="quiet">No updates on this ' + esc(word("thread")) + " yet.</div>";
@@ -6970,6 +7483,15 @@
       + panelSection("Where it stands", (p.stands || []).map(function (l) { return esc(showTitle(l.text)) + " " + fromWords(l.from, l.day); }))
       + panelSection("People", (p.people || []).map(function (x) { return esc(x.name) + ' <span class="from">' + esc("on " + num(x.n) + (num(x.n) === 1 ? " item" : " items")) + "</span>"; }));
     putHtml(el, h);
+  }
+  // cr1#1658 change 6: the drawer's Add, a to-do on the project, sent like the Today page's own Add
+  function wkTodoAdd(tid) {
+    var box = S.wk.todo || (S.wk.todo = {}), text = String(box[tid] || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    if (!text) return;
+    delete box[tid];
+    var p = saveChoice({ kind: "todo", src: "hub", n: "new", action: "add", input: { title: text, priority: 2, project: String(tid) }, title: text });
+    if (p && p.then && typeof saveNow === "function") p.then(saveNow);
+    renderWorkThread();
   }
   function wkOpenThread(tid, opener) { S.wk.thread = tid; S.wk.note = ""; renderWorkThread(); openDrawer("thread", opener); }
   function renderWork() {
@@ -7008,7 +7530,7 @@
       short: function () { return "Open items on no " + word("thread") + "."; },
       what: function () { return "Open items that belong to no " + word("thread") + ". Lines only heard keep their own buttons under No home yet."; },
       undo: "Undo puts them back under No home yet.",
-      press: function (n) { return n === 1 ? "Move it there" : "Move all " + n + " there"; } },
+      press: function (n) { return n === 1 ? "Move the 1 open item there" : "Move all " + n + " open items there"; } },
     { k: "loose_docs", read: true, title: "Documents with no project", did: "",
       short: function () { return "No project's folder holds these."; },
       what: function () { return "Documents no project's folder holds. Filing them from here comes in a later update; to file one now, ask in a chat."; } },
@@ -7182,7 +7704,7 @@
     return '<select class="act" data-tdstream aria-label="The ' + esc(word("work_stream")) + ' to move them to"><option value="">Pick a ' + esc(word("work_stream")) + "</option>"
       + list.map(function (w) { return '<option value="' + esc(w.id) + '"' + (String(w.id) === String(st.stream) ? " selected" : "") + ">" + esc(showTitle(w.name || w.id)) + "</option>"; }).join("") + "</select>";
   }
-  function tdCard(def) {
+  function tdCard(def, noPress) {
     var st = tdState(), k = def.k, items = tdItems(def), out = st.out[k] || {};
     var listed = items.filter(function (it) { return !out[it.id]; }), n = listed.length;
     var last = def.read ? [] : tdLast(def), waiting = last.filter(function (c) { return !c.applied; }), landed = last.filter(tdLanded);
@@ -7191,7 +7713,7 @@
     if (!items.length && !last.length) return "";
     var t = tdFeed(), whole = t && t.n ? num(t.n[k]) : 0, beyond = Math.max(0, whole - (t && Array.isArray(t.piles[k]) ? t.piles[k].length : 0));
     var h = '<div class="pile" data-tdcard="' + k + '"><div class="pn">' + (def.read ? items.length : n) + '</div><div class="t">' + esc(def.title)
-      + '<span class="wktip">' + infoTip(def.title, esc(def.what(t) + (beyond ? " " + wkN(beyond, "more is", "more are") + " past what this page holds." : ""))) + "</span></div>"
+      + '<span class="wktip">' + infoTip(def.title, esc(def.what(t) + (def.undo ? " " + def.undo : "") + (beyond ? " " + wkN(beyond, "more is", "more are") + " past what this page holds." : ""))) + "</span></div>"
       + '<div class="sub">' + esc(def.short()) + "</div>";
     if (k === "lone_folder" && items.length) h += '<div class="sub">' + esc(t && t.files_under ? "They go under " + t.files_under + "." : "They go under no company.") + "</div>";
     // review of #1623: what the wall left out is counted, never named
@@ -7205,9 +7727,13 @@
           + (def.read ? "" : '<button class="act" data-tdout="' + k + '" data-tdid="' + esc(it.id) + '" title="' + (isOut ? "Put it back in the pile" : "Leave this one out of the press") + '">' + (isOut ? "Put back in" : "Take out") + "</button>") + "</div>";
       });
       h += "</details>";
+    }
+    if (items.length && noPress && !def.read) h += '<div class="sub">' + esc(TD_SEARCH_LINE) + "</div>";
+    if (items.length && !noPress) {
       if (!def.read) {
         var ready = n && !st.busy[k] && (k !== "no_home" || !!st.stream);
-        h += '<div class="sub pundo">' + esc(def.undo) + '</div><div class="parts">' + (k === "no_home" ? tdStreamPick() : "")
+        // cr1#1645 item 3: what Undo does is behind the pile's icon, not on every pile.
+        h += '<div class="parts">' + (k === "no_home" ? tdStreamPick() : "")
           + '<button class="act primary" data-tdpile="' + k + '"' + (ready ? "" : " disabled") + ">" + esc(n ? def.press(n) : "Nothing left in the pile") + "</button></div>";
       }
     }
@@ -7246,8 +7772,12 @@
     // what was taken out belongs to one read of the feed
     if (st.outFor !== wkStamp(pj)) { st.out = {}; st.outFor = wkStamp(pj); }
     var held = 0; TD_PILES.forEach(function (d) { held += Array.isArray(t.piles[d.k]) ? t.piles[d.k].length : 0; });
-    var cards = TD_PILES.filter(function (d) { return !d.line; }).map(tdCard).join(""), n = 0;
-    TD_PILES.forEach(function (d) { if (!d.line) n += tdItems(d).length; });
+    // cr1#1645 item 3: No home yet is shown once, under Work streams, where
+    // each row keeps its own presses; its pile press is drawn there too.
+    var inTidy = function (d) { return !d.line && d.k !== "no_home"; };
+    var cards = TD_PILES.filter(inTidy).map(function (d) { return tdCard(d); }).join(""), n = 0;
+    TD_PILES.forEach(function (d) { if (inTidy(d)) n += tdItems(d).length; });
+    var nhp = $("nhpile"); if (nhp) putHtml(nhp, nhPile());
     var line = tdLine(tdPile("clutter"));
     var unread = (t.errors || []).length ? '<div class="quiet">' + esc(TD_UNREAD_LINE) + "</div>" : "";
     var head = '<div class="wkhead"><h2>Tidy' + (n ? " (" + n + ")" : "") + '</h2><span class="wktip">' + infoTip("Tidy", esc("Loose ends in your workspace. One press clears a pile; nothing is written until you press Apply, and Undo takes it back.")) + "</span></div>";
@@ -7280,10 +7810,17 @@
     }
     if ((b = t.closest("button[data-wkconfirm]"))) { hubGo("plate"); showPlateView("confirm"); return true; }
     if ((b = t.closest("button[data-wklane]"))) { S.wk.lane = b.getAttribute("data-wklane"); renderWork(); return true; }
+    // cr1#1645 item 4: a tile opens its lane, and the keys go to that lane's chip.
+    if ((b = t.closest("button[data-wktile]"))) {
+      S.wk.lane = b.getAttribute("data-wktile"); renderWork();
+      var chip = document.querySelector('#wklanes button[data-wklane="' + S.wk.lane + '"]'); if (chip) { try { chip.focus({ preventScroll: false }); } catch (e) { chip.focus(); } }
+      return true;
+    }
     if ((b = t.closest("button[data-wkgroup]"))) { S.wk.group = b.getAttribute("data-wkgroup"); try { localStorage.setItem("hub.workgroup", S.wk.group); } catch (e) {} renderWork(); return true; }
     if ((b = t.closest("button[data-wkmove]"))) { wkMove(b.getAttribute("data-wkpid"), b.getAttribute("data-wkmove")); return true; }
     if ((b = t.closest("button[data-wkstar]"))) { wkStarPress(b.getAttribute("data-wkstar")); return true; }
     if ((b = t.closest("button[data-wktf]"))) { S.wk.tfilter = b.getAttribute("data-wktf"); renderWork(); return true; }
+    if ((b = t.closest("button[data-wktodoadd]"))) { wkTodoAdd(b.getAttribute("data-wktodoadd")); return true; }   // cr1#1658
     if ((b = t.closest("button[data-wkpostgo]"))) { var key = b.getAttribute("data-wkpostgo"); wkPost(key, b.getAttribute("data-wktid") || S.wk.postThread); return true; }
     if ((b = t.closest("button[data-wktake]"))) { wkTake(b.getAttribute("data-wktake"), b.getAttribute("data-wktid")); return true; }
     if ((b = t.closest("button[data-wkask]"))) { wkAskPress(b.getAttribute("data-wkask")); return true; }
@@ -7329,12 +7866,14 @@
   // the other view; the next-meeting card belongs to Focus.
   function setTodayMid(v, quiet) {
     S.todayMid = v === "all" ? "all" : "focus";
+    var TODAY_SWITCH = { all: "Show all open", focus: "Show what needs you" };
     var f = $("todayFocus"), a = $("todayList"), nx = $("nextmeeting");
     if (f) f.hidden = S.todayMid === "all"; if (a) a.hidden = S.todayMid !== "all"; if (nx) nx.hidden = S.todayMid === "all";
     var nc = $("needN"); if (nc) nc.hidden = S.todayMid === "all";   // it counts the Focus rows
     var sw = document.querySelector("#todayseg button.viewswitch"), other = S.todayMid === "all" ? "focus" : "all";
     if (sw) {
-      sw.setAttribute("data-tview", other); sw.textContent = other === "all" ? "Everything" : "Focus";
+      // cr1#1641 item 4 (cr1#1645): the switch says what its press does, not the other view's name.
+      sw.setAttribute("data-tview", other); sw.textContent = other === "all" ? TODAY_SWITCH.all : TODAY_SWITCH.focus;
       sw.setAttribute("title", other === "all" ? "Show everything open, not only what needs you now" : "Show only what needs you now");
     }
     if (!quiet) { try { localStorage.setItem("hub.todayview", S.todayMid); } catch (e) {} }
@@ -7546,8 +8085,19 @@
     renderMeetLive(m);
     var when = m.all_day ? "All day" : fmtWhen(m.start) + (m.end ? " to " + fmtTime(m.end) : "");
     $("meethead").innerHTML = '<div class="mt1">' + (at === SEQ.endedAt ? "Just ended: " : "") + esc(showTitle(m.title, { kind: "meeting" })) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + calendarTag(m) + '</div><div class="mwhen">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + meetingWith(m) + "</div>";
+    // cr1#1658 change 8: To-do, Book a meeting and Remind me on the meeting
+    var mm = $("meetmake"); if (mm) mm.innerHTML = meetMake(m);
     // cr1#1632 slice 2: Attached, drawn last so slice 1's place is filled after it is drawn
     if (typeof renderMeetAttach === "function") renderMeetAttach();
+  }
+  // cr1#1658 change 8: the one menu on a meeting, under More; none on a personal
+  // calendar's meeting or one with no id, so nothing personal becomes work.
+  function meetMake(m) {
+    // review round 1 of #1717: none on a solo or held meeting either; the person is m.people's (the filtered list)
+    if (!m || !m.meeting_id || m.calendar === "personal" || m.solo || m.held || (m.wrap && m.wrap.held) || typeof moveMenu !== "function") return "";
+    var title = showTitle(m.title, { kind: "meeting" }) || "the meeting", who = String((m.people || [])[0] || "");
+    return '<details class="more"><summary>More</summary>' + moveMenu({ n: m.meeting_id, make: { for: "meeting", key: m.meeting_id, calendar: m.calendar || "", todo: "Follow up on " + title, remind: title, q: who, book: "Follow-up: " + title } }) + "</details>"
+      + (typeof mmMadeFor === "function" ? mmMadeFor(m.meeting_id, "meeting") : "");
   }
   // ---- Attached (cr1#1632, slice 2; the design board's E3) ---------------
   // A link or a file on a meeting. A press is saved in the page's own store
@@ -7827,8 +8377,28 @@
   }
   function liveKeep(m) {
     var st = liveOf(m); if (!db) return;
-    var data = { at: nowIso() }; MEET_LIVE_KEYS.forEach(function (k) { data[k] = st[k]; });
+    var data = { at: nowIso(), start: String(m.start || ""), end: String(m.end || "") }; MEET_LIVE_KEYS.forEach(function (k) { data[k] = st[k]; });
     db.doc(liveDoc(meetId(m))).set(data).catch(function (e) { banner("That was not kept on the page; try again.", true, errText(e)); });
+  }
+  // cr1#1671: a meeting's page doc (unsaved picks, ticks and answer text) goes
+  // once the meeting has aged off the page. Its day is the later of the day
+  // it ended and the day it started (an end that does not read falls back to
+  // the start, then to the day it was last kept), so a meeting running past
+  // midnight keeps its doc. The list is the workspace's day from the feed,
+  // while these days are this browser's, which can sit a day apart (another
+  // zone, or a feed not refreshed since midnight), so a doc goes only when
+  // its day is before YESTERDAY here: a listed meeting is never older.
+  function livePrune() {
+    if (!db || S.meetPruned) return; S.meetPruned = true;
+    var y = new Date(); y.setDate(y.getDate() - 1);
+    var cut = sentDay(y), dayOf = function (v) { return v ? sentDay(String(v)) : ""; };
+    db.collection("meet").get().then(function (snap) {
+      (snap && snap.docs ? snap.docs : []).forEach(function (d) {
+        var x = d.data() || {}, day = dayOf(x.end) || dayOf(x.start) || dayOf(x.at), st = dayOf(x.start);
+        if (st > day) day = st;
+        if (day && day < cut) db.doc("meet/" + d.id).delete().catch(function () {});
+      });
+    }, function () {});
   }
   function liveClear(m) {
     // once the save is in the book, the page's own copy has done its job
@@ -7873,10 +8443,25 @@
     var P = m.prep_parts || {}, inp = liveInput(m), press = meetSavePress(m);
     if (press && !press.applied) return waitTag(press, "save waiting") + undoBtn(press, "Take the save back before it reaches your book");
     var saved = press && edLanded(press) && !edUndone(press) ? press : null;
-    if (saved) { liveClear(m); return resultTag(saved) + edUndoBtn(saved); }
+    if (saved) {
+      liveClear(m);
+      // cr1#1671: an Undo waiting for Apply says so (and can be taken back), as
+      // the other save paths do; one that could not take the save back shows
+      // its own line here, and from the next Refresh the book's own line offers
+      // the retry (cr1#1694: a second Undo retries the facts still on the book).
+      var su = edUndoOf(saved);
+      if (su && !su.applied) return resultTag(saved) + waitTag(su, "undo waiting") + undoBtn(su, "Keep the save: take the Undo back before it reaches your book");
+      if (su && !meetDone(su)) return resultTag(saved) + resultTag(su);
+      return resultTag(saved) + edUndoBtn(saved);
+    }
     var pu = m.prep_saved && !press ? meetUndoOf(m.prep_saved.press) : null;
     if (pu && !pu.applied) return waitTag(pu, "undo waiting");
-    if (m.prep_saved && !press && !meetDone(pu)) { liveClear(m); return (pu ? resultTag(pu) : "") + '<span class="tag ok">' + esc(m.prep_saved.line || "Saved.") + '</span><button class="act undo" data-mundo="' + esc(m.prep_saved.press) + '" title="Take this save back; it is done when you press Apply">Undo</button>'; }
+    // cr1#1694: the book says this save's Undo failed (after a Refresh the page may hold no Undo
+    // press of its own): the save's line and the failure's, with Undo to retry and no fresh save
+    // (ruling 78: a retry takes back only the facts still on the book; one that holds drops the save)
+    if (m.prep_saved && !press && m.prep_saved.undo_failed && !meetDone(pu)) { liveClear(m); return '<span class="tag ok">' + esc(m.prep_saved.line || "Saved.") + '</span><span class="tag err">' + esc(m.prep_saved.undo_failed) + '</span><button class="act undo" data-mundo="' + esc(m.prep_saved.press) + '" title="Try the take-back again; only what is still on your book is taken back, when you press Apply">Undo</button>'; }
+    if (m.prep_saved && !press && pu && !meetDone(pu)) { liveClear(m); return '<span class="tag ok">' + esc(m.prep_saved.line || "Saved.") + "</span>" + resultTag(pu); }   // cr1#1671
+    if (m.prep_saved && !press && !meetDone(pu)) { liveClear(m); return '<span class="tag ok">' + esc(m.prep_saved.line || "Saved.") + '</span><button class="act undo" data-mundo="' + esc(m.prep_saved.press) + '" title="Take this save back; it is done when you press Apply">Undo</button>'; }
     var nd = (P.decide || []).length, ticks = inp.covered.length + inp.asked.length;
     var line = "Saves " + inp.decide.length + " of " + nd + " decisions, " + ticks + " ticked " + (ticks === 1 ? "item" : "items") + " and " + inp.answers.length + (inp.answers.length === 1 ? " answer" : " answers") + ". What is left carries to the next brief.";
     var last = press ? (edUndone(press) ? edUndoOf(press) : press) : pu;
@@ -8060,7 +8645,7 @@
     var standing = W.wrapped && (!back || !back.applied) ? W.wrapped.press : (press && edLanded(press) && !(back && back.applied) ? press.id : "");
     // round 6, item 4: a press that came back refused or failed says why, as the attach rows do
     var said = !standing && press && press.applied && !edLanded(press) ? resultTag(press) : "";
-    if (standing) return '<div class="frw">&#10003; Wrapped up. It is out of the queue.</div><button class="act undo" data-unwrap="' + esc(standing) + '">Put it back</button>';
+    if (standing) return '<div class="frw">&#10003; Wrapped up. It is out of the queue.</div><button class="act undo" data-unwrap="' + esc(standing) + '">Undo</button>';
     // ruling 69: a meeting whose promises could not be checked cannot be wrapped up yet
     if (W.held) return said + '<div class="frw">This can be wrapped up once its promises can be checked; it stays in the queue until then.</div>';
     var open = wrapParts(m).filter(function (x) { return !x[2]; }).map(function (x) { return x[0]; });
@@ -8082,6 +8667,7 @@
       h += '<div class="walk quiet">The notes are not written yet.</div><div class="parts">'
         + (typeof jumpLink === "function" ? jumpLink(jumpText("wrap", m.title, fmtWhen(m.start)), "Write it up now", "primary") : "")
         + '<button class="act" data-dowrap="none">Nothing to follow up</button></div>' + wrapAttached(m) + '<div class="mfoot">' + wrapFoot(m) + "</div>";
+      h += typeof meetMake === "function" ? meetMake(m) : "";   // cr1#1658 change 8
       putHtml(body, h); if (typeof renderMeetAttach === "function") renderMeetAttach(); return;
     }
     h += '<div class="chips wparts">' + wrapParts(m).map(function (x) { return '<span class="tag' + (x[2] ? " ok" : "") + '">' + (x[2] ? "&#10003; " : "") + esc(x[0] + ": " + x[1]) + "</span>"; }).join("") + "</div>";
@@ -8105,7 +8691,7 @@
     // ruling 66: when its promises could not be checked, it says so instead of "nothing captured"
     if (W.held) h += '<div class="quiet">I could not check this meeting\'s promises just now, so none are listed. It stays in the queue.</div>';
     else if (!(W.decided || []).length && !(W.mine || []).length && !(W.theirs || []).length) h += '<div class="quiet">Nothing was captured from this meeting to place.</div>';
-    h += wrapAttached(m) + '</div></div><div class="mfoot">' + wrapFoot(m) + "</div>";
+    h += wrapAttached(m) + '</div></div><div class="mfoot">' + wrapFoot(m) + "</div>" + (typeof meetMake === "function" ? meetMake(m) : "");   // cr1#1658 change 8
     putHtml(body, h);
     if (typeof renderMeetAttach === "function") renderMeetAttach();   // round 5, item 3: the block fills its place
   }
@@ -8398,6 +8984,9 @@
   // cr1#1540: Work's own presses, in its views and in the opened thread.
   document.body.addEventListener("click", function (ev) { if (ev.target.closest("#tab-work, #drawer-thread")) onWorkClick(ev); });
   document.body.addEventListener("input", function (ev) { var k = ev.target.getAttribute && ev.target.getAttribute("data-wkpost"); if (k) S.wk.post[k] = String(ev.target.value || ""); });
+  // cr1#1658 change 6: the drawer's to-do box keeps what is typed; Enter adds it
+  document.body.addEventListener("input", function (ev) { var k = ev.target.getAttribute && ev.target.getAttribute("data-wktodo"); if (k) { S.wk.todo = S.wk.todo || {}; S.wk.todo[k] = String(ev.target.value || ""); } });
+  document.body.addEventListener("keydown", function (ev) { var k = ev.target.getAttribute && ev.target.getAttribute("data-wktodo"); if (k && ev.key === "Enter") { ev.preventDefault(); S.wk.todo = S.wk.todo || {}; S.wk.todo[k] = String(ev.target.value || ""); wkTodoAdd(k); } });
   document.body.addEventListener("change", function (ev) { if (ev.target && ev.target.id === "wkPostThread") S.wk.postThread = String(ev.target.value || ""); });
   document.body.addEventListener("keydown", function (ev) {
     var t = ev.target; if (!t || !t.closest || !t.closest("#tab-work, #drawer-thread")) return;
@@ -9004,7 +9593,7 @@
       var mv = calCanMove(m), cx = calCanCancel(m);
       if (mv) h += '<button class="act" type="button" data-calact="move" data-ev="' + esc(id) + '">Move</button>';
       if (cx) h += '<button class="act" type="button" data-calact="cancel" data-ev="' + esc(id) + '">Cancel</button>';
-      if (m.hub_moved) h += '<span class="tag ok">Moved</span>' + (calCanBack(id) ? '<button class="act undo" type="button" data-calact="back" data-ev="' + esc(id) + '" title="Move it back to ' + esc(calBackWhen(id)) + '">Put it back</button>' : "");
+      if (m.hub_moved) h += '<span class="tag ok">Moved</span>' + (calCanBack(id) ? '<button class="act undo" type="button" data-calact="back" data-ev="' + esc(id) + '" title="Move it back to ' + esc(calBackWhen(id)) + '">Undo</button>' : "");
       note = mv || cx ? (mv && !CALACT.cancel ? CALACT.no_cancel_line : "") : calWhy(m);
     }
     return '<div class="caltools">' + h + "</div>" + (note ? '<div class="calnote">' + esc(note) + "</div>" : "") + (line ? '<div class="calnote err">' + esc(line) + "</div>" : "");
@@ -9131,16 +9720,16 @@
       // rest (`more`) behind the icon beside it. A warning before a second
       // press (`warn`) stays in sight, under the line.
       var title = esc(showTitle(c.title, { kind: "meeting" })), line = "", more = "", warn = "", acts = "", busy = S.cal.busy[id];
-      if (st.unsure) { line = title + ": check your calendar."; more = st.unsure.result.line || ""; if (st.unsure.action === "move" && calCanBackRow(st.unsure)) acts = '<button class="act undo" type="button" data-calact="backrow" data-ev="' + esc(id) + '">Put it back</button>'; }
+      if (st.unsure) { line = title + ": check your calendar."; more = st.unsure.result.line || ""; if (st.unsure.action === "move" && calCanBackRow(st.unsure)) acts = '<button class="act undo" type="button" data-calact="backrow" data-ev="' + esc(id) + '">Undo</button>'; }
       else if (st.cancelled) { line = "<s>" + title + "</s> Cancelled."; more = CALACT ? CALACT.no_restore_line : ""; }
       else if (st.removed) line = "<s>" + title + "</s> Booking taken back.";
       else if (st.moved) {
         line = title + ": moved to " + esc(calWhen(calMs(st.moved.start), calMs(st.moved.end))) + ".";
-        if (calCanBack(id)) acts = '<button class="act undo" type="button" data-calact="back" data-ev="' + esc(id) + '" title="Move it back to ' + esc(calBackWhen(id)) + '">Put it back</button>';
+        if (calCanBack(id)) acts = '<button class="act undo" type="button" data-calact="back" data-ev="' + esc(id) + '" title="Move it back to ' + esc(calBackWhen(id)) + '">Undo</button>';
         // Put it back is a move too: what the provider sends is said before that
         // press as well, in sight (review of cr1#1636: the only notice before
         // the people invited may hear from the provider)
-        if (acts && calDirect() && CALACT.notify_lines.move) warn = "Put it back moves it again. " + CALACT.notify_lines.move;
+        if (acts && calDirect() && CALACT.notify_lines.move) warn = "Undo moves it again. " + CALACT.notify_lines.move;
       }
       else if (st.booked) { line = "Booked: " + title + ", " + esc(calWhen(calMs(st.booked.start), calMs(st.booked.end))) + ".";
         if (calDirect() && CALACT.cancel && calMs(st.booked.start) > now) {
@@ -9238,6 +9827,16 @@
       return sh < to && eh > from;
     });
   }
+  function wkAllDay(days) {
+    var cells = days.map(function (d) { return (d.meetings || []).filter(function (m) { return m && m.all_day; }); });
+    if (!cells.some(function (c) { return c.length; })) return "";
+    return '<div class="wkall"><span class="wkalh">All day</span>' + cells.map(function (c, i) {
+      return '<div class="wkac" data-wkallday="' + esc(days[i].date) + '">' + c.map(function (m) {
+        var ti = showTitle(m.title, { kind: "meeting" });
+        return '<div class="wkad" title="' + esc(ti) + '">' + esc(ti) + "</div>";
+      }).join("") + "</div>";
+    }).join("") + "</div>";
+  }
   function renderWeekGrid() {
     var el = $("weekgrid"); if (!el) return;
     if (S.cal.drag && S.cal.drag.on) { S.cal.stale = true; return; }
@@ -9246,6 +9845,10 @@
     if (!days.length) { putHtml(el, ""); putHtml($("weekpick"), ""); return; }
     railSpan();
     var wkDrag = false; days.forEach(function (d) { (d.meetings || []).forEach(function (m) { if (calCanDrag(m)) wkDrag = true; }); });
+    // cr1#1641 item 22: the day's all-day events in one lane above the
+    // hours, a column per day; drawn only when the week has one. It sits
+    // outside the hour columns (.wkc), so a drag's sums are unchanged.
+    if (typeof wkAllDay === "function") h += wkAllDay(days);
     h += '<div class="wk" style="height:' + ((WK_H1 - WK_H0) * WK_PX + 34) + 'px">';
     // cr1#1591 (Part A 8): how a drag works sits behind the icon in the grid's corner, word for word.
     // Each popup's words are literals and esc(...) only (cr1#1591's markup fence), so each case is its own call.
@@ -9735,16 +10338,20 @@
     var over = !m.all_day && calMs(m.end) != null && calMs(m.end) <= Date.now();
     var brief = over ? "" : readyBrief(m), when = jumpWhen(m, d.date), open = !!S.pl.prepOpen[k];
     var written = !brief && !over && readyWritten(m);
-    var status = over ? "Ended" : brief ? '<span class="ok">Brief ready</span>' : written ? "Brief written" : "No brief yet";
-    var sub = esc(when || fmtDate(d.date)) + (m.place ? " · " + esc(m.place) : "") + " · " + status + (m.clash ? ' · <span class="late">clashes with your time away</span>' : "");
+    // cr1#1645 item 5: "No brief yet" is said once, under the heading
+    // (renderWeekReady), never on every row; a row says only what is there.
+    var status = over ? "Ended" : brief ? '<span class="ok">Brief ready</span>' : written ? "Brief written" : "";
+    var sub = esc(when || fmtDate(d.date)) + (m.place ? " · " + esc(m.place) : "") + (status ? " · " + status : "") + (m.clash ? ' · <span class="late">clashes with your time away</span>' : "");
     var acts = "";
     // The personal wall: a personal event is listed, and nothing about it is typed into a chat from here.
     if (personal) acts = '<span class="tag">personal</span>';
     else {
-      if (over) acts += jumpLink(jumpText("wrap", m.title, when), "Wrap up");
-      else if (brief) acts += '<button class="chip" type="button" data-wprep="' + esc(k) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide the brief" : "Prep") + "</button>";
-      else acts += jumpLink(jumpText("prep", m.title, when), "Prep");
-      acts += jumpLink(jumpText(over ? "past" : "upcoming", m.title, when), "Jump in", "primary");
+      // cr1#1645 item 5: one press a row (Prep, Hide the brief or Wrap up);
+      // Jump in is one press away, under the row's More.
+      if (over) acts += jumpLink(jumpText("wrap", m.title, when), "Wrap up", "primary");
+      else if (brief) acts += '<button class="act primary" type="button" data-wprep="' + esc(k) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide the brief" : "Prep") + "</button>";
+      else acts += jumpLink(jumpText("prep", m.title, when), "Prep", "primary");
+      acts += '<details class="rmore"><summary title="Open a chat about this meeting">More</summary><div class="acts">' + jumpLink(jumpText(over ? "past" : "upcoming", m.title, when), "Jump in") + "</div></details>";
     }
     return '<div class="fr rq" data-ready="' + esc(k) + '"><div><div class="frt">' + esc(showTitle(m.title, { kind: "meeting" })) + '</div><div class="frw">' + sub + '</div></div><div class="fact">' + acts + "</div>"
       + (brief && open ? '<div class="fro"><div class="prepbox on">' + prepHtml(brief) + "</div></div>" : "") + "</div>";
@@ -9754,7 +10361,14 @@
     var rows = readyRows(), h = "";
     if (!plWeekDays().length) h = '<div class="quiet">' + (isRunning("prep") ? "Reading your calendar." : "No week read yet. Press Go.") + "</div>";
     else if (!rows.length) h = '<div class="quiet">No meetings this week.</div>';
-    else rows.forEach(function (it) { h += readyRow(it); });
+    else {
+      // cr1#1645 item 5: the one note for the meetings with no brief yet.
+      // review round 1: of the meetings a brief is for (not personal, not over)
+      var briefable = rows.filter(function (it) { var m = it.m, personal = m.personal === true || m.calendar === "personal"; var over = calMs(m.end) != null && calMs(m.end) <= Date.now(); return !personal && !over; });
+      var none = briefable.filter(function (it) { return !readyBrief(it.m) && !readyWritten(it.m); }).length;
+      if (none) h += '<div class="quiet rnone">' + esc(none === briefable.length ? "No brief yet for any of them; Prep writes one." : "No brief yet for " + none + " of " + briefable.length + "; Prep writes one.") + "</div>";
+      rows.forEach(function (it) { h += readyRow(it); });
+    }
     putHtml(el, h);
   }
 
@@ -10027,7 +10641,7 @@
   function plUndo(plan) {
     var rows = plRows().filter(function (c) { return c.plan === plan && !c.applied; });
     if (!db || !rows.length) return null;
-    if (rows.some(claimed)) { banner("Apply is writing this plan now. Put it back once it lands.", true); return null; }
+    if (rows.some(claimed)) { banner("Apply is writing this plan now. Undo it once it lands.", true); return null; }
     return Promise.all(rows.map(function (c) {
       return db.collection("choices").doc(c.id).delete().then(function () {
         S.choices = S.choices.filter(function (x) { return x.id !== c.id; });
@@ -10066,7 +10680,7 @@
       h += '<div class="calch" data-plch="proposed"><div class="calline">' + (p.items.length ? "Proposed: " + esc(wkN(p.items.length, "item", "items")) + " placed in your free time, shown dashed on the week. Nothing is saved until you accept it." : "Nothing more fits in this week's free time.")
         + (p.miss ? " " + esc(wkN(p.miss, "item does", "items do")) + " not fit this week." : "")
         + (p.items.length ? ' <button class="act primary" type="button" data-plact="accept"' + (S.pl.busy ? " disabled" : "") + ">Accept the plan</button>" : "")
-        + ' <button class="act undo" type="button" data-plact="drop">Take it back</button></div></div>';
+        + ' <button class="act undo" type="button" data-plact="drop">Undo</button></div></div>';
     }
     plGroups().forEach(function (g) {
       var rows = g.rows, waiting = rows.filter(function (c) { return !c.applied; }), landed = rows.filter(edLanded), bad = rows.filter(function (c) { return c.applied && !edLanded(c); });
@@ -10081,10 +10695,10 @@
         line = "Planned: " + what + ". Waiting for Apply.";
         if (!waiting.some(claimed)) acts = ' <button class="act undo" type="button" data-plact="undo" data-plid="' + esc(g.plan) + '" title="Take this plan back before it reaches your book">Undo</button>';
       } else if (st === "landed") line = "<s>Planned: " + what + ".</s> Put back.";
-      else if (st === "waiting") { line = "Planned: " + what + ". Put back: waiting for Apply."; acts = " " + undoBtn(back, "Keep the plan: take the Put it back away before it reaches your book"); }
+      else if (st === "waiting") { line = "Planned: " + what + ". Undo: waiting for Apply."; acts = " " + undoBtn(back, "Keep the plan: take the Undo away before it reaches your book"); }
       else if (landed.length) {
         line = "Planned: " + what + "." + (st === "failed" ? " " + esc((back.result || {}).line || "") : "");
-        acts = ' <button class="act undo" type="button" data-plact="back" data-plid="' + esc(g.plan) + '" title="Put every date this plan moved back, together">Put it back</button>';
+        acts = ' <button class="act undo" type="button" data-plact="back" data-plid="' + esc(g.plan) + '" title="Put every date this plan moved back, together">Undo</button>';
       }
       if (bad.length) line += (line ? " " : "") + esc(wkN(bad.length, "item was", "items were") + " not planned: " + ((bad[0].result || {}).line || ""));
       if (line) h += '<div class="calch" data-plch="' + esc(g.plan) + '"><div class="calline">' + line + acts + "</div></div>";
@@ -10102,21 +10716,23 @@
   function plHrs(x) { var r = Math.round(x * 2) / 2; return r === 1 ? "1 hour" : r + " hours"; }
   function plRowHtml(x, planned) {
     var cid = x.id, on = !!S.pl.open[cid], title = x.title || plTitle(cid), prow = plateRowOf(cid);
-    var jump = jumpLink(itemText(title, plSource(cid)), "Jump in"), acts, sub;
+    var jump = jumpLink(itemText(title, plSource(cid)), "Jump in"), acts, sub, rest = "";
     if (planned) {
       sub = '<span class="ok">' + esc(plShowWhen(planned.start, planned.end)) + "</span>" + (planned.state === "proposed" ? " · proposed" : planned.state === "waiting" ? " · waiting for Apply" : "");
       acts = (planned.state === "proposed" ? '<button class="chip" type="button" data-plact="leave" data-plid="' + esc(cid) + '" title="Leave this one out of the plan">Leave out</button>'
         : planned.state === "waiting" && planned.row ? undoBtn(planned.row, "Take this one back before it reaches your book") : "") + jump;
     } else {
       sub = x.sub;
-      acts = '<button class="chip" type="button" data-pllen="' + esc(cid) + '" title="How long to plan for it">' + esc(PL_LEN_WORDS[plLen(cid)]) + "</button>"
-        + '<button class="act" type="button" data-plfind="' + esc(cid) + '">Find a time</button>' + jump;
+      // cr1#1641 item 13: one action on the row, Find a time; how long to
+      // plan for and Jump in are one press away, with Done and Drop.
+      acts = '<button class="act" type="button" data-plfind="' + esc(cid) + '">Find a time</button>';
+      rest = '<div class="parts"><button class="chip" type="button" data-pllen="' + esc(cid) + '" title="How long to plan for it">' + esc(PL_LEN_WORDS[plLen(cid)]) + "</button>" + jump + "</div>";
     }
     return '<div class="fr plr" data-plrow="' + esc(cid) + '"' + (planned ? ' data-plstate="' + esc(planned.state) + '"' : "") + '><span class="fnum" aria-hidden="true">' + (x.late ? '<i class="ldot"></i>' : "") + "</span>"
       + '<div class="frline" role="button" tabindex="0" data-plopen="' + esc(cid) + '" aria-expanded="' + (on ? "true" : "false") + '" title="' + (on ? "Close" : "Open the rest: Done, Drop and every other action for this one") + '">'
       + '<div class="frt">' + titleLine(title) + '</div><div class="frw">' + sub + "</div></div>"
       + '<div class="fact">' + acts + "</div>"
-      + (on ? '<div class="fro">' + plateRow(prow || { id: cid, title: title }, false, 0, !!x.late) + "</div>" : "") + "</div>";
+      + (on ? '<div class="fro">' + rest + plateRow(prow || { id: cid, title: title }, false, 0, !!x.late) + "</div>" : "") + "</div>";
   }
   function renderPlanPanel() {
     var el = $("wkplan"); if (!el || !S.pl) return;
@@ -11149,7 +11765,7 @@
     return hit;
   }
   function tomorrowMorning() { var d = new Date(); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0); return d.toISOString().replace(/\.\d{3}Z$/, "Z"); }
-  function hubLine(action, n) { return action === "later" ? "Set aside until tomorrow morning." : (n > 1 ? "Cleared " + n + " lines." : "Cleared."); }
+  function hubLine(action, n) { return action === "later" ? "Hidden till morning." : (n > 1 ? "Cleared " + n + " lines." : "Cleared."); }
   // `lines` are `{key, ts}`: the line's key and its message's time, so a later
   // message is told apart. No text of any message is kept.
   function hubSet(action, lines) {
@@ -11274,7 +11890,8 @@
   function bookName(addr) {
     var a = lowerOf(addr), hit = "";
     if (!a) return "";
-    (((S.people || {}).people) || []).some(function (p) { if (p && p.name && lowerOf(p.email) === a) { hit = String(p.name).trim(); return true; } return false; });
+    // review round 1 of #1699 (B4): any of a person's addresses
+    (((S.people || {}).people) || []).some(function (p) { if (p && p.name && [p.email].concat(p.emails || []).some(function (e) { return lowerOf(e) === a; })) { hit = String(p.name).trim(); return true; } return false; });
     return hit;
   }
   function senderName(name, addr) {
@@ -11377,7 +11994,7 @@
         if (!drafted) acts += '<button class="act" data-iact="draft" data-n="' + esc(it.n) + '">Draft</button>';
       }
       if (email && !boxOpen) acts += '<button class="act primary" data-iact="reply" data-n="' + esc(it.n) + '">Reply</button>';
-      acts += '<button class="act" data-iact="snooze" data-n="' + esc(it.n) + '">Snooze 3 days</button>';
+      acts += '<button class="act" data-iact="snooze" data-n="' + esc(it.n) + '" title="Set this thread aside in your mailbox for three days">Later, 3 days</button>';
       if (it.thread_id) acts += '<button class="act" data-iact="drop" data-n="' + esc(it.n) + '" title="Take this thread off your inbox until a newer message arrives">Drop</button>';
       if (email) acts += '<button class="act" data-iact="teach" data-n="' + esc(it.n) + '" aria-expanded="' + (S.teach[k] ? "true" : "false") + '">' + (S.teach[k] ? "Close" : "Teach") + "</button>";
     }
@@ -11386,8 +12003,20 @@
     // the original draft on a redraw.
     var draft = (boxOpen && !w) ? fill + '<div class="sub">To: ' + esc(it.draft && it.draft.to) + (it.draft && it.draft.cc ? " · Cc: " + esc(it.draft.cc) : "") + "</div><textarea class=\"draft\" aria-label=\"Reply draft\" data-n=\"" + esc(it.n) + '" data-ikey="' + esc(k) + '"' + (it.draft && it.draft.body ? "" : ' placeholder="Write your reply"') + ">" + esc(text) + "</textarea>" : "";
     var teach = (!w && !sent) ? teachBox(it) : "";
+    // cr1#1658 change 4: To-do, Remind me and Waiting on them on the message, under its More
+    var menuOk = typeof moveMenu === "function" && typeof mmMadeFor === "function";   // suites run parts of the page alone
+    var made = menuOk && email && it.thread_id ? mmMadeFor(it.thread_id) : "";
+    // review round 1 of #1699: the thread's own sender (B2), and none for a sender off limits or before the wall is read (B1)
+    var maddr = String(it.sender || "").toLowerCase();
+    // the off-limits check reads hashes and fails closed until they are made: ask for them once, then draw again
+    if (maddr && typeof hashAll === "function" && typeof HASHES !== "undefined" && typeof normOf === "function" && liveWall() && liveWall().ok && (!HASHES[normOf(bareAddr(maddr))] || (normOf(ln.who) && !HASHES[normOf(ln.who)])) && !(S.mmHashed || {})[maddr]) {
+      S.mmHashed = S.mmHashed || {}; S.mmHashed[maddr] = true;
+      hashAll([bareAddr(maddr), ln.who]).then(function () { renderInbox(); }, function () {});
+    }
+    var mOk = menuOk && email && it.thread_id && maddr.indexOf("@") > 0 && !(typeof liveOffLimits === "function" && liveOffLimits(maddr, ln.who));
+    var make = mOk ? '<details class="more"><summary>More</summary>' + moveMenu({ n: it.n, mail: { title: showTitle(it.subject, { kind: "mail", drop: [it.name] }) || ("Reply to " + ln.who), thread: it.thread_id, addr: maddr, who: ln.who, known: !!bookName(maddr) } }) + "</details>" : "";
     return head + tag + "</h3>" + from +
-      threadBox(it) + draft + teach + '<div class="acts">' + acts + "</div>";
+      threadBox(it) + draft + teach + '<div class="acts">' + acts + "</div>" + made + make;
   }
   // A live arrival: what the page can do itself (a reply as a draft or a
   // send with its second press, the thread) and the Hub-only presses.
@@ -11419,8 +12048,8 @@
       }
     } else if (it.link) acts += '<a class="act" href="' + esc(it.link) + '" target="_blank" rel="noopener">Open in ' + esc((CHAT && CHAT.server) || "chat") + "</a>";
     acts += '<button class="act" data-lact="clear" data-n="' + esc(it.n) + '" title="Set this line aside here. Your mailbox is not changed.">Cleared</button>' +
-      '<button class="act" data-lact="later" data-n="' + esc(it.n) + '" title="Set this line aside here until tomorrow morning">Later</button>';
-    return h + draft + '<div class="acts">' + acts + "</div>" + (chat ? "" : '<div class="sub">Snooze, Drop and Teach come once the next Inbox run lands this line.</div>');
+      '<button class="act" data-lact="later" data-n="' + esc(it.n) + '" title="Hide this line here until tomorrow morning; your mailbox is not changed">Hide till morning</button>';
+    return h + draft + '<div class="acts">' + acts + "</div>" + (chat ? "" : '<div class="sub">Later for 3 days, Drop, Teach, To-do, Remind me and Waiting on them come once the next Inbox run lands this line.</div>');
   }
   function renderInboxPane(lines, sel) {
     var pane = $("inboxpane"); if (!pane) return;
@@ -11451,6 +12080,22 @@
     // cr1#1591: with nothing listed, the pick goes back to All, so lines that
     // come back are never hidden behind a filter at 0.
     if (!counts.all) S.ifilter = "all";
+    // cr1#1641 item 7: while a batch of reads is landing, the Needs you number
+    // holds where it stood when the batch started and moves once, when it is
+    // done, so it does not jump (22, then 18) as each read comes back. Review
+    // round 1 (ruling 42): only while a batch is read, never while a
+    // permission question waits (readWait is a phase inside readBusy), and
+    // never against the owner's own presses. Review round 2: the hold is the
+    // set of lines that needed him when the batch started; while it is read,
+    // a line counts only if it is still listed and he has not cleared it or
+    // pressed Send, Drop or Snooze on it.
+    var LV = S.live || {}, reading = !!LV.readBusy && !LV.readWait;
+    if (!reading || !S.needsHeldKeys) S.needsHeldKeys = all.filter(function (l) { return !l.cleared && l.needs; }).map(function (l) { return l.key; });
+    if (reading) {
+      var byKey = {};
+      all.forEach(function (l) { byKey[l.key] = l; });
+      counts.needs = S.needsHeldKeys.filter(function (k) { var l = byKey[k]; return l && !l.cleared && !l.pressed; }).length;
+    }
     // cr1#1635 (coordinator): one inbox number. The tab says what the list's
     // Needs you says, live arrivals included, so the two never differ.
     $("inboxCount").textContent = counts.needs;
@@ -11476,7 +12121,7 @@
       if (aside) {
         // a Snooze Apply already carried has no Undo here; it is in the mailbox's hands
         var landed = l.pressed && aside.applied;
-        var verb = l.pressed ? (landed ? doneVerb(aside) : pressVerb(aside)) : aside.action === "later" ? "Later" : "Cleared", tail = l.pressed ? (landed ? "applied" : pressTail(aside)) : aside.action === "later" ? "until tomorrow" : "";
+        var verb = l.pressed ? (landed ? doneVerb(aside) : pressVerb(aside)) : aside.action === "later" ? "Hidden till morning" : "Cleared", tail = l.pressed ? (landed ? "applied" : pressTail(aside)) : aside.action === "later" ? "until tomorrow" : "";
         var back = landed ? "" : !l.pressed && aside.keys && aside.keys.length > 1 ? '<button class="act undo" data-lact="unclear" data-n="' + esc(l.it.n) + '" title="Put this line back">Undo</button>' : undoBtn(aside, "Put this line back");
         h += '<div class="irc"><button class="ir chosen' + (l.cleared ? " cleared" : "") + picked + '<span class="cw">' + esc(verb) + '</span><span class="ct">' + esc([l.who, l.subject].filter(Boolean).join(" · ")) + "</span>"
           + (tail ? '<span class="cs">' + esc(tail) + "</span>" : "") + "</button>" + back + "</div>";
@@ -11484,7 +12129,10 @@
       }
       h += '<button class="ir' + picked +
         '<span class="idot' + (needs ? " need" : "") + '"' + (needs ? ' title="May need you"' : "") + '></span><span class="iwho">' + esc(l.who) + '</span><span class="isub">' + esc(l.subject) + '</span><span class="iwhen">' + esc(when) + "</span>" +
-        '<span class="iread' + (mustAct(l) ? " need" : "") + '">' + readHtml(l) + "</span></button>";
+        // cr1#1641 item 7 (cr1#1645): nothing shows under a row until its read
+        // lands; "Reading it." and "Not read yet." show in the reader, and a
+        // screen reader still hears them on the row (.srlive).
+        '<span class="iread' + (mustAct(l) ? " need" : "") + '">' + (l.live && !l.hub && (!l.read || l.read.state === "reading") ? '<span class="srlive">' + esc(String(readText(l))) + "</span>" : readHtml(l)) + "</span></button>";
     });
     if (!h) {
       if (!S.inbox && isRunning("inbox") && f === "all") h = skeletons(3);
@@ -11636,6 +12284,7 @@
       var since = new Date(); since.setDate(since.getDate() - MEASURE_DAYS);
       db.collection("measure").where("day", ">=", measureDay(since)).onSnapshot(function (snap) { var m = {}; snap.docs.forEach(function (d) { var x = d.data(); m[x.day || d.id] = x; }); S.measure = m; measureReady = true; renderMeasure(); renderLights(); }, onErr);
       measureOpen();
+      livePrune();   // cr1#1671
     });
     window.claude.use("mcp").then(function (m) {
       mcp = m; if (!mcp) { banner("This view cannot reach your connectors, so the buttons stay off. Open the page signed in on claude.ai.", true); return; }

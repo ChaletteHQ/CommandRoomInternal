@@ -71,7 +71,7 @@ PERSONAL_LINE = "A meeting on your personal calendar is not saved from the Hub; 
 GONE_LINE = "That save is not on your book; nothing was written."
 UNDONE_LINE = "That save was already taken back; nothing was written."
 UNDO_LINE = "Took back the save for {title}."
-DECISIONS_KEPT_LINE = ("The {n} you picked stay on your book: a decision gives way only to a newer one, "
+DECISIONS_KEPT_LINE = ("The {n} you picked {stay} on your book: a decision gives way only to a newer one, "
                        "so record the new one to change it.")
 UNDO_FAILED_LINE = "The save for {title} could not be taken back in full; say undo in a chat."
 SAVE_FAILED_LINE = ("The save for {title} did not finish; what it wrote before it stopped stays on your book. "
@@ -104,8 +104,58 @@ def _saves(evs: List[dict]) -> List[dict]:
     return [e for e in evs if isinstance(e, dict) and e.get("type") == EVENT and isinstance(e.get("data"), dict)]
 
 
-def _undone(saves: List[dict]) -> set:
-    return {str(e["data"].get("undoes_choice")) for e in saves if e["data"].get("undoes_choice")}
+#: cr1#1694, review: the failed-Undo wording as rows written before the
+#: `failed` marker carry it, frozen so a later change to UNDO_FAILED_LINE
+#: never makes an older failed row read as a take-back that held.
+_OLD_UNDO_FAILED = "The save for {title} could not be taken back in full;"
+
+
+def _undo_failed(d: dict) -> bool:
+    """cr1#1694: an Undo row whose take-back failed (a fact could not be
+    removed). Marked `failed` since; an older row is known by its line."""
+    if d.get("failed") is True:
+        return True
+    title = str(d.get("title") or "the meeting")
+    return str(d.get("line") or "").startswith(_OLD_UNDO_FAILED.format(title=title))
+
+
+def _retracted(events: List[dict]) -> set:
+    """The fact seqs a retraction row takes back (`entity_fact_retracted`)."""
+    out = set()
+    for e in events or []:
+        if isinstance(e, dict) and e.get("type") == "entity_fact_retracted":
+            try:
+                out.add(int((e.get("data") or {}).get("retracts_seq")))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _undone(saves: List[dict], retracted: Optional[set] = None) -> set:
+    """The saves taken back. cr1#1694: one whose Undo failed still stands
+    (its facts may still be on the person), so a fresh save answers already
+    and the feed keeps it, with the failure, until a take-back holds: a
+    retry from the page, or every fact the save wrote retracted since (an
+    undo in a chat writes the retractions, never a Hub Undo row)."""
+    gone = retracted or set()
+    seqs = {str(e["data"].get("hub_choice")): e["data"].get("fact_seqs") or []
+            for e in saves if not e["data"].get("undoes_choice")}
+
+    def _held(d: dict) -> bool:
+        if not _undo_failed(d):
+            return True
+        try:
+            return all(int(q) in gone for q in seqs.get(str(d.get("undoes_choice")), []))
+        except (TypeError, ValueError):
+            return False
+    return {str(e["data"].get("undoes_choice")) for e in saves
+            if e["data"].get("undoes_choice") and _held(e["data"])}
+
+
+def _failed_undo(saves: List[dict], press_id: str) -> Optional[dict]:
+    """The newest failed Undo of `press_id`, or None."""
+    return next((e["data"] for e in reversed(saves) if str(e["data"].get("undoes_choice") or "") == press_id
+                 and _undo_failed(e["data"])), None)
 
 
 def _off_limits(root: Path) -> Optional[set]:
@@ -234,7 +284,10 @@ def apply_one(workspace_root, c: Dict[str, Any], actor: str) -> Dict[str, Any]:
         done = next((e for e in evs if isinstance(e, dict) and e.get("type") == WRAP_EVENT
                      and str((e.get("data") or {}).get("hub_choice")) == choice_id), None)
     if done is not None:
-        return {"outcome": "applied", "line": str(done["data"].get("line") or ""), "replayed": True,
+        # cr1#1694, review: the same failed Undo press again answers as it did
+        # the first time (error), so the page never reads it as a take-back
+        failed = bool(done["data"].get("undoes_choice")) and _undo_failed(done["data"])
+        return {"outcome": "error" if failed else "applied", "line": str(done["data"].get("line") or ""), "replayed": True,
                 "seq": done.get("seq")}
     if verb == "save":
         return _save(root, c, inp, choice_id, actor, evs)
@@ -376,15 +429,24 @@ def _undo(root: Path, press_id: str, undo_id: str, actor: str, saves: List[dict]
                   and not e["data"].get("undoes_choice")), None)
     if press is None:
         return {"outcome": "refused", "line": GONE_LINE}
-    if press_id in _undone(saves):
+    evs = _events(root)
+    gone = _retracted(evs)
+    if press_id in _undone(saves, gone):
         return {"outcome": "already", "line": UNDONE_LINE}
     d = press["data"]
     title = str(d.get("title") or "the meeting")
     failed = False
     kept = len(d.get("decisions") or [])
-    by_seq = {int(e["seq"]): str((e.get("data") or {}).get("person_id") or "") for e in _events(root)
+    by_seq = {int(e["seq"]): str((e.get("data") or {}).get("person_id") or "") for e in evs
               if isinstance(e, dict) and e.get("type") == "person_fact_observed" and isinstance(e.get("seq"), int)}
     for seq in d.get("fact_seqs") or []:
+        # cr1#1694, review: a retry after a failed Undo skips the facts an
+        # earlier pass (or a chat undo) already took back
+        try:
+            if int(seq) in gone:
+                continue
+        except (TypeError, ValueError):
+            pass
         try:
             import brain_undo as bu
             bu.REVERSERS["entity_fact_structured"]["reverse"](
@@ -394,24 +456,32 @@ def _undo(root: Path, press_id: str, undo_id: str, actor: str, saves: List[dict]
             failed = True
     line = (UNDO_FAILED_LINE if failed else UNDO_LINE).format(title=title)
     if kept:
-        line += " " + DECISIONS_KEPT_LINE.format(n="decision" if kept == 1 else f"{kept} decisions")
-    row = _append(root, {"type": EVENT, "source_skill": SOURCE_SKILL, "data": {
-        "hub_choice": undo_id, "meeting_id": str(d.get("meeting_id") or ""), "title": title,
-        "undoes_choice": press_id, "line": line}})
+        line += " " + DECISIONS_KEPT_LINE.format(n="decision" if kept == 1 else f"{kept} decisions",
+                                                 stay="stays" if kept == 1 else "stay")
+    data = {"hub_choice": undo_id, "meeting_id": str(d.get("meeting_id") or ""), "title": title,
+            "undoes_choice": press_id, "line": line}
+    if failed:
+        data["failed"] = True   # cr1#1694: the save still stands
+    row = _append(root, {"type": EVENT, "source_skill": SOURCE_SKILL, "data": data})
     return {"outcome": "error" if failed else "applied", "line": line, "seq": row.get("seq")}
 
 
 def saved_for(events: List[dict], meeting_id: str, start: Any = "", tz: Any = None) -> Optional[Dict[str, Any]]:
     """READ. The occurrence's standing save, `{press, line, at}`, or None. A
-    recurring meeting shares one calendar id, so the start must match too."""
+    recurring meeting shares one calendar id, so the start must match too.
+    cr1#1694: a save whose Undo failed still stands and carries
+    `undo_failed`, that Undo's line, so the page says so after a Refresh."""
     saves = _saves(events)
-    undone = _undone(saves)
+    undone = _undone(saves, _retracted(events))
     for e in reversed(saves):
         d = e["data"]
         if str(d.get("meeting_id")) == str(meeting_id) and not d.get("undoes_choice") \
                 and str(d.get("hub_choice")) not in undone and (not start or _same_start(d.get("start"), start, tz)):
-            return {"press": str(d.get("hub_choice") or ""), "line": str(d.get("line") or ""),
-                    "at": e.get("ts")}
+            out = {"press": str(d.get("hub_choice") or ""), "line": str(d.get("line") or ""), "at": e.get("ts")}
+            bad = _failed_undo(saves, out["press"])
+            if bad:
+                out["undo_failed"] = str(bad.get("line") or "")
+            return out
     return None
 
 
@@ -438,7 +508,8 @@ def carried_points(workspace_root, person_ids: Optional[List[str]] = None) -> Di
     if not want:
         return {"lines": [], "n": 0}
     try:
-        saves = _saves(_events(root))
+        evs = _events(root)
+        saves = _saves(evs)
     except Exception:  # noqa: BLE001 - an unread book carries nothing
         return {"lines": [], "n": 0}
     # review round 2, should 5: the wall as it stands now. A person put off
@@ -447,7 +518,7 @@ def carried_points(workspace_root, person_ids: Optional[List[str]] = None) -> Di
     if off is None:
         return {"lines": [], "n": 0}
     want -= off
-    undone = _undone(saves)
+    undone = _undone(saves, _retracted(evs))
     live = [e for e in saves if not e["data"].get("undoes_choice") and str(e["data"].get("hub_choice")) not in undone
             and want & {str(p) for p in e["data"].get("person_ids") or []}
             and not off & {str(p) for p in e["data"].get("person_ids") or []}]

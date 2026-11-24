@@ -368,7 +368,9 @@ def parse_later_when(text, now_iso: str, workspace_path=None):
     number of days ("5", "5 days", "5d") or an ISO date ("2026-08-01",
     full timestamps accepted). Returns the target date as an ISO date
     string, or None when the text needs the orchestrator's natural-language
-    date parsing ("friday", "next week") — None is a hand-off, not an error.
+    date parsing ("next friday", "end of month") — None is a hand-off, not an
+    error. A day word ("tomorrow", a weekday, "next week") is read here too
+    (cr1#1658, `day_word`).
 
     A number parses as TODAY + N days, where today is the calendar day
     `now_iso` falls on in the WORKSPACE timezone when `workspace_path` is
@@ -397,6 +399,38 @@ def parse_later_when(text, now_iso: str, workspace_path=None):
     md = _month_day(s, today)
     if md is not None:
         return md.isoformat()
+    dw = day_word(s, today)
+    if dw is not None:
+        return dw.isoformat()
+    return None
+
+
+# cr1#1658 change 1: the day words the Hub's day buttons and a typed Later
+# or Remind me use. Each names a day after today: "tomorrow"; a weekday
+# ("thu", "Thursday", "this Thursday") is the next such day, a week out when
+# today is that day; "next week" is the Monday of next week. "next Thursday"
+# is left unread (it means this week's or next week's to different people),
+# and so is any other phrase; None still hands off.
+_WEEKDAYS = {w: i for i, names in enumerate(
+    (("mon", "monday"), ("tue", "tues", "tuesday"), ("wed", "weds", "wednesday"),
+     ("thu", "thur", "thurs", "thursday"), ("fri", "friday"),
+     ("sat", "saturday"), ("sun", "sunday"))) for w in names}
+
+
+def day_word(s, today):
+    """The day a day word names, after `today`, or None (cr1#1658)."""
+    s = " ".join(str(s or "").strip().lower().rstrip(".").split())
+    if not s or today is None:
+        return None
+    if s == "tomorrow":
+        return today + datetime.timedelta(days=1)
+    if s == "next week":
+        return today + datetime.timedelta(days=7 - today.weekday())
+    if s.startswith("this "):
+        s = s[5:]
+    if s in _WEEKDAYS:
+        ahead = (_WEEKDAYS[s] - today.weekday()) % 7
+        return today + datetime.timedelta(days=ahead or 7)
     return None
 
 
@@ -445,7 +479,7 @@ def _month_day(s: str, today):
 #: question, never dropped. `{text}` is what was typed.
 LATER_UNREADABLE_ASK = (
     'Which day should it come back? I could not read "{text}" as a date. '
-    "Type a date like Dec 1 or a number of days. Nothing moved.")
+    "Type a date like Dec 1, a day like Thursday, or a number of days. Nothing moved.")
 
 
 def later_unreadable_ask(text) -> str:
@@ -5038,12 +5072,19 @@ def without_retracted_notes(events: Iterable[dict]) -> list:
     """READ. `events` with every commitment note that was taken back left out
     (cr1#1463), for a reader of `note` rows that shows them as current: the
     end-of-day notes, a thread's recent activity. Every other row, and every
-    note no take back names, passes through unchanged. Pure."""
+    note no take back names, passes through unchanged. Pure.
+
+    cr1#1586: a bring-in link (`bring_in.is_link_note`) taken back by a
+    `bring_in_item_undone` row is left out the same way."""
+    from bring_in import is_link_note, taken_back_seqs
+
     events = [e for e in events or [] if isinstance(e, dict)]
     gone = _retracted_note_seqs(events)
-    if not gone:
+    links_gone = taken_back_seqs(events)
+    if not gone and not links_gone:
         return events
-    return [e for e in events if not (_is_context_note(e) and e.get("seq") in gone)]
+    return [e for e in events if not (_is_context_note(e) and e.get("seq") in gone)
+            and not (is_link_note(e) and e.get("seq") in links_gone)]
 
 
 def _is_context_note(ev: dict) -> bool:
@@ -6882,7 +6923,8 @@ def promote_task_to_commitment(
 
 def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
                          source_event_seq=None, source_skill="apply-choices",
-                         now_iso=None, priority=None, source=None, due=None) -> dict:
+                         now_iso=None, priority=None, source=None, due=None,
+                         about_ref=None, primary_thread_id=None) -> dict:
     """CTS1FIX 'Add to My Plate' — mint a fresh owner-me task commitment.
     `due` (an ISO day) dates the task; without it the task carries `no_due`
     (cr1#973: a discuss-later item that names a day still ahead keeps it).
@@ -6940,9 +6982,17 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
     data["source_ref"] = user_initiated_source_ref(source_ref)
     if source_event_seq is not None:
         data["source_event_seq"] = source_event_seq
+    # cr1#1658: what the task was made from (a mail thread), for context only;
+    # the provenance and the replay check stay on `source_ref`
+    about = about_pointer(about_ref)
+    if about:
+        data["about_ref"] = about
     gate_commitment_data(data, subject="add to my plate")
     ev = {"type": "commitment", "source_skill": source_skill,
           "person_ids": [owner_id] if owner_id else [], "data": data}
+    # cr1#1658 change 6: a task added on a project's drawer is on that project
+    if primary_thread_id:
+        ev["primary_thread_id"] = str(primary_thread_id)
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     append_event(events_path, [ev], holder=source_skill)
     return {"ok": True, "status": "created", "commitment": ev}
@@ -6958,8 +7008,25 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
 USER_SOURCE_REF_WAITING_ON = "user:waiting_on"
 
 
+#: cr1#1658: the most characters `about_ref` keeps, and its one shape: a
+#: scheme, a colon and an id, no spaces (a mail thread is `mail:thread:<id>`).
+ABOUT_REF_CAP = 200
+_ABOUT_RE = re.compile(r"[a-z][a-z0-9_]*:[A-Za-z0-9_.:=@+-]+")
+
+
+def about_pointer(ref) -> Optional[str]:
+    """`ref` as an `about_ref` (cr1#1658): what a hand-made item was made
+    from, such as the mail thread a Hub To-do or Waiting on them came from.
+    Context only: never a provenance, never a match key. None for anything
+    that is not one pointer."""
+    s = str(ref or "").strip()
+    # review round 1 of #1699: letters, digits and a few marks only; never a
+    # path part ("/", "..") a reader could take for a place on disk
+    return s if len(s) <= ABOUT_REF_CAP and _ABOUT_RE.fullmatch(s) and ".." not in s else None
+
+
 def create_owed_to_me_item(workspace_root, *, title, owner_id, user_id,
-                           source_skill="commitments") -> dict:
+                           source_skill="commitments", about_ref=None) -> dict:
     """WOADD1 (cr1#520): the owner types "Contact A owes me X" and it is
     saved as something owed TO them.
 
@@ -7006,6 +7073,9 @@ def create_owed_to_me_item(workspace_root, *, title, owner_id, user_id,
         "origin": "user_stated",
         "source_ref": f"{USER_SOURCE_REF_WAITING_ON}:{cid}",
     }
+    about = about_pointer(about_ref)
+    if about:
+        data["about_ref"] = about
     gate_commitment_data(data, subject="owed-to-me item")
     ev = {"type": "commitment", "source_skill": source_skill,
           "person_ids": [owner_id, user_id], "data": data}

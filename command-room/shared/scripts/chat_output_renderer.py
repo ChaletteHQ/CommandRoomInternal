@@ -3117,6 +3117,15 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document",
         return _render_all_clear_summary(data, wrapper=wrapper)
     if widget_mode == "onboarding_setup":
         return _render_onboarding_setup(data, wrapper=wrapper)
+    # cr1#1649 - craft-capture's confirm page and held-out test page. Their
+    # rows are rules and a verdict, not orchestrator verbs, so the
+    # canonical-action gate does not apply; both renderers run the same leak
+    # scan, and the transport runs validate_rendered_widget after.
+    if widget_mode in ("craft_confirm", "craft_test"):
+        import craft_confirm as _craft_confirm
+        if widget_mode == "craft_confirm":
+            return _craft_confirm.render_confirm_html(data, wrapper=wrapper)
+        return _craft_confirm.render_test_html(data, wrapper=wrapper)
 
     # Gates 1 → 1e, in one call (SPEC_BOARD1: extracted to `validate_data_view`
     # so the artifact-board emitter runs the IDENTICAL stack rather than a
