@@ -284,20 +284,33 @@ def cluster_events(events, *, workspace_root=None, now_iso=None,
             parent[rb] = ra
 
     scores: dict = {}
+    # v6.11 (Refresh speed, hot spot 1): each row's id and adjacency time
+    # worked out once, and only the pairs that share a roster identity are
+    # visited (an index from identity to row), in the same order as before:
+    # j ascending for each i. The pairs scored, and so the clusters, are
+    # exactly the ones the all-pairs walk scored; it visited every pair only
+    # to skip most of them, and on a seat with 1,500 open items that walk
+    # was a fifth of the plate.
+    cids = [_cid(ev) for ev in items]
+    for c in cids:
+        parent.setdefault(c, c)
+    times = [_adjacency_when(ev) for ev in items]
+    by_key: dict = {}
+    for idx, ks in enumerate(keys_of):
+        for k in ks:
+            by_key.setdefault(k, []).append(idx)
     for i, older in enumerate(items):
-        parent.setdefault(_cid(older), _cid(older))
-        t_older = _adjacency_when(older)
-        for j in range(i + 1, len(items)):
+        if not keys_of[i]:
+            continue
+        t_older = times[i]
+        for j in sorted({j for k in keys_of[i] for j in by_key.get(k, ()) if j > i}):
             newer = items[j]
-            parent.setdefault(_cid(newer), _cid(newer))
-            if not (keys_of[i] and keys_of[j] and (keys_of[i] & keys_of[j])):
-                continue
             # Temporal adjacency, PAIRWISE. An unparseable timestamp on
             # either side refuses the join — precision over recall: absence
             # of evidence about WHEN is not adjacency. A meeting-derived row
             # is dated by its meeting, not by the sweep that captured it
             # (cr1#155).
-            t_newer = _adjacency_when(newer)
+            t_newer = times[j]
             if t_older is None or t_newer is None:
                 continue
             if abs(t_newer - t_older) > max_gap:

@@ -2008,6 +2008,8 @@ DISPLAY_NAMES: dict[str, str] = {
     "cockpit-inbox": "Hub Inbox",  # cr1#619
     "cockpit-apply": "Hub Apply",  # cr1#619: the one writer from the page to the book
     "cockpit-refresh": "Hub Refresh",  # cr1#619
+    "cockpit-update": "Hub Update",  # cr1#1722: the save and the rebuild as one run; replaces the two above
+    "cockpit-morning": "Hub Morning",  # cr1#1722 step 2: the inbox, meeting prep, the first update and the brief as one run; replaces Hub Prep, Hub Inbox and, on a Hub seat, the Morning Brief chat
 }
 
 

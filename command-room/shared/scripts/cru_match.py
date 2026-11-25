@@ -1061,6 +1061,13 @@ def load_events_defensively(
     return merge_streams(stream_events), skipped
 
 
+def _log_decode_line(text):
+    """v6.11: `json.loads`, shared inside a `OneLogRead` (`log_decode`)."""
+    from log_decode import decode_line
+
+    return decode_line(text)
+
+
 def _load_stream_defensively(files, skipped: list, stream_name: str = "") -> list[dict]:
     """One stream's files (shards then the active file), parsed the way
     `load_events_defensively` always has; unreadable lines go to `skipped`.
@@ -1087,7 +1094,7 @@ def _load_stream_defensively(files, skipped: list, stream_name: str = "") -> lis
                     continue
                 last_decode_error = None
                 try:
-                    ev = json.loads(line)
+                    ev = _log_decode_line(line)
                 except json.JSONDecodeError as e:
                     last_decode_error = f"JSONDecodeError: {e.msg}"
                     skipped.append(

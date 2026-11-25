@@ -567,6 +567,13 @@ def _clock1_floor_stamp(machine_now, newest_ts, events_path=None) -> dict:
         return plain
 
 
+def _decode_line(text):
+    """v6.11: `json.loads`, shared inside a `OneLogRead` (`log_decode`)."""
+    from log_decode import decode_line
+
+    return decode_line(text)
+
+
 def _file_max_seq(events_path: str | Path, existing_text: str | None = None) -> int:
     """The maximum human-counter seq on disk in `events_path` (0 when the file
     is absent/empty/all-nano-epoch). Ignores non-dict / non-numeric / nano-epoch
@@ -584,7 +591,7 @@ def _file_max_seq(events_path: str | Path, existing_text: str | None = None) -> 
         if not line:
             continue
         try:
-            entry = json.loads(line)
+            entry = _decode_line(line)
         except json.JSONDecodeError:
             continue
         if not isinstance(entry, dict):

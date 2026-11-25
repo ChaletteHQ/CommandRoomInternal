@@ -420,14 +420,20 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:plan_prune_choices",  # cr1#683 - the applied choices past the window the refresh leg deletes from the page, planned not written here
     "cockpit_helpers:feed_today",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:feed_inbox",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:prep_one_pick",  # cr1#1758 - the judgment of the page's "Prep this one" presses against the run's own calendar read, computed not written
     "cockpit_helpers:feed_projects",  # cr1#660 - the cockpit page's Projects tab, read only
     "cockpit_helpers:feed_review",  # cr1#779 - the Review tab's rows
     "cockpit_helpers:feed_week",  # cr1#780 - the Done tab's rows
     "cockpit_helpers:feed_settings",  # cr1#781 - the Settings tab: what was learned and every setting, read only
+    "cockpit_helpers:feed_followups",  # cr1#1745 - the follow-ups waiting on the wrap-up page, read only
+    "followup_draft:feed_followups",  # cr1#1745 - the same, with the wall checked as it stands
     "cockpit_helpers:feed_stillyours",  # cr1#1706 - the Still yours? review's own document, as its writers left it, read only
     "usage_guide:guide",  # cr1#187 - the habits and phrases: the Settings section and the typed "how do I use this", read only
     "cockpit_helpers:feed_mine",  # cr1#662 - the Today page's priorities and reminders, read only
     "cockpit_helpers:feed_mail_rules",  # cr1#1020 - the Inbox tab's mail rules and dropped threads, read only
+    "cockpit_helpers:feed_wall",  # cr1#1765 - the off-limits wall as its own small document, published first by every Update and by set-up; no log read, read only
+    "cockpit_helpers:live_sources",  # cr1#1765 - which sources the Hub page reads live, from the plans it is rendered with, read only
+    "cockpit_helpers:live_sources_check",  # cr1#1765 - set-up is done only when each live source worked or was skipped, judged from the page's record, read only
     "cockpit_helpers:feed_brief",  # cr1#1310 - the Brief tab: today's saved morning brief, as written, read only
     "morning_message:hub_address",  # cr1#1017 - the Hub page the morning message reads its Inbox feed from, read only
     "cockpit_helpers:miss_search_plan",  # cr1#1202 - what the apply run searches for each "Missed something?" press, computed not written
@@ -787,6 +793,10 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "cockpit_helpers:apply_start",  # cr1#1608 - see the writer table row
     "cockpit_helpers:apply_run",  # cr1#1608 - see the writer table row
     "cockpit_helpers:apply_finish",  # cr1#1608 - see the writer table row
+    "cockpit_helpers:update_claim",  # cr1#1722 - see the writer table row
+    "cockpit_helpers:update_save",  # cr1#1722 - see the writer table row
+    "cockpit_helpers:update_build",  # cr1#1722 - see the writer table row
+    "cockpit_helpers:update_finish",  # cr1#1722 - see the writer table row
     "cockpit_helpers:save_config",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:land_registration",  # cr1#734 - see the writer table row
     "cockpit_helpers:log_run_receipt",  # COCKPIT1 (cr1#608) - see the writer table row
@@ -798,6 +808,8 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "project_folder:create_project",  # cr1#1582 - see the writer table row
     "project_folder:make_project_folders",  # cr1#1582 - see the writer table row
     "project_folder:undo_create_project",  # cr1#1582 - see the writer table row
+    "followup_draft:record_draft",  # cr1#1745 - keeps a meeting's follow-up text in the book; see the writer table row
+    "followup_draft:apply_skip",  # cr1#1745 - the "don't draft for meetings like this" rule and its Undo
     "still_yours:review_apply",  # cr1#1706 - the Still yours? review's presses and their Undos; see the writer table row
     # KEEP THIS NAME LAST, directly above the closing brace - the same anchor
     # discipline as `RUN_HELPER_ALLOWLIST`: removal proofs and later lanes

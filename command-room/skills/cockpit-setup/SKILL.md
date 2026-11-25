@@ -1,15 +1,16 @@
 ---
 name: cockpit-setup
 surfaces: both
-description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'rebuild my hub', 'update my hub', 'where is my hub', 'show my settings' (the Hub's Settings, behind the gear: everything learned and every setting), and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Go button whose first press each day switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book; a later press refreshes the day. Publishes the page, registers the four Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
+description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'rebuild my hub', 'update my hub', 'where is my hub', 'show my settings' (the Hub's Settings, behind the gear: everything learned and every setting), and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Go button whose first press each day switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book; a later press refreshes the day. Publishes the page, registers the three Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
 ---
 
 # cockpit-setup
 
-One page, four tasks, one address (COCKPIT1, cr1#608; four tasks per
-cr1#619). The page lives on claude.ai as a private artifact with its own
-small database; the tasks are `cockpit-prep`, `cockpit-inbox`,
-`cockpit-apply` and `cockpit-refresh`, each with its orchestrator in
+One page, three tasks, one address (COCKPIT1, cr1#608; four tasks per
+cr1#619, three since cr1#1722, when Apply and Refresh became the one Update).
+The page lives on claude.ai as a private artifact with its own
+small database; the tasks are `cockpit-prep`, `cockpit-inbox`
+and `cockpit-update`, each with its orchestrator in
 `references/orchestrator-cockpit-<leg>.md` and the shared steps in
 `references/cockpit-shared.md`; the address is kept in
 `_hq/config/cockpit.json`. The page never writes the book. Its choices wait
@@ -97,11 +98,11 @@ On `show my settings` (cr1#781): say the `url` followed by `#settings` and one
 line, "Everything learned and every setting is behind the gear on the Hub;
 learned rules and the question budget can be changed there." (or the same
 no-Hub line above), and STOP. That address opens the gear's panel (cr1#1537;
-Settings was a tab before). The panel is filled by `cockpit-refresh`
+Settings was a tab before). The panel is filled by `cockpit-update`
 (`cockpit_helpers:feed_settings`); its edits go to the book through
-`cockpit-apply` (`cockpit_helpers:apply_settings_choices`).
+the same task (`cockpit_helpers:apply_settings_choices`).
 
-## Step 2: Register the four cockpit tasks, Morning Brief and Maintenance
+## Step 2: Register the Hub's two tasks and Maintenance
 
 Find the scheduler tools the way `enable-command-room-schedules` does (its
 scheduler discovery step, verbatim) and read the account's trigger listing
@@ -110,7 +111,7 @@ once, every page, the way that skill's Step 1.B does. Pass each row as
 else from the row: the door refuses a computer path, and a prompt is too long
 for this line (cr1#733). The planner places each task by its exact name, or a
 renamed chat by the trigger id in the stored map, so no normalising call is
-needed. Then plan all six in one call (the four cockpit tasks, then Morning Brief and Maintenance):
+needed. Then plan them all in one call (the Hub's two tasks, then the chats that survive: Maintenance, and Morning Brief only when Hub Morning could not be planned):
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"discover_block": "<the discovery block, as the schedules skill obtains it>", "plugin_version": "<the installed plugin version>", "registered": [<the listing rows, those four fields>], "tools": [<this session's tool names>], "tz_name": "<the workspace timezone>", "workspace_root": "<WS>", "writer_pair": ["<the CR_WRITER_ID this run's rendered lines carry>", "<the CR_WRITER_DERIVATION they carry>"]}, "name": "cockpit_helpers:plan_cockpit_registration"}'
@@ -120,7 +121,7 @@ The line carries no computer path (cr1#732): the door refuses one as an argument
 
 `ok: false` ends the turn with its `line` (no folder forwarded, no scheduler, the older desktop
 app's scheduler, no account, or a cron the backend refuses). Otherwise, for
-EACH of the six `plans`, in order, exactly one of three: `create` or `update`
+EACH of the `plans`, in order, exactly one of three: `create` or `update`
 (execute its `tool` with its `args`, then land its `landing`), or `current:
 true` (nothing to call). **`landing` is the one landing path for both**
 (cr1#734): the door payload the plan already composed, rendered with `plan
@@ -135,32 +136,87 @@ schedule record could not be read, so its row was not written over it
 Its receipt landed only when the result says `event_written: true`. An
 update's names
 `schedule_refresh:log_schedule_refreshed`, one receipt per refreshed task, and
-needs nothing filled in. Keep each trigger id. The four are
-`cockpit-prep` (6:45 AM weekdays), `cockpit-inbox` (7:15 AM weekdays),
-`cockpit-apply` (hourly, 8 AM to 3 PM, the one writer from the page to the
-book; the ruling asked for every half hour, and the cloud scheduler refuses
-fires closer than an hour apart, so hourly is the nearest it takes) and `cockpit-refresh` (half past, 7 AM to 3 PM; the cloud scheduler
+needs nothing filled in. Keep each trigger id. The Hub's two are
+`cockpit-update` (half past, 7 AM to 3 PM: the one writer from the page to the
+book, which then rebuilds the page from it, cr1#1722; the cloud scheduler refuses
+fires closer than an hour apart, and it
 refuses an hour range that crosses midnight in UTC, so the afternoon stops
-at three); each runs its one leg
-and writes its one light. `stale` names the one-task `Cockpit` trigger of an
-earlier build, and the four tasks under their names before the Hub rename
-(`Cockpit Prep`, `Cockpit Inbox`, `Cockpit Apply`, `Cockpit Refresh`), when
+at three) and `cockpit-morning` (6:45 AM weekdays, and 7:45 and 8:45 to finish what a
+cut-off earlier run left: the inbox, meeting prep, the day's first whole update
+and the morning brief, in one run, cr1#1722 step 2). `stale` names the one-task `Cockpit` trigger of an
+earlier build, the four tasks under their names before the Hub rename
+(`Cockpit Prep`, `Cockpit Inbox`, `Cockpit Apply`, `Cockpit Refresh`),
+and `Hub Apply` and `Hub Refresh`, the two tasks Hub Update replaced (cr1#1722), when
 the listing still carries them: **delete each** with its `delete` call, exactly
 as planned, and say so in one clause (cr1#676: a task only switched off was
 switched back on by the page's Go, so every leg ran twice). An entry with
 no `delete` (a backend that cannot delete), or a delete that is refused, is
 switched off with its `switch_off` call instead, and the clause says it is
 off and can be deleted from the Scheduled list. Nothing else ever
-deletes these: their task ids are the Hub's own.
+deletes these: their task ids are the Hub's own. After a `switch_off` that
+stood in for a delete, run the entry's `record_off` call, when it has one,
+through `run_writer` exactly as planned (`<WS>` filled): it notes that
+set-up switched that task off, so the next set-up never reads it as your
+pause.
 
-Plans 5 and 6 are Morning Brief and Maintenance (`task_id` `morning-brief`
-and `maintenance`), the two chats of the previous version that survive the
-cockpit. They are handled exactly like the four above: a `create` or an
+**Hub Prep and Hub Inbox, once Hub Morning is in (decision F).**
+`after_morning_tasks` lists `Hub Prep` and `Hub Inbox`, the two tasks Hub
+Morning took over, when the listing still carries them. They are the
+morning's own runs until Hub Morning exists, so run these under the same
+rule as `after_morning` below, and never before it: only AFTER the
+`cockpit-morning` plan's `create` returned its trigger id and its landing
+landed, or its plan was an `update` or `current`. Then delete each, or
+switch it off and run its `record_off`, exactly as above. When Hub Morning
+was not registered on this run the list is empty and both keep running.
+
+**The Morning Brief chat, once Hub Morning is in (decision E, cr1#1722).**
+`after_morning` lists this folder's Morning Brief chat (every copy: a seat
+can carry it twice, cr1#942), matched by its exact name or by the trigger id
+the stored map holds for it, and never by a prefix. Hub Morning writes the
+brief, so the chat would brief the owner twice. Run these only AFTER the
+`cockpit-morning` plan's `create` returned its trigger id and its landing
+landed, or its plan was an `update` or `current`: **delete each** with its
+`delete` call, exactly as planned, or switch it off with its `switch_off`
+call where it has no `delete` or the delete is refused (then its `record_off`
+call too, as above), and say so in one clause. When Hub Morning was not registered on this run, run none of them:
+the chat keeps briefing the owner. A Morning Brief the owner renamed, which
+the map does not know, is never in the list and is left as it is.
+
+**When Hub Morning is created on this run, the two lists come from its
+landing, not the plan** (early review of #1776, should 4). The plan then
+carries `retire_after_create: true` and both lists empty; the
+`cockpit-morning` landing's result (`land_registration`) carries them as
+`retire` (`after_morning_tasks` and `after_morning`), and only once the
+create's id landed. Run that `retire` exactly as the two paragraphs above
+say. A create that failed, or a landing that was refused and not landed
+again, returns no `retire`: run nothing, and say in one clause that Hub
+Prep, Hub Inbox and the Morning Brief chat were left running because Hub
+Morning was not set up. A task is listed only when it is this folder's: its
+stored id, or its exact name with no other folder of its own (two folders
+with the same name on one account never retire each other's tasks).
+
+A `cockpit-update` or `cockpit-morning` plan that carries `paused: true` is
+created switched off: a task it takes over from (Hub Apply or Hub Refresh for
+the Update; Hub Prep, Hub Inbox or the Morning Brief chat for the Morning) was
+paused in the listing, and the task that takes over never switches paused work
+back on (cr1#914, cr1#1722). Run its
+`create` exactly as planned, then at once its `switch_off` call with the
+trigger id the create returned in place of the placeholder, before any other
+plan. An `update` or `current` plan that carries `paused: true` (a set-up run
+again after one that stopped half way, with the Hub task on and a task it
+takes over from still paused) runs its `update` when it has one, then its
+`switch_off` exactly as planned (it names that Hub task's own trigger id). Say its `paused_line` once in the summary, verbatim, and never switch it
+on from here. A `switch_off` that is refused is said plainly: the task is on,
+and the owner can pause it from the Scheduled list.
+
+The plans after the Hub's two are the chats of the previous version that
+survive the cockpit: Maintenance (`task_id` `maintenance`), and Morning Brief
+(`morning-brief`) only on a run where Hub Morning could not be planned. They are handled exactly like the three above: a `create` or an
 `update` is executed and its `landing` landed, a `current` needs no call. One already in the listing with no prompt to compare is `current` with
 `not_compared: true`: its text is unknown here, so Step 2 never rewrites it
 and never creates it again; Step 2b compares its prompt and refreshes it
-when it is stale (for Maintenance, the one-time move to its stub, cr1#972). **Never stop after the fourth plan.** The first build asked for these
-two in a separate call, and a real set-up skipped it, leaving a seat with no
+when it is stale (for Maintenance, the one-time move to its stub, cr1#972). **Never stop after the Hub's plans.** The first build asked for the
+chats in a separate call, and a real set-up skipped it, leaving a seat with no
 Morning Brief and no Maintenance (cr1#631). A chat listed in
 `chats_refused` is named in the final line with its `line`; it never stops
 the cockpit.
@@ -175,7 +231,7 @@ them.
 The owner's ruling of 2026-11-09 (cr1#970): scheduled chats are created,
 changed, switched off or removed only here and by
 `enable-command-room-schedules`; the update bridge touches none of them. So
-every time this skill runs, after Step 2's six plans were executed and landed
+every time this skill runs, after Step 2's plans were executed and landed
 and before Step 3, run
 `enable-command-room-schedules/references/schedule-changes.md` (in that
 skill's folder) start to finish, with `<this skill>` = `cockpit-setup`. It
@@ -189,7 +245,7 @@ written only when this run finished what it planned. Its step 6 compares and
 refreshes Morning Brief's and Maintenance's prompts on every run (Step 2 hands
 in rows without prompts, so it cannot), so a stale Maintenance prompt is
 brought current here.
-The cockpit's own four tasks are never touched by it. A step that planned
+The cockpit's own three tasks are never touched by it. A step that planned
 nothing says nothing; the lines it does compose go into Step 6's final line,
 verbatim. A run that ended at Step 2's `ok: false` never reaches this step.
 
@@ -279,13 +335,16 @@ moving and cancelling a meeting are not switched on for the Hub on this
 account." A refusal that names the file store (`assets`, cr1#1632) is
 published once more with the `assets` entry (`all_new` when another part
 was named too), and the line is "Attaching a file to a meeting is not
-switched on for the Hub on this account." Any other refusal is said as it is
-and nothing is published.
+switched on for the Hub on this account." A refusal that names the calendar's
+list tool (cr1#1758) is published once more with the `calendar_live` entry
+(`all_new` when another part was named too), and the line is "Today on the
+Hub shows your calendar as of its last update on this account, not live."
+Any other refusal is said as it is and nothing is published.
 
 Then record the address:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"basename": "<basename>", "plugin_version": "<the installed plugin version>", "published_at": "<now ISO>", "server": "<the server name passed in Step 3>", "trigger_id": "<the cockpit-apply trigger id>", "url": "<the published page address>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:save_config"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"basename": "<basename>", "plugin_version": "<the installed plugin version>", "published_at": "<now ISO>", "server": "<the server name passed in Step 3>", "trigger_id": "<the cockpit-update trigger id>", "url": "<the published page address>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:save_config"}'
 ```
 
 ## Step 5: Seed the page's database
@@ -299,14 +358,52 @@ loaded, never read as absent). With the page's `url`:
 
 - `set` on `config/page`: `{"basename", "server", "plugin_version",
   "published_at", "trigger_ids": {"cockpit-prep", "cockpit-inbox",
-  "cockpit-apply", "cockpit-refresh"}}` with the Step 2 and Step 3 values;
-- `set` on `status/<leg>` for each of `prep`, `inbox`, `apply`, `refresh`,
+  "cockpit-update"}}` with the Step 2 and Step 3 values;
+- `set` on `status/<leg>` for each of `prep`, `inbox`, `update`,
   the document from one `cockpit_helpers:status_doc` call each with
   `state: "idle"` and `line: "Not run yet."`.
 
 Then one functional check: `list` the `status` collection and confirm the
-four documents are there. If the tool is absent in this chat, say so in the
+three documents are there. If the tool is absent in this chat, say so in the
 final line; the page still works and its first run seeds the lights.
+
+Then publish the off-limits list on its own (cr1#1765), so the page's live
+mail never waits for a whole rebuild: `list` on `feed` with `out_dir` set to
+`<scratch>/wall/page` (its answer saved to `<scratch>/wall/list.txt` exactly
+as it came), one `run_helper` call of `cockpit_helpers:feed_wall`
+with `{"workspace_root": "<WS>"}`, its answer saved to a file in this chat's
+own scratch exactly as it came (its `digest` must match its document), then
+`python3 "$RT/shared/scripts/cockpit_helpers.py" wall-batch --answer "<that
+file>" --stored "<scratch>/wall/page" --out "<scratch>/wall"` in this shell
+(with `--stored-empty "<scratch>/wall/list.txt"` in place of `--stored
+"<scratch>/wall/page"` only when
+that `list` answered and listed no documents; never after a `list` that
+failed or was not made),
+and its `batches[0]` sent as ONE `batch` with the artifact database tool,
+exactly as printed. A step here that fails is left alone: every Hub Update
+publishes the list again before its first heavy part.
+
+## Step 5b: Allow the live sources (cr1#1765)
+
+The page reads some sources live, while it is open: new mail and chat, and,
+on a seat whose live Today reads the calendar itself (Google Calendar, cr1#1771),
+the calendar, with that same read as its test. On any other seat the
+calendar is called only when the owner presses a booking button, with that
+press's own approval, so it is not asked for there. Only the owner can allow that, on the page, so set-up asks for it
+here and is not finished until each one works or is skipped. One `run_helper`
+call of `cockpit_helpers:live_sources` with `{"workspace_root": "<WS>"}`. With
+an empty `sources`, skip this step.
+
+Otherwise the Step 6 line also says, once: "Then, on the Hub, press Allow
+beside each live source (mail, chat, calendar: the ones in `words`) and
+allow it when the page asks, or press Skip. Say done when you have." Set-up
+then waits for the owner's answer. When the owner says done (or says `set up
+my hub` again), `get` `config/live_sources` with the artifact database tool
+and make one `run_helper` call of `cockpit_helpers:live_sources_check` with
+`{"doc": <that document as read, or null>, "workspace_root": "<WS>"}`. Say its
+`line`, verbatim. When `done` is false, set-up is not finished: say the line
+and wait for the owner again; never press, approve or skip anything for them,
+and never read a live source from this chat.
 
 ## Step 6: Say where it is, then STOP
 
@@ -329,11 +426,11 @@ says the set-up stopped before it and why, and claims nothing it did not
 check.
 
 One line: the page address, what Step 2 and Step 2b created, refreshed and
-left alone (six triggers), and "Open it on claude.ai, allow the Claude Code Remote
+left alone (five triggers), and "Open it on claude.ai, allow the Claude Code Remote
 connector when the page asks, and press Go." When the answer from Step 3
 carried `mail_direct`, the line also says the page asks once to use the mail
 connector the first time Send is pressed. On a first set-up, also fire
-`cockpit-refresh` once now (the scheduler's fire call on its trigger id and
+`cockpit-update` once now (the scheduler's fire call on its trigger id and
 NO text: a fire that carries text starts without the computer's device tools,
 cr1#651) so the page is filled when the owner opens
 it. Nothing else: no description of the tabs, no
@@ -343,7 +440,7 @@ summary of what was registered.
 
 - **It never writes the book.** Done, Add context, Confirm, Snooze, Send,
   Draft, Reopen and a press under To confirm or on the Record tab (the Done tab until cr1#1537) are saved as choices in the page's database;
-  `cockpit-apply`, the one writer from the page to the book, sends them
+  `cockpit-update`, the one writer from the page to the book, sends them
   through `cockpit_helpers:apply_commitment_choices`,
   `cockpit_helpers:apply_review_choices`, `cockpit_helpers:apply_week_choices`
   and apply-choices' own `cr-inbox` handlers. The three producers never read a choice. Send needs a second press on
@@ -356,10 +453,10 @@ summary of what was registered.
   Send keeps its second press, and is recorded as sending before anything goes
   out. Draft makes the reply in the thread and sends nothing. A seat with no
   such connector, or a thread the page cannot read, keeps both on
-  `cockpit-apply` exactly as before; so does Draft on Gmail, whose plan has no
-  draft tool. Snooze and every book write still wait for `cockpit-apply`, and
+  `cockpit-update` exactly as before; so does Draft on Gmail, whose plan has no
+  draft tool. Snooze and every book write still wait for `cockpit-update`, and
   a choice older than seven days expires instead of applying. A Send or
-  Draft the page made gets its book record on the next `cockpit-apply` run
+  Draft the page made gets its book record on the next `cockpit-update` run
   (cr1#817: the same `email_drafted`, voice snapshot and `email_sent` rows a
   press through Apply writes), once however many runs overlap, with no
   delay to the press.
@@ -379,7 +476,7 @@ summary of what was registered.
   owner ruling D3 of 2026-11-04), each with where it came from, read from
   the stores the skills read: never a second copy. Learned rules can be
   reworded, switched off or deleted and the question budget changed on the
-  page; each is a choice `cockpit-apply` writes through the store's own
+  page; each is a choice `cockpit-update` writes through the store's own
   writer. Everything else in the panel is read-only in this version.
 - **The morning brief is a section of it** (cr1#782, owner ruling D2 of
   2026-11-04). The Today tab opens with this morning's view, built from the
@@ -413,9 +510,9 @@ summary of what was registered.
   the open page: none of it is written to the page's data.
 - **It never republishes itself.** A task writes feeds; only this skill
   republishes the page. Go's first press each day fires prep, inbox and
-  apply at once and refresh once apply is done, so the four lights fill side
-  by side; a later press fires prep and a refresh, the refresh waiting on
-  Apply while it runs.
+  the update at once, so the three lights fill side by side; a later press
+  ("Update now") fires the update alone, and a press made while one runs
+  starts one more when it ends (cr1#1722).
 - **Its data lives on claude.ai**, readable by the owner alone under the
   page's rules: ids, titles, drafts, status lines and times, and the short
   source line of a commitment (capped, from its own record, cr1#725), never

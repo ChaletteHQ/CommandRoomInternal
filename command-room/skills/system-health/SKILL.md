@@ -169,8 +169,8 @@ lets this helper's `task_records` carry each record's computer folder
 before. If the door still refuses the call, say the one sentence for a step
 that could not run and stop; never strip the field and call again. The helper
 decides the task set from the registry, not from this text: Morning Brief and
-Maintenance, plus the four Hub tasks (Hub Prep, Hub Inbox, Hub Apply, Hub
-Refresh) on a seat whose listing, trigger map or registered ids hold any one
+Maintenance, plus the three Hub tasks (Hub Prep, Hub Inbox, Hub Update)
+on a seat whose listing, trigger map or registered ids hold any one
 of them, and never a shelved chat. A raw listing row is placed by
 `schedule_backend.place_listing_rows`, the rule the schedules planner uses.
 `duplicates` names each task this seat runs more than once; its line is

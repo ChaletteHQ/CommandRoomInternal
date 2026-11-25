@@ -117,6 +117,13 @@ def load_entities(root: Path) -> dict:
     }
 
 
+def _decode_line(text):
+    """v6.11: `json.loads`, shared inside a `OneLogRead` (`log_decode`)."""
+    from log_decode import decode_line
+
+    return decode_line(text)
+
+
 def load_events(root: Path) -> tuple[list[dict], int]:
     """Defensively read events.jsonl. Returns (events, skipped_line_count).
 
@@ -142,7 +149,7 @@ def load_events(root: Path) -> tuple[list[dict], int]:
         if not line:
             continue
         try:
-            ev = json.loads(line)
+            ev = _decode_line(line)
         except json.JSONDecodeError:
             skipped += 1
             continue

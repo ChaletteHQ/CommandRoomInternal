@@ -1055,11 +1055,12 @@ ev = build_meeting_event(
     source_had_attendees=<True when the invite/transcript listed ANY participants>,
     transcript_class=routed["transcript_class"],                  # ATTRIB1-A — from Step 5e's return
     working_session=routed["summary"]["working_session"],         # True only for a dictated session
+    calendar="<business|personal>",                               # cr1#1745 — as the calendar read named this meeting's event; leave the argument out when it matches no calendar event
 )
 append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.meeting")
 ```
 
-Binding rules: resolve every attendee you can (`person_ids`), carry every invitee email you saw (`data.attendees`) even when unresolved — identity-reconcile corroborates merges from them and the backfill repairs history with them. An empty binding is legal only when the source truly listed nobody; `source_had_attendees=True` with nothing resolved stamps `data.binding_missing` so the claim audit surfaces it.
+Binding rules: resolve every attendee you can (`person_ids`), carry every invitee email you saw (`data.attendees`) even when unresolved — identity-reconcile corroborates merges from them and the backfill repairs history with them. An empty binding is legal only when the source truly listed nobody; `source_had_attendees=True` with nothing resolved stamps `data.binding_missing` so the claim audit surfaces it. `calendar` (cr1#1745) is the calendar this meeting's event is on, `business` or `personal`, exactly as the calendar read named it; a follow-up is drafted only for a row that says `business`, so never guess it: when the meeting matches no calendar event, leave it out and no follow-up is drafted.
 
 **Dedup is IN THE BUILDER now, not in your memory (CAPTUREONCE1, M's ruling R4).** Pass `workspace_root="<WORKSPACE>"` to `build_meeting_event` and it REFUSES to build a second `meeting` row for a source_ref that already carries a `meeting_processed` receipt — it raises rather than returning something appendable. The same argument arms the same refusal on `build_decision_event` and `build_meeting_commitment_event`, and the append chokepoint refuses the row anyway if a writer somehow gets past all three. This paragraph narrates the code; it is not the place the rule lives.
 
@@ -1098,7 +1099,7 @@ ev = build_meeting_processed_event(..., capture_summary=routed, appended=written
 **On a merged seat, Steps 9a1 and 9a2 run through the doors (cr1#1005).** Nothing is imported into a shell here. Each row is built by the read door, then landed by the append door, which runs the same event gate and chokepoint:
 
 ```bash
-cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"person_ids": ["<resolved attendee ids>"], "source_ref": "granola:<meeting_id>", "summary": "<1-2 sentence factual summary>", "title": "<meeting title>", "ts": "<meeting start ISO>", "workspace_root": "<WS>"}, "name": "meeting_capture:build_meeting_event"}'
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"calendar": "<business or personal, as the calendar read named the event of this meeting; leave the key out when it matches no calendar event>", "person_ids": ["<resolved attendee ids>"], "source_ref": "granola:<meeting_id>", "summary": "<1-2 sentence factual summary>", "title": "<meeting title>", "ts": "<meeting start ISO>", "workspace_root": "<WS>"}, "name": "meeting_capture:build_meeting_event"}'
 cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "meeting-notes.meeting", "rel": "_hq/data/events.jsonl", "rows": [<the result above>]}'
 cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"appended": <the stamped rows the Step 5e append answered>, "brief_path": "<workspace-relative BRIEF_PATH>", "capture_summary": <the Step 5e route answer>, "meeting_id": "<granola meeting_id>", "source_ref": "granola:<meeting_id>", "workspace_root": "<WS>"}, "name": "meeting_capture:build_meeting_processed_event"}'
 cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "meeting-notes.receipt", "rel": "_hq/data/events.jsonl", "rows": [<the result above>]}'

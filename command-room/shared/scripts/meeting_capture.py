@@ -113,6 +113,10 @@ def _norm_ref_keys(ref) -> set:
 # -----------------------------------------------------------------------------
 
 
+#: cr1#1745: the calendars a `meeting` row may name (the today feed's two).
+MEETING_CALENDARS = frozenset({"business", "personal"})
+
+
 def build_meeting_event(
     title: str,
     *,
@@ -132,8 +136,16 @@ def build_meeting_event(
     transcript_class: Optional[str] = None,
     working_session: Optional[bool] = None,
     workspace_root=None,
+    calendar: Optional[str] = None,
 ) -> dict:
     """The one sanctioned constructor for a `meeting` event (BUG-8244).
+
+    cr1#1745: `calendar` is the calendar the meeting's event is on, as the
+    calendar read named it: "business" or "personal" (`MEETING_CALENDARS`),
+    stamped as `data.calendar`. Leave it out when the meeting matches no
+    calendar event. It is what `followup_draft.record_draft` reads: only a
+    row that says "business" gets a follow-up drafted, so a row without it
+    gets none. Any other value is refused rather than written.
 
     CAPTUREONCE1 — hand it `workspace_root` and it REFUSES to build a second
     `meeting` row for a source_ref that already carries a `meeting_processed`
@@ -233,6 +245,14 @@ def build_meeting_event(
         data["transcript_class"] = tc
     if working_session:
         data["working_session"] = True
+    if calendar is not None and str(calendar).strip():
+        cal = str(calendar).strip().lower()
+        if cal not in MEETING_CALENDARS:
+            raise ValueError(
+                f"meeting event calendar {calendar!r} is not one of "
+                f"{sorted(MEETING_CALENDARS)} — pass the calendar the read "
+                f"named, or leave it out")
+        data["calendar"] = cal
 
     ev: dict = {
         "type": "meeting",

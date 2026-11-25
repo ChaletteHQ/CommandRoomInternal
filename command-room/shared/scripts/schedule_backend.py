@@ -2015,6 +2015,16 @@ def _rec_get(rec, key):
     return rec.get(key) if isinstance(rec, dict) else None
 
 
+def hub_morning_listed(registered, basename: str) -> bool:
+    """cr1#1722 step 2, decision E: does the listing carry THIS folder's Hub
+    Morning, by its exact name? Then the Hub writes the morning brief, and no
+    planner here creates, refreshes or names the Morning Brief chat."""
+    if not basename:
+        return False
+    want = trigger_name("cockpit-morning", basename)
+    return any(_rec_get(r, "name") == want for r in registered or [])
+
+
 def place_listing_rows(registered, *, basename: str, task_ids=None,
                        trigger_map: Optional[dict] = None) -> list:
     """The listing with each raw row given its task id (cr1#923, cr1#733).
@@ -2285,7 +2295,15 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
     out["duplicates"] = duplicate_tasks(seat["own"], basename=basename)
     if uncomposed_current:
         out["not_compared"] = []
+    # cr1#1722 step 2, decision E: on a seat whose listing carries THIS
+    # folder's Hub Morning (by its exact name), the Hub writes the morning
+    # brief, so the Morning Brief chat is never created or refreshed here. A
+    # seat with no Hub, or a Hub with no Morning yet, plans it as before.
+    hub_morning_here = hub_morning_listed(registered, basename)
     for task_id in task_ids or []:
+        if task_id == "morning-brief" and hub_morning_here:
+            out.setdefault("hub_morning", []).append(task_id)
+            continue
         rec = by_task.get(task_id)
         if rec is None and sc.is_shelved(task_id):
             out["refused"].append({"task_id": task_id,
@@ -2844,9 +2862,14 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
     # untouched) and only a missing one is a create. cr1#890: a create keeps
     # the customer's own time.
     crons = _reinstall_crons(workspace_root, sc.FIRST_INSTALL_TASK_IDS)
+    # cr1#1722 step 2, decision E: beside this folder's Hub Morning the brief
+    # is the Hub's. Morning Brief stays a survivor (never removed here), but it
+    # is neither planned nor named in the line.
+    hub_brief = {"morning-brief"} if hub_morning_listed(given, basename) else set()
+    out["hub_morning"] = sorted(hub_brief)
     planned = plan_registration(
         tools, workspace_root=workspace_root, abs_path=abs_path,
-        task_ids=[t for t in survivors if t not in unconfirmed], registered=ordered,
+        task_ids=[t for t in survivors if t not in unconfirmed and t not in hub_brief], registered=ordered,
         plugin_version=plugin_version, tz_name=tz_name, writer_pair=writer_pair,
         crons=crons, discover_block=discover_block, on_date=on_date,
         plugin_root=plugin_root, env=env, trigger_map=stored, declaration={})
@@ -2868,7 +2891,7 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
     out["updated_names"] = [sc.task_display_name(p.task_id) for p in out["updates"]]
     tail = ""
     for tid in survivors:
-        if tid in fresh:
+        if tid in fresh or tid in hub_brief:
             continue
         name = sc.task_display_name(tid)
         if tid in keep:

@@ -195,6 +195,14 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 
 `set` the answer on `feed/stillyours` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
+**Then the follow-ups waiting (cr1#1745).** The follow-up drafted after each meeting and still waiting for the owner's press, each with its words, checked against who is off limits as that stands now, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_followups"}'
+```
+
+`set` the answer on `feed/followups` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
 **Then the Maintenance record (cr1#666).** When the Maintenance chat last finished, each job's last completion and how many hours it is behind, one read beside the data:
 
 ```bash

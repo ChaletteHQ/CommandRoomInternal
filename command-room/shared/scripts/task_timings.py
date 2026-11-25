@@ -123,7 +123,10 @@ TASKS: Dict[str, Dict[str, Any]] = {
     # its parts (`refresh_part`) run before the shared last step's receipt.
     # Review round 2 of #1613: the leg's plan and call-prep's brief writes,
     # which Prep runs before its one call.
-    "cockpit-prep": _hub("prep", [("plan", ("morning_brief_helpers:prep_leg_plan",
+    # cr1#1758: a run the page narrowed asks which "Prep this one" presses
+    # stand (`prep_one_pick`) before the leg's plan.
+    "cockpit-prep": _hub("prep", [("plan", ("cockpit_helpers:prep_one_pick",
+                                            "morning_brief_helpers:prep_leg_plan",
                                             "morning_brief_helpers:prep_leg_result")),
                                   # Review round 3 of #1613: call-prep, run end
                                   # to end; every door step it names.
@@ -185,13 +188,53 @@ TASKS: Dict[str, Dict[str, Any]] = {
     ], opener=(_CH + "apply_start", None),
         writers=(_CH + "apply_start", _CH + "apply_run", _CH + "apply_finish"),
         closers=[(_CH + "apply_finish", None), (_CH + "log_run_receipt", "cockpit-apply")]),
+    # cr1#1722: the Update is the save and the rebuild as one run. It opens
+    # with `update_claim` (its light is claimed on the page before that, in
+    # code, not through the door) and closes with `update_finish`, which
+    # writes its one receipt. The detail steps are the connector parts only.
+    "cockpit-update": {
+        # review round 1 of #1772: the off-limits wall is published after the
+        # light's claim and before `update_claim`, so it leads with `load_config`
+        "opener": (_CH + "update_claim", None), "lead": (_CH + "load_config", _CH + "feed_wall"),
+        "writers": (_CH + "update_finish",),
+        "closers": [(_CH + "update_finish", None)],
+        "phases": [
+            # no `status_doc` here: the Update's light is claimed by `update-start`, in code
+            ("setup", (_CH + "load_config",)),
+            # cr1#1765: the off-limits wall, published first and again after a mail-rules save
+            ("offlimits", (_CH + "feed_wall",)),
+            ("claim", (_CH + "update_claim",)),
+            ("save", (_CH + "update_save", _CH + "apply_repin")),
+            ("wall", (_WALL,)),
+            ("detail_plan", (_CH + "plan_apply",)),
+            ("mail_tools", ("inbox_helpers:connector_discovery_step", "inbox_helpers:mail_seams")),
+            ("mail_checks", (_CH + "reply_reaches_everyone", _CH + "newer_message_arrived",
+                             _CH + "sent_tokens_update")),
+            ("hub", (_CH + "miss_search_plan", _CH + "apply_hub_choices")),
+            ("build", (_CH + "update_build",)),
+            ("parts", (_CH + "refresh_part",)),
+            ("finish", (_CH + "update_finish",)),
+            # The rest of `cockpit-apply-detail.md`: the Apply task's own calls
+            # and its feed steps, which the Update never runs (it does that
+            # file's step 1 and step 3 only). They are on the map so a run that
+            # calls one by mistake is timed and seen; a right run says not_run.
+            ("apply_only", (_CH + "apply_start", _CH + "apply_run", _CH + "apply_finish",
+                            _CH + "plan_claim", _CH + "plan_page_records",
+                            _CH + "apply_commitment_choices", _CH + "apply_review_choices",
+                            _CH + "apply_week_choices", _CH + "apply_settings_choices",
+                            _CH + "apply_mail_choices", _CH + "apply_people_choices",
+                            _CH + "record_page_sends", _CH + "record_calendar_changes",
+                            _CH + "feed_projects", _CH + "feed_board", _CH + "feed_people",
+                            _CH + "feed_mine", _CH + "feed_review", _CH + "feed_settings",
+                            _CH + "feed_mail_rules")),
+        ]},
     "cockpit-refresh": _hub("refresh", [
         ("refresh", (_CH + "refresh_all", _CH + "refresh_part")),
         ("settle", (_CH + "settle_statuses", _CH + "plan_prune_choices")),
         ("feeds", (_CH + "feed_plate", _CH + "feed_projects", _CH + "feed_board", _CH + "feed_mine",
                    _CH + "feed_mail_rules", _CH + "feed_people", _CH + "feed_brief", _CH + "feed_review",
                    "friday_wrap_helpers:week_sections", _CH + "feed_week", _CH + "feed_settings",
-                   _CH + "feed_stillyours", _CH + "maintenance_status")),
+                   _CH + "feed_stillyours", _CH + "feed_followups", _CH + "maintenance_status")),
     ]),
     "morning-brief": {
         "opener": ("morning_brief_helpers:lateness", None), "lead": (),
@@ -248,7 +291,8 @@ TASKS: Dict[str, Dict[str, Any]] = {
                          "eod_helpers:inbound_mail_staged", "eod_helpers:reconcile_chat_staged",
                          "eod_helpers:reconcile_sent_staged", "eod_helpers:run_shadow_lane",
                          "eod_helpers:clear_fire_staging", "eod_incremental:log_capture_pass_receipt",
-                         "meeting_capture:route_meeting_captures", "inbound_mail_leg:plan_inbound_mail",
+                         "meeting_capture:route_meeting_captures", "followup_draft:record_draft",
+                         "inbound_mail_leg:plan_inbound_mail",
                          "chat_reconcile:plan_chat_scan", "reconcile_sent_commitments:plan_sent_window")),
             # Review round 3 of #1613: past-meetings Phases 3 to 4.8, run by the
             # capture step.
@@ -549,8 +593,14 @@ def timings_for(workspace_root, task_id: str, *, now: Any = None,
             start = max((i for i, r in enumerate(window) if r.get("name") in lead_names), default=None)
         if start is None:
             return _not_run(spec, "no_opening_step")
-        lead_names = set(spec.get("lead") or ())
-        lead = [r for r in window[:start] if r.get("name") in lead_names][-1:]
+        # The run's lead: from the last first lead step (`load_config`) on,
+        # every lead step before the opener (review round 1 of #1772: the
+        # Update's wall step); a task with one lead step keeps its last one.
+        lead_order = list(spec.get("lead") or ())
+        prior = [r for r in window[:start] if r.get("name") in set(lead_order)]
+        first_lead = max((i for i, r in enumerate(prior) if r.get("name") == lead_order[0]),
+                         default=None) if lead_order else None
+        lead = prior[first_lead:] if first_lead is not None else prior[-1:]
         mine = lead + [r for r in window[start:] if _mine(spec, r)]
         t0 = _epoch((lead or [window[start]])[0]["at"]) or now_s
         others = _overlapping(str(task_id), steps, t0)

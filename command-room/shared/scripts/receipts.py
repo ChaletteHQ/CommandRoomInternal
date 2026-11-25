@@ -113,6 +113,8 @@ CANONICAL_TASK_IDS = frozenset({
     "cockpit-inbox",  # COCKPIT1 four-task shape (cr1#619)
     "cockpit-apply",  # COCKPIT1 four-task shape (cr1#619)
     "cockpit-refresh",  # COCKPIT1 four-task shape (cr1#619)
+    "cockpit-update",  # cr1#1722 - Apply and Refresh as one run; the two ids above stay so their receipts read forever
+    "cockpit-morning",  # cr1#1722 step 2 - the one Morning run; the Prep and Inbox ids stay, its parts still write under them
     "commitments",   # CTS1 — retired taskId; kept forever so pre-split receipts stay readable (append-only history)
     "waiting-on",    # CTS1 Surface 1 — the re-scoped daily chat (successor of `commitments`; new receipts land here)
     "my-plate",      # CTS1 Surface 2 — the owner-me act-list chat
@@ -276,6 +278,8 @@ RECEIPT_TYPES: dict[str, dict] = {
     "cockpit-inbox": {"types": frozenset({"pack_run"})},  # COCKPIT1 (cr1#619)
     "cockpit-apply": {"types": frozenset({"pack_run"})},  # COCKPIT1 (cr1#619)
     "cockpit-refresh":{"types": frozenset({"pack_run"})},  # COCKPIT1 (cr1#619)
+    "cockpit-update": {"types": frozenset({"pack_run"})},  # cr1#1722
+    "cockpit-morning": {"types": frozenset({"pack_run"})},  # cr1#1722 step 2
     "commitments":        {"types": frozenset({"pack_run"})},
     # CTS1 — the two split surfaces. `commitments` keeps its row above so
     # pre-split receipts read forever; the waiting-on window computation

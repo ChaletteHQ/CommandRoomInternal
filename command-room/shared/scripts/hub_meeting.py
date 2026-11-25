@@ -297,6 +297,15 @@ def apply_one(workspace_root, c: Dict[str, Any], actor: str) -> Dict[str, Any]:
         return _wrap(root, c, inp, choice_id, actor, evs)
     if verb == "unwrap":
         return _unwrap(root, str(inp.get("press") or "").strip(), choice_id, actor, evs)
+    if verb in ("skipdraft", "unskipdraft"):
+        # cr1#1745: "Don't draft for meetings like this" and its Undo
+        import followup_draft
+
+        res = followup_draft.apply_skip(root, action="skip" if verb == "skipdraft" else "unskip",
+                                        meeting_id=str(c.get("n") or inp.get("meeting_id") or ""),
+                                        title=str(c.get("title") or inp.get("title") or ""),
+                                        recurring=inp.get("recurring") is True)
+        return {"outcome": res["outcome"], "line": res["line"]}
     return {"outcome": "refused", "line": UNKNOWN_LINE}
 
 
@@ -884,6 +893,21 @@ def wrap_for(workspace_root, meeting: Dict[str, Any], evs: Optional[List[dict]] 
     out["ref"] = ref
     index = index if index is not None else index_by_ref(evs)
     out["followed"] = _followed_up(evs, ref, index)
+    # cr1#1745: a follow-up drafted after the meeting waits for the owner's press;
+    # only the mark rides here, its words are in feed/followups
+    # review round 1, item 4: a "don't draft for meetings like this" rule on
+    # this meeting rides as `nodraft` (the page's Undo), and takes the mark away
+    if not out["followed"]:
+        try:
+            import followup_draft
+
+            skipped = followup_draft.is_skipped(root, meeting.get("meeting_id"), meeting.get("title"))
+            if skipped is True:
+                out["nodraft"] = True
+            elif skipped is False and _ref_key(ref) in followup_draft.waiting_refs(evs):
+                out["draft"] = True
+        except Exception:  # noqa: BLE001 - no mark: the page shows the chat link as before
+            pass
     if personal is False:
         personal = personal_fence(root)
     if off is None and personal is not None:

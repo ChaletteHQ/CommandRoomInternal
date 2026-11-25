@@ -1,6 +1,6 @@
 # Cockpit tasks: the steps every one of them shares
 
-Four scheduled tasks drive the cockpit page (COCKPIT1, cr1#608; the four-task shape is the owner's ruling of 2026-11-03 on cr1#619): `cockpit-apply` is the one writer from the page to the book; `cockpit-prep`, `cockpit-inbox` and `cockpit-refresh` are producers that read connectors and the book and write the page's feeds. Each task's orchestrator names this file for the steps below and carries only its own leg. None of them is a daily chat: no lateness tier, no served-slot skip, because every write is a feed the page re-reads or a choice the page saved, and running one twice costs nothing.
+Three scheduled tasks drive the cockpit page (COCKPIT1, cr1#608; four tasks by the owner's ruling of 2026-11-03 on cr1#619, three since cr1#1722, when Apply and Refresh became the one Update): `cockpit-update` is the one writer from the page to the book, and then rebuilds the page's feeds from it; `cockpit-prep` and `cockpit-inbox` are producers that read connectors and the book and write the page's feeds. `cockpit-apply` and `cockpit-refresh` are retired: their files stay for a seat that has not run set-up since, and set-up deletes their triggers. Each task's orchestrator names this file for the steps below and carries only its own leg. None of them is a daily chat: no lateness tier, no served-slot skip, because every write is a feed the page re-reads or a choice the page saved, and running one twice costs nothing.
 
 ## Shared step 0: resolve the workspace and the page
 
@@ -18,13 +18,13 @@ Load the page's database tool: search this run's tools for `ArtifactData` (a lis
 
 ## Shared step 1: the task's own light
 
-Read this task's status document (`get` on `status/<leg>`, where `<leg>` is the task's leg: `prep`, `inbox`, `apply` or `refresh`). Write it as running, through the helper, never by hand:
+Read this task's status document (`get` on `status/<leg>`, where `<leg>` is the task's leg: `prep` or `inbox`; `cockpit-update` claims and writes its own light in code and reads this file for nothing). Write it as running, through the helper, never by hand:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"leg": "<leg>", "run_id": "<this session id>", "state": "running", "workspace_root": "<WS>"}, "name": "cockpit_helpers:status_doc"}'
 ```
 
-`set` on `status/<leg>`, pinned by the version rule below. When the leg finishes, the same call with `done` and the one-sentence result, or `error` with the one sentence of what refused, passed as both `line` and `stop_reason` so the page keeps it as the last recorded stop. A task touches its own light only, never another task's. `status/maintenance` is not a light: `cockpit-refresh` writes it, and no task writes it as its own (cr1#666).
+`set` on `status/<leg>`, pinned by the version rule below. When the leg finishes, the same call with `done` and the one-sentence result, or `error` with the one sentence of what refused, passed as both `line` and `stop_reason` so the page keeps it as the last recorded stop. A task touches its own light only, never another task's. `status/maintenance` is not a light: `cockpit-update` writes it, and no task writes it as its own (cr1#666).
 
 ## The version rule (every write to the page)
 

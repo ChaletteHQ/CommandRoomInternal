@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -60,13 +61,36 @@ TOO_MANY_LINE = ("New mail is not listed here, because your account settings "
 LIST_CAP = 500
 
 
-def _norm(value: Any) -> str:
+def _plain(value: Any) -> str:
+    """The value trimmed, lower-cased, runs of spaces one: how every list
+    here was compared before cr1#1758, and how a mailbox is still named."""
     return " ".join(str(value or "").split()).lower()
 
 
+def _norm(value: Any) -> str:
+    """The value as off limits is compared (review round 1 of cr1#1771): as
+    `_plain`, with accents folded off their letters (NFKD, every mark
+    dropped) and characters that print nothing (zero-width and other format
+    characters) taken out, so neither can disguise or split a name. The
+    page's `normOf` reads a value the same way before it hashes it."""
+    t = unicodedata.normalize("NFKD", str(value or ""))
+    return _plain("".join(c for c in t if unicodedata.category(c)[0] != "M" and unicodedata.category(c) != "Cf"))
+
+
 def digest(value: Any) -> str:
-    """SHA-256 hex of the value trimmed, lower-cased, runs of spaces one."""
+    """SHA-256 hex of the value as `_norm` reads it."""
     return hashlib.sha256(_norm(value).encode("utf-8")).hexdigest()
+
+
+def _digests(values) -> List[str]:
+    """Every value's hash, under both readings: `_norm`'s, and `_plain`'s,
+    which a page published before cr1#1758 still hashes by. For a name with
+    no accent and no hidden character the two are one hash."""
+    out = set()
+    for v in values:
+        out.add(digest(v))
+        out.add(hashlib.sha256(_plain(v).encode("utf-8")).hexdigest())
+    return sorted(out)
 
 
 def _closed(line: str) -> Dict[str, Any]:
@@ -81,11 +105,11 @@ def _full_names(person: Dict[str, Any]) -> set:
     another person who shares it)."""
     names = set()
     for key in ("canonical_name", "name", "display_name"):
-        name = _norm(person.get(key))
+        name = _plain(person.get(key))
         if name:
             names.add(name)
     for alias in person.get("aliases") or []:
-        name = _norm(alias)
+        name = _plain(alias)
         if " " in name:
             names.add(name)
     return names
@@ -106,14 +130,14 @@ def _off_limits(workspace_root) -> tuple:
     from people_writer import get_person_emails
 
     off = set(gate.off_limits_senders(workspace_root))
-    addrs = {_norm(a) for a in off if a}
+    addrs = {_plain(a) for a in off if a}
     names: set = set()
     pids = gate.off_limits_person_ids(workspace_root, off) if off else set()
     if pids:
         for person in _people(workspace_root):
             if str(person.get("id") or "") not in pids:
                 continue
-            addrs |= {_norm(a) for a in get_person_emails(person) if a}
+            addrs |= {_plain(a) for a in get_person_emails(person) if a}
             names |= _full_names(person)
     return addrs, names
 
@@ -163,25 +187,25 @@ def wall(workspace_root) -> Dict[str, Any]:
             return _closed(UNREADABLE_LINE)
         plan, line = inbox_helpers.fetch_plan_and_line(str(workspace_root), None)
         accounts = cc.accounts(workspace_root)
-        walled = {_norm(a.get("address")) for a in accounts if inbox_helpers._is_personal(a)}
-        walled |= {_norm(m.get("address")) for m in cwall.get("mailboxes") or []}
+        walled = {_plain(a.get("address")) for a in accounts if inbox_helpers._is_personal(a)}
+        walled |= {_plain(m.get("address")) for m in cwall.get("mailboxes") or []}
         walled.discard("")
         # A plan entry is never a walled mailbox, whatever named it.
-        plan = [p for p in plan if _norm(p.get("acting_email")) not in walled]
+        plan = [p for p in plan if _plain(p.get("acting_email")) not in walled]
         # An unaddressed fetch reads whichever mailbox the connector puts
         # first, which could be a walled one: name the others instead.
         if walled and any(not p.get("acting_email") for p in plan):
             named: List[str] = []
             for a in accounts:
                 addr = str(a.get("address") or "").strip()
-                if addr and _norm(addr) not in walled and addr not in named:
+                if addr and _plain(addr) not in walled and addr not in named:
                     named.append(addr)
             plan = [{"acting_email": addr} for addr in named]
             if not plan:
                 line = WALLED_ONLY_LINE
         addrs, names = _off_limits(workspace_root)
         chat_ok = not any(str(c.get("category") or "") == "chat" for c in cwall.get("connectors") or [])
-        own = sorted(_norm(a) for a in inbox_helpers.own_addresses(str(workspace_root)) if a)
+        own = sorted(_plain(a) for a in inbox_helpers.own_addresses(str(workspace_root)) if a)
         own_names = _own_names(workspace_root)
         known: set = set()
         for person in _people(workspace_root):
@@ -195,11 +219,12 @@ def wall(workspace_root) -> Dict[str, Any]:
                 "plan": [{"acting_email": p.get("acting_email") or None} for p in plan],
                 "blocked": None if plan else (line or inbox_helpers.PERSONAL_ONLY_LINE),
                 "walled": sorted(walled),
-                "off_limits": sorted(digest(a) for a in addrs),
-                "off_limits_names": sorted(digest(n) for n in names),
-                "known_names": sorted(digest(n) for n in known) if len(known) <= LIST_CAP else None,
+                "off_limits": _digests(addrs),
+                "off_limits_names": _digests(names),
+                "known_names": _digests(known) if len(known) <= LIST_CAP else None,
                 "hashed": "sha256",
-                "own": own, "own_names": own_names, "chat_ok": chat_ok}
+                # the owner's names are text: each as written and as `_norm` reads it
+                "own": own, "own_names": sorted(set(own_names) | {_norm(n) for n in own_names}), "chat_ok": chat_ok}
     except Exception:  # noqa: BLE001 - fail closed: the page lists nothing of its own
         return _closed(UNREADABLE_LINE)
 

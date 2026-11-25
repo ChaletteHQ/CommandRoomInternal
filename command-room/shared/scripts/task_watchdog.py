@@ -1423,6 +1423,19 @@ def hub_task_specs() -> dict:
     return out
 
 
+def hub_seat_ids() -> set:
+    """Every task id that marks a seat as a Hub seat: today's Hub tasks and
+    the ones they replaced (cr1#1722: Apply and Refresh, then Prep and
+    Inbox). A seat that has not run set-up since still carries the old ones
+    and is still a Hub seat; it is then expected to run today's set, so the
+    one it lacks is named with `update my hub`."""
+    try:
+        from cockpit_helpers import COCKPIT_TASKS, RETIRED_TASKS
+    except Exception:  # noqa: BLE001 - no Hub here
+        return set()
+    return set(COCKPIT_TASKS) | set(RETIRED_TASKS)
+
+
 def _rec_task_id(rec):
     if isinstance(rec, dict):
         return rec.get("taskId")
@@ -1435,7 +1448,7 @@ def seat_has_hub(task_records=None, *, registered_ids=None, trigger_map=None,
     (`task_records` not None), any Hub task in it, and nothing else. With
     none, any Hub task in `registered_taskIds` or in a stored trigger row
     that is this seat's (`stored_row_is_this_seat`). Never raises."""
-    hub = set(hub_task_specs())
+    hub = hub_seat_ids() if hub_task_specs() else set()
     if not hub:
         return False
     if task_records is not None:
@@ -1460,8 +1473,13 @@ def seat_task_specs(config, *, hub: bool = False,
     specs = {tid: spec for tid, spec in (config or {}).items()
              if spec.get("enabled") and (include_shelved or not is_shelved(tid))}
     if hub:
-        for tid, spec in hub_task_specs().items():
+        hub_specs = hub_task_specs()
+        for tid, spec in hub_specs.items():
             specs.setdefault(tid, spec)
+        # cr1#1722 step 2, decision E: Hub Morning writes the morning brief,
+        # so a Hub seat that has it runs no Morning Brief chat.
+        if "cockpit-morning" in hub_specs:
+            specs.pop("morning-brief", None)
     return specs
 
 

@@ -51,6 +51,7 @@
         "hub_edit",
         "hub_meeting_saved",
         "hub_meeting_wrapped",
+        "followup_draft",
         "meeting_changed",
         "morning_message_claimed",
         "morning_message_sent",

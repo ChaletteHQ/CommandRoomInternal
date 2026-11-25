@@ -4195,7 +4195,32 @@ def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
         "read that stopped before the end of the page is a partial pass, "
         "written below with `read_complete` false (the receipt then holds "
         "the page's start, whatever the batch cap reached, because a short "
-        "listing never saw the older meetings). Then the pass's ONE "
+        "listing never saw the older meetings). "
+        # cr1#1745: each meeting written up also gets its follow-up drafted,
+        # kept in the book for the owner's one press on the Hub, never sent.
+        "FOLLOW-UP (cr1#1745), for each meeting this pass processed that is "
+        "on a business calendar, not a block of the owner's own time, and has "
+        "someone else on it: draft its follow-up email in the owner's voice "
+        "through email-writer's rules, exactly as the follow-up-ritual skill "
+        "composes one (the calibrated voice block, length, sign-off and review "
+        "rules; never composed any other way), to the people on the meeting "
+        "other than the owner, and keep it with:\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"body": "<the email\'s words>", "calendar": '
+                  '"<the meeting\'s calendar>", "meeting_id": "<its id>", '
+                  '"recurring": <true when the calendar says it recurs, else '
+                  'false>, "ref": "<the meeting_processed row\'s source_ref>", '
+                  '"solo": <true when nobody else is on it, else false>, '
+                  '"start": "<its start>", "subject": "<the subject>", '
+                  '"title": "<its title>", "to_person_ids": [<the person ids '
+                  'it goes to>], "workspace_root": "<WS>"}, "name": '
+                  '"followup_draft:record_draft"}') +
+        "      That only keeps the words in the book: nothing is called on "
+        "the mailbox, no mailbox draft is made and nothing is sent; the owner's "
+        "press on the Hub's wrap-up page does that. A refused answer (a "
+        "personal or solo meeting, a skip rule, someone off limits or on the "
+        "personal side) is final for that meeting: note nothing and go on. "
+        "Then the pass's ONE "
         "receipt (a pack_run under meeting-capture, never under "
         "past-meetings), whatever it got through:\n"
         + _m_line(pair, "run_writer",

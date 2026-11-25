@@ -315,6 +315,13 @@ def merge_streams(streams: list[list[dict]], report: dict | None = None) -> list
     return out
 
 
+def _decode_line(text):
+    """v6.11: `json.loads`, shared inside a `OneLogRead` (`log_decode`)."""
+    from log_decode import decode_line
+
+    return decode_line(text)
+
+
 def merged_lines(path: str | Path, encoding: str = "utf-8",
                  errors: Optional[str] = None) -> list[str]:
     """The lines of the live `events.jsonl`, merged with every computer's own
@@ -348,7 +355,7 @@ def merged_lines(path: str | Path, encoding: str = "utf-8",
         row = []
         for ln in lines:
             try:
-                ev = json.loads(ln) if ln.strip() else None
+                ev = _decode_line(ln) if ln.strip() else None
             except ValueError:
                 ev = None
             if isinstance(ev, dict):
@@ -443,7 +450,7 @@ def _iter_file(p: Path) -> Iterator[dict]:
     lines = [ln for ln in lines if ln]
     for i, line in enumerate(lines):
         try:
-            ev = json.loads(line)
+            ev = _decode_line(line)
         except json.JSONDecodeError as e:
             if i == len(lines) - 1:
                 record_read_alarm(
@@ -879,6 +886,23 @@ if __name__ == "__main__":
 
 # ---- one read of the log for many readers in one process (cr1#1530) ----
 
+def _fresh_copy(v):
+    """A caller's own copy of a memoised answer: new dicts and lists all the
+    way down (plain ones, whatever kind came in), the unchangeable leaves
+    shared. Anything else is deep-copied."""
+    t = type(v)
+    if t is str or v is None or t is int or t is bool or t is float:
+        return v
+    if isinstance(v, dict):
+        return {k: _fresh_copy(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_fresh_copy(x) for x in v]
+    if t is tuple:
+        return tuple(_fresh_copy(x) for x in v)
+    import copy
+    return copy.deepcopy(v)
+
+
 class OneLogRead:
     """While open, the defensive log read answers from one in-process copy
     instead of parsing the whole log again for every caller. The copy is keyed
@@ -932,7 +956,15 @@ class OneLogRead:
                 f = Path(f)
                 if f.exists():
                     st = f.stat()
-                    out.append((str(f), st.st_size, st.st_mtime_ns))
+                    # v6.11 review round 1: the file's identity and its
+                    # status-change time ride along. A file rewritten to the
+                    # same length inside one clock tick has the same size
+                    # and change time; the writers replace the file
+                    # (`atomic_write`), which gives it a new identity, and
+                    # an in-place write moves the status-change time where
+                    # the system keeps one.
+                    out.append((str(f), st.st_size, st.st_mtime_ns,
+                                st.st_ino, st.st_ctime_ns))
             return tuple(out)
 
         def cached_iter(root, since_ts=None):
@@ -978,6 +1010,62 @@ class OneLogRead:
                 memo[key] = real_lines(ws)
             return list(memo[key])
 
+        # v6.11 (hot spot 2): the thread cards and the loose ends, each built
+        # several times in one Refresh step (five and two) from the same book.
+        # Keyed on everything they read: the log's files, the entities and
+        # the open list's file by size and change time, and (the loose ends)
+        # the clock they were asked at. A write during the call changes a
+        # signature, so the next ask builds again. Each caller gets its own
+        # copy of the answer (review round 1), so a caller that changes what
+        # it was handed changes nothing for the next reader.
+        try:
+            import thread_cards
+        except Exception:  # noqa: BLE001
+            thread_cards = None
+        try:
+            import loose_ends
+        except Exception:  # noqa: BLE001
+            loose_ends = None
+        self._thread_cards, self._loose_ends = thread_cards, loose_ends
+        self._real_cards = real_cards = getattr(thread_cards, "build_cards", None)
+        self._real_loose = real_loose = getattr(loose_ends, "_compute", None)
+
+        def _book_sig(ws) -> tuple:
+            root = Path(str(ws))
+            data = root / "_hq" / "data"
+            return (str(root), _sig(events_io.log_files(data / "events.jsonl")),
+                    _sig([data / "entities.json", data / "aliases.json",
+                          data / "now" / "open_list" / "open_list.json"]))
+
+        def _shared(v):
+            import log_decode
+            return log_decode._freeze(v) if log_decode.FREEZE_SHARED else v
+
+        # v6.11 review round 1: each caller gets its OWN copy of a memoised
+        # answer, so one caller changing what it was handed never reaches
+        # the next reader (the apply path reads here before it writes).
+        # The kept answer is never handed out.
+        def _own(v):
+            return _shared(_fresh_copy(v))
+
+        def cached_cards(ws):
+            try:
+                key = ("cards", _book_sig(ws))
+            except Exception:  # noqa: BLE001
+                return real_cards(ws)
+            if key not in memo:
+                memo[key] = real_cards(ws)
+            return _own(memo[key])
+
+        def cached_loose(ws, list_doc, now, today, tzinfo):
+            try:
+                key = ("loose", _book_sig(ws), now.isoformat(), today.isoformat(), str(tzinfo))
+            except Exception:  # noqa: BLE001
+                return real_loose(ws, list_doc, now, today, tzinfo)
+            if key not in memo:
+                memo[key] = real_loose(ws, list_doc, now, today, tzinfo)
+            return _own(memo[key])
+
         # Every name is in hand before the first one is replaced, so a
         # failure above leaves all of them as they were.
         cru_match.load_events_defensively = cached
@@ -985,6 +1073,15 @@ class OneLogRead:
         atomic_write._file_max_seq = cached_max
         if real_lines is not None:
             open_list._log_lines = cached_lines
+        if real_cards is not None:
+            thread_cards.build_cards = cached_cards
+        if real_loose is not None:
+            loose_ends._compute = cached_loose
+        # v6.11: one decode per line for every reader in this call
+        # (`log_decode`, read-only discipline).
+        import log_decode
+
+        log_decode.begin()
         return self
 
     def __exit__(self, *exc):
@@ -993,4 +1090,11 @@ class OneLogRead:
         self._atomic._file_max_seq = self._real_max
         if self._real_lines is not None:
             self._open_list._log_lines = self._real_lines
+        if self._real_cards is not None:
+            self._thread_cards.build_cards = self._real_cards
+        if self._real_loose is not None:
+            self._loose_ends._compute = self._real_loose
+        import log_decode
+
+        log_decode.end()
         return False

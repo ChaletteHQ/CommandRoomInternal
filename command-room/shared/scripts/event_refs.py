@@ -207,6 +207,13 @@ def load_events(events_jsonl_path: str | Path) -> list[dict]:
     return merge_streams(parsed)
 
 
+def _decode_line(text):
+    """v6.11: `json.loads`, shared inside a `OneLogRead` (`log_decode`)."""
+    from log_decode import decode_line
+
+    return decode_line(text)
+
+
 def _load_files(paths) -> list[dict]:
     out: list[dict] = []
     for p in paths:
@@ -217,7 +224,7 @@ def _load_files(paths) -> list[dict]:
             if not line:
                 continue
             try:
-                ev = json.loads(line)
+                ev = _decode_line(line)
             except json.JSONDecodeError:
                 continue
             if isinstance(ev, dict):

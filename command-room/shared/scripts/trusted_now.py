@@ -418,6 +418,13 @@ def max_ts_in_jsonl_text(text: str) -> Optional[_dt.datetime]:
     return scan_jsonl_text(text)[0]
 
 
+def _decode_line(text):
+    """v6.11: `json.loads`, shared inside a `OneLogRead` (`log_decode`)."""
+    from log_decode import decode_line
+
+    return decode_line(text)
+
+
 def scan_jsonl_text(text: str, *, epoch_threshold: int = 10**10):
     """One pass, two answers: `(newest_ts_or_None, max_human_counter_seq)`.
 
@@ -437,7 +444,7 @@ def scan_jsonl_text(text: str, *, epoch_threshold: int = 10**10):
         if not line:
             continue
         try:
-            entry = json.loads(line)
+            entry = _decode_line(line)
         except (ValueError, TypeError):
             continue
         if not isinstance(entry, dict):
