@@ -426,6 +426,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_week",  # cr1#780 - the Done tab's rows
     "cockpit_helpers:feed_settings",  # cr1#781 - the Settings tab: what was learned and every setting, read only
     "cockpit_helpers:feed_followups",  # cr1#1745 - the follow-ups waiting on the wrap-up page, read only
+    "cockpit_helpers:feed_urgent",  # cr1#1786 - Urgent, re-ranked from the inbox part's store, read only
     "followup_draft:feed_followups",  # cr1#1745 - the same, with the wall checked as it stands
     "cockpit_helpers:feed_stillyours",  # cr1#1706 - the Still yours? review's own document, as its writers left it, read only
     "usage_guide:guide",  # cr1#187 - the habits and phrases: the Settings section and the typed "how do I use this", read only
@@ -567,6 +568,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "bring_in:sources",
     "bring_in:plan",
     "still_yours:review",  # cr1#1706 - the Still yours? review list (reads only)
+    "cockpit_helpers:feed_pfollow",  # cr1#1789 - Today's People follow-ups and key relationships, read only
     # KEEP THIS NAME LAST, directly above the closing brace.
     # `run_access1_test`'s B-1 removal proof anchors on the exact two-line
     # string `"workspace_root:find_workspace_root",` + `})` and puts the

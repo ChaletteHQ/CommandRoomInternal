@@ -172,6 +172,11 @@ def _load_for_write(workspace_root) -> Dict[str, Any]:
         raise ValueError(f"mail rules unreadable: {type(exc).__name__}") from exc
     if not isinstance(data, dict):
         raise ValueError("mail rules unreadable: not an object")
+    # cr1#1830: rules that are there but not a list are no answer. Read as an
+    # empty list they put nobody off limits, and the next write replaced them
+    # with only the new rule, losing every off-limits answer for good.
+    if "rules" in data and not isinstance(data.get("rules"), list):
+        raise ValueError("mail rules unreadable: rules not a list")
     data.setdefault("version", 1)
     for key in ("rules", "dropped"):
         if not isinstance(data.get(key), list):

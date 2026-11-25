@@ -105,6 +105,53 @@ def voice_block_sha256(workspace_root, skill: str):
         return None
 
 
+#: cr1#1792 (ruling 130c): the voice rules a draft can be written in.
+VOICE_SOURCE_BLOCK = "learned_block"
+VOICE_SOURCE_BRAND = "brand_voice"
+VOICE_SOURCE_BOTH = "both"
+BRAND_VOICE_REL = ("_hq", "BRAND_VOICE.md")
+
+
+def _learned_text(workspace_root, skill: str) -> Optional[str]:
+    """The learned block's text when it says something of its own: a file
+    that holds no line beyond the template the plugin ships (the skill's
+    `## Voice Block`, `learning_pass._baked_voice_block`) learned nothing,
+    and reads as None (`voice_corrections.has_owner_lines`)."""
+    import voice_corrections as vc
+    from learning_pass import _baked_voice_block
+
+    path = vc._override_path(workspace_root, skill)
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8")
+    return text if vc.has_owner_lines(text, _baked_voice_block(skill)) else None
+
+
+def voice_source(workspace_root, skill: str):
+    """`(sha256, source)` of the voice rules a composer applies: the main
+    voice file `_hq/BRAND_VOICE.md` first, the learned block when it holds
+    more than the shipped template. `source` is `brand_voice`,
+    `learned_block` or `both`; the hash is of that text (both files, in that
+    order, joined by a NUL); `(None, None)` when neither counts. Never
+    raises."""
+    try:
+        from pathlib import Path as _P
+        path = _P(str(workspace_root)).joinpath(*BRAND_VOICE_REL)
+        brand = path.read_text(encoding="utf-8") if path.is_file() else None
+        learned = _learned_text(workspace_root, skill)
+    except Exception:  # noqa: BLE001 - never raises into a compose path
+        return None, None
+    if brand is not None and learned is not None:
+        text, source = brand + "\0" + learned, VOICE_SOURCE_BOTH
+    elif brand is not None:
+        text, source = brand, VOICE_SOURCE_BRAND
+    elif learned is not None:
+        text, source = learned, VOICE_SOURCE_BLOCK
+    else:
+        return None, None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest(), source
+
+
 def voice_receipt(workspace_root, skill: str, voice_block_sha256_seen) -> dict:
     """Was the calibrated voice block applied to this draft? Pure read.
 
@@ -161,10 +208,12 @@ def load_draft_constraints(
     `max_paragraphs` and `banned_phrases` are what `apply_draft_constraints`
     enforces mechanically; `voice_block_sha256` is the proof the block was
     read, carried onto the draft's event and snapshot at the click
-    (VOICELOAD1, cr1#197)."""
+    (VOICELOAD1, cr1#197). `voice_rules_sha256` and `voice_source` (cr1#1792,
+    ruling 130c) are the stamp of the voice rules applied (`voice_source`)."""
     out = {"skill": skill, "recipient_id": recipient_id, "domain": domain,
            "scope": None, "corrections": [], "override_block": None,
            "voice_block_sha256": None, "voice_block_present": False,
+           "voice_rules_sha256": None, "voice_source": None,
            "max_paragraphs": None, "banned_phrases": [], "lines": []}
     try:
         import voice_corrections as vc
@@ -203,6 +252,12 @@ def load_draft_constraints(
         out["override_block"] = override.get("markdown")
     out["voice_block_sha256"] = voice_block_sha256(workspace_root, skill)
     out["voice_block_present"] = out["voice_block_sha256"] is not None
+    # cr1#1792, ruling 130c: the stamp of the voice rules the draft was
+    # written in, under its own key so `voice_block_sha256` (the learned
+    # block's hash, which `voice_receipt` checks at the click) keeps its
+    # meaning: the main voice file first, the learned block when it holds
+    # more than the shipped template; `voice_source` says which.
+    out["voice_rules_sha256"], out["voice_source"] = voice_source(workspace_root, skill)
 
     caps: List[int] = []
     banned: List[str] = []

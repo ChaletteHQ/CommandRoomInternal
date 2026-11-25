@@ -40,6 +40,12 @@ from pathlib import Path
 _UTC = _timezone.utc
 
 _CORE_JSONS = ("entities.json", "aliases.json")
+
+#: cr1#1830: the alarm when the off-limits list is there but cannot be read.
+OFF_LIMITS_UNREADABLE_ALARM = (
+    "⚠ Your off-limits list could not be read, so the Hub names nobody on your "
+    "meetings and lists no new mail until it is repaired. Nobody new can be put off "
+    "limits until then either.")
 _CONFIG_JSONS = ("workspace_config.json",)  # under _hq/
 
 
@@ -735,6 +741,14 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
             f"⚠ I couldn't read your {b['file']} — it may be mid-sync or "
             f"corrupted. If this persists, fully quit and reopen the Claude app."
         )
+    # cr1#1830: the off-limits list is there but cannot be read. Every Hub
+    # surface then names nobody, which looks like an empty day without this.
+    try:
+        from account_scope_gate import off_limits_readable
+        if not off_limits_readable(workspace_root):
+            lines.append(OFF_LIMITS_UNREADABLE_ALARM)
+    except Exception:  # noqa: BLE001 - a check that cannot run says nothing
+        pass
     # FS-15 read-time alarms. Files already reported unreadable above are
     # skipped (one loud line per file, not two). What's left is either the
     # activity log still reading truncated, or — the sync-cache-window case —

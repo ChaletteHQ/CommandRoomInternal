@@ -690,13 +690,16 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
         off_pids = _asg.off_limits_person_ids(workspace_root, off) if off else set()
     except Exception:  # noqa: BLE001
         _asg, off, off_pids = None, set(), set()
+    # cr1#1831: an off-limits list that cannot be read reads as "nobody" above,
+    # which is no answer: nothing is composed, every candidate counted held.
+    held = not _off_limits_readable(workspace_root)
     n_off_limits = 0
     tracked: Optional[List[Dict[str, Any]]] = None  # read once, only if needed
     meetings: Optional[List[Dict[str, Any]]] = None  # INCAP2 DD-2, likewise
 
     for raw in items or []:
         n_candidates += 1
-        if off and _asg.sender_off_limits(
+        if held or off and _asg.sender_off_limits(
                 workspace_root, sender_email=raw.get("sender_email"),
                 sender_person_id=raw.get("sender_person_id"),
                 off_limits=off, person_ids=off_pids):
@@ -1459,8 +1462,22 @@ PERSONAL_ONLY_LINE = ("Your linked mail is marked personal, so it is never "
 #: is read rather than risk a personal one (fail closed, as cr1#664).
 ACCOUNTS_UNREADABLE_LINE = ("Your mail was not read this time, because your "
                             "account settings could not be read.")
+#: cr1#1830 / cr1#1831: the off-limits list is there but cannot be read, so
+#: nothing read may be listed, drafted or captured. The page's live wall says
+#: the same words (`hub_live.OFF_LIMITS_UNREADABLE_LINE`).
+OFF_LIMITS_UNREADABLE_LINE = ("Your off-limits list could not be read, so no new mail "
+                              "is listed here.")
 #: the lines this module composes for an empty plan; the inbox says them
-FETCH_PLAN_LINES = (PERSONAL_ONLY_LINE, ACCOUNTS_UNREADABLE_LINE)
+FETCH_PLAN_LINES = (PERSONAL_ONLY_LINE, ACCOUNTS_UNREADABLE_LINE, OFF_LIMITS_UNREADABLE_LINE)
+
+
+def _off_limits_readable(workspace_root) -> bool:
+    """`account_scope_gate.off_limits_readable`; False when it cannot be asked."""
+    try:
+        import account_scope_gate as _asg
+        return _asg.off_limits_readable(workspace_root)
+    except Exception:  # noqa: BLE001 - unknown is unreadable
+        return False
 #: the keys a connector's account list carries an address under
 _ACCOUNT_ADDRESS_KEYS = ("email", "address", "email_address", "emailAddress")
 
@@ -1495,7 +1512,13 @@ def fetch_plan_and_line(workspace_root: str,
     connector's unaddressed primary could be the personal one.
 
     Answers `(plan, line)`: `line` is the plain sentence the inbox says when
-    the plan is empty, else None."""
+    the plan is empty, else None.
+
+    cr1#1831 review: an off-limits list that is there but cannot be read is
+    `[]` too, before anything is fetched: who may be read is unknown, so no
+    mailbox is read and nothing from it is drafted in the run itself."""
+    if not _off_limits_readable(workspace_root):
+        return [], OFF_LIMITS_UNREADABLE_LINE
     addresses = []
     for a in accounts or []:
         if isinstance(a, dict):
@@ -1542,7 +1565,10 @@ def fetch_wall(workspace_root: str, *, seams: Optional[Dict[str, Any]] = None,
     rest on the fire obeying an empty plan: when the seam answer's plan is
     empty, or the workspace's own plan reads nothing (a personal mail
     connector, every classified mailbox personal, unreadable settings), no
-    fetched item is processed."""
+    fetched item is processed. cr1#1831: nor when the off-limits list is
+    there but cannot be read: who may be listed is then unknown."""
+    if not _off_limits_readable(workspace_root):
+        return OFF_LIMITS_UNREADABLE_LINE
     if isinstance(seams, dict) and seams.get("fetch_plan") == []:
         return seams.get("fetch_blocked") or PERSONAL_ONLY_LINE
     plan, line = fetch_plan_and_line(
@@ -2169,6 +2195,47 @@ def reply_all_recipients(item: Dict[str, Any], own: Any = ()) -> Dict[str, List[
     return {"to": to, "cc": cc}
 
 
+#: cr1#1792: keys a run has put a reply under instead of `draft`. A thread
+#: carrying one, and no `draft`, is counted as not drafted, never dropped
+#: silently; its row has no body, so Send and Draft stay off.
+DRAFT_ALIAS_KEYS = ("reply", "reply_text", "reply_body", "draft_body", "draft_text", "draft_lines", "response")
+
+
+def draft_lines(item: Dict[str, Any]) -> List[str]:
+    """cr1#1792 (P4b): the thread's reply as lines, from `draft` (or
+    `body_lines`), blank lines left out. A draft given as one string is
+    split on its newlines, never read a character at a time."""
+    raw = item.get("draft") or item.get("body_lines") or []
+    if isinstance(raw, str):
+        raw = raw.splitlines()
+    elif not isinstance(raw, (list, tuple)):
+        raw = []
+    return [str(x).rstrip() for x in raw if str(x).strip()]
+
+
+def draft_counters(selection: Dict[str, Any]) -> Dict[str, Any]:
+    """cr1#1792: what the receipt says of the drafts on the listed threads.
+    `n_draft_misplaced` (P4a): a reply under a key that is not `draft`, so
+    the row was listed with no draft; `n_draft_no_voice_stamp` (P3): a
+    drafted thread that came without its voice stamp `voice_rules_sha256`
+    at all (a null value is a seat with no voice file, and is not counted);
+    `drafts_not_kept`: each misplaced one's thread id and reason."""
+    misplaced, no_stamp = [], 0
+    for item in selection.get("top") or []:
+        if not isinstance(item, dict) or _item_kind(item) == "calendar_invite":
+            continue
+        if draft_lines(item):
+            if "voice_rules_sha256" not in item:
+                no_stamp += 1
+            continue
+        key = next((k for k in DRAFT_ALIAS_KEYS if item.get(k)), "")
+        if key:
+            misplaced.append({"thread_id": str(item.get("thread_id") or ""),
+                              "reason": f"draft_under_other_key:{key}"})
+    return {"n_draft_misplaced": len(misplaced), "n_draft_no_voice_stamp": no_stamp,
+            "drafts_not_kept": misplaced}
+
+
 def _view_item(n: int, item: Dict[str, Any], own: Any = ()) -> Dict[str, Any]:
     """One row of the data view, in the orchestrator's per-item shape. The
     reply's To and Cc are reply-all, the owner left out (cr1#936)."""
@@ -2198,8 +2265,7 @@ def _view_item(n: int, item: Dict[str, Any], own: Any = ()) -> Dict[str, Any]:
         meta.append(["Cc", ", ".join(rcpt["cc"])])
     if meta:
         row["metadata"] = meta
-    draft = [str(x).rstrip() for x in (item.get("draft") or item.get("body_lines") or [])
-             if str(x).strip()]
+    draft = draft_lines(item)
     if draft:
         row["body_lines"] = draft
     body = str(item.get("body") or "").strip()
@@ -2365,6 +2431,9 @@ def _without_off_limits(workspace_root, items) -> List[Dict[str, Any]]:
     """cr1#1181: the fetched items minus those from a sender the owner put off
     limits, so their reply never closes or moves a commitment. Never raises."""
     rows = [i for i in (items or []) if isinstance(i, dict)]
+    # cr1#1831: who is off limits is unknown, so no reply may close anything
+    if not _off_limits_readable(workspace_root):
+        return []
     try:
         import account_scope_gate as _asg
         off = _asg.off_limits_senders(workspace_root)
@@ -2705,6 +2774,7 @@ def run_inbox_surface(workspace_root: str, *,
         "widget_bytes": int(page["bytes_len"]),
     }
     extra.update(filter_counters(selection))
+    extra.update(draft_counters(selection))
     extra.update(receipt_counters(capture.get("counters")))
     extra.update(delivery.get("receipt_flags") or {})
     if rerun_of:

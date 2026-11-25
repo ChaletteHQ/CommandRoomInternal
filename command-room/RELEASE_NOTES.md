@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.12.0 (2026-11-25)
+
+Today has a new look and a new frame. Urgent lists the messages that need you now, each with one button, above your to-do lists. People shows your follow-ups and key relationships, and Priorities says which are moving. If your off-limits list cannot be read, the Hub names nobody and says so. An Update now rebuilds the page in one step where it can. Focus, the Today header and the new calendar rows come in the next release. After updating, say "update my hub" once and reload the Hub tab.
+
 ## v6.11.0 (2026-11-25)
 
 Presses on the Hub now save themselves, and one Update saves them and rebuilds the page, so Apply and Refresh are gone and a later Go reads Update now. One Hub Morning run does your inbox, meeting prep, the first update and your morning brief, in place of Hub Prep, Hub Inbox and the Morning Brief chat. Set-up asks you to allow or skip each live source, and with Google Calendar, Today stays live while the page is open. Each meeting's follow-up is drafted after it and waits for one press. After updating, say "update my hub" once and reload the Hub tab.

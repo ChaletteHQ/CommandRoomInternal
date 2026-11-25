@@ -203,6 +203,22 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 
 `set` the answer on `feed/followups` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
+**Then Today's People follow-ups (cr1#1789).** The follow-ups and the key relationships under People on Today, ranked in code, nobody off limits named, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_pfollow"}'
+```
+
+`set` the answer on `feed/pfollow` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
+**Then Urgent (cr1#1786).** The ranking over what the last inbox read saved, checked against who is off limits as that stands now, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_urgent"}'
+```
+
+`set` the answer on `feed/urgent` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
 **Then the Maintenance record (cr1#666).** When the Maintenance chat last finished, each job's last completion and how many hours it is behind, one read beside the data:
 
 ```bash

@@ -160,7 +160,10 @@ def _failed_undo(saves: List[dict], press_id: str) -> Optional[dict]:
 
 def _off_limits(root: Path) -> Optional[set]:
     try:
-        from account_scope_gate import off_limits_person_ids
+        from account_scope_gate import off_limits_person_ids, off_limits_readable
+        # cr1#1830: an unreadable off-limits list is unknown, never "nobody"
+        if not off_limits_readable(str(root)):
+            return None
         return {str(i) for i in off_limits_person_ids(str(root))}
     except Exception:  # noqa: BLE001 - unknown: fail closed
         return None

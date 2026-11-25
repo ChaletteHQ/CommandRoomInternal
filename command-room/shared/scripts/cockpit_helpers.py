@@ -60,6 +60,7 @@ stdlib only.
 """
 from __future__ import annotations
 
+import contextvars
 import datetime as _dt
 import hashlib
 import json
@@ -2398,6 +2399,10 @@ def _low(value: Any) -> str:
     return " ".join(str(value or "").split()).lower()
 
 
+#: cr1#1830: said on Today when the off-limits list is there but cannot be read.
+OFF_LIMITS_UNREAD_TODAY_LINE = "Your off-limits list could not be read, so nobody is named on your meetings."
+
+
 def _meeting_wall(workspace_root) -> Optional[Dict[str, Any]]:
     """Who may be named on a meeting row (cr1#1539): the off-limits addresses
     and names from the SAME function the Hub's live wall is built from
@@ -2414,6 +2419,11 @@ def _meeting_wall(workspace_root) -> Optional[Dict[str, Any]]:
         # gate, which is no answer: the wall's own reader says so first.
         if not connector_reads.chat_wall(workspace_root).get("readable"):
             return None
+        # cr1#1830: so does an off-limits list that is there but cannot be read.
+        from account_scope_gate import off_limits_readable
+
+        if not off_limits_readable(workspace_root):
+            return None
         addrs, names = hub_live._off_limits(workspace_root)
         if max(len(addrs), len(names)) > hub_live.LIST_CAP:
             return None
@@ -2421,6 +2431,15 @@ def _meeting_wall(workspace_root) -> Optional[Dict[str, Any]]:
         return {"addrs": {_low(a) for a in addrs}, "names": {_low(n) for n in names}, "own": own}
     except Exception:  # noqa: BLE001 - fail closed: nobody is named
         return None
+
+
+def _off_limits_readable(workspace_root) -> bool:
+    try:
+        from account_scope_gate import off_limits_readable
+
+        return off_limits_readable(workspace_root)
+    except Exception:  # noqa: BLE001 - unknown is unreadable
+        return False
 
 
 def _meeting_extras(m: Dict[str, Any], wall: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2511,6 +2530,22 @@ def _meeting_extras(m: Dict[str, Any], wall: Optional[Dict[str, Any]]) -> Dict[s
     if out.get("mine") is True and to and len(to) <= MEETING_PEOPLE_CAP and not left_out:
         out["note_to"] = to
     return out
+
+
+def _title_names_off(title: Any, wall: Optional[Dict[str, Any]]) -> bool:
+    """cr1#1789: True when a meeting's title names someone off limits, by a
+    name on the wall as a whole word or phrase (case aside), or the wall
+    cannot be read."""
+    if wall is None:
+        return True
+    def words(t: Any) -> str:
+        # for a name: every mark, a full stop and "@" included, separates words
+        return " ".join(re.sub(r"[^\w]+", " ", str(t or "").lower()).split())
+
+    named = " " + words(title) + " "
+    addressed = " ".join(re.sub(r"[^\w@.]+", " ", str(title or "").lower()).split())
+    return any((" " + words(n) + " ") in named for n in (wall.get("names") or ()) if words(n)) \
+        or any(a and str(a).lower() in addressed for a in (wall.get("addrs") or ()))
 
 
 def _work_hours(workspace_root) -> tuple:
@@ -2930,6 +2965,12 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
                 row["place"] = place
             by_day[d].append(row)
             busy[d].append((start, end))
+    # cr1#1833 (decision 141n, add-only): Coming up and the week view show titles, so the
+    # week's rows carry the same mark as Today's (an unread off-limits list marks every one)
+    for ms in by_day.values():
+        for row in ms:
+            if _title_names_off(row.get("title"), wall):
+                row["title_off"] = True
     h0, h1 = _work_hours(workspace_root)
     days = []
     for d in dates:
@@ -3339,9 +3380,22 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
                     if str(m.get("calendar") or "").lower() == "personal":
                         gone["calendar"] = "personal"
                     # who was there, as the read named them (an off-limits name never)
-                    people = _meeting_extras(m, wall).get("people")
+                    extras = _meeting_extras(m, wall)
+                    people = extras.get("people")
                     if people:
                         gone["people"] = people
+                    # cr1#1833 (decision 141n, add-only): the title names someone off
+                    # limits, or the off-limits list could not be read. The page then
+                    # shows the time and a tag only, offers nothing on it, and lists it
+                    # nowhere as a follow-up. `held` keeps its own meaning.
+                    if _title_names_off(gone["title"], wall):
+                        gone["title_off"] = True
+                    # decision 141n (add-only): the event was time away, which the page
+                    # cannot tell from a meeting on a past row without this
+                    away_kind = _away_kind(m, gone["title"], names_now,
+                                           long=all_day or end - start >= _dt.timedelta(hours=WEEK_AWAY_TIMED_HOURS))
+                    if away_kind:
+                        gone["away"] = away_kind   # "own" or "other", as a current row carries it
                     past.append(gone)
                 continue
             if start > horizon:
@@ -3361,6 +3415,9 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
         rows[-1].update(_join_keys(m))
         if not all_day:
             rows[-1].update(_meeting_extras(m, wall))
+        # cr1#1833 (decision 141n, add-only): as on the past list
+        if _title_names_off(rows[-1]["title"], wall):
+            rows[-1]["title_off"] = True
         # cr1#1707: time away, the owner's or someone else's, is no meeting:
         # Today's big card, its Next list and the day's count leave it out
         kind = _away_kind(m, rows[-1]["title"], names_now,
@@ -3478,6 +3535,9 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
     return _with_words(workspace_root, {"generated_at": _iso(now), "meetings": rows,
             "n_meetings": sum(1 for r in rows if not r["solo"]), "n_prepped": sum(1 for r in rows if r["prep"]),
             "week": week, "about": _today_about(workspace_root, now),
+            # cr1#1830: why the rows name nobody, only when the list cannot be read
+            **({"people_line": OFF_LIMITS_UNREAD_TODAY_LINE}
+               if wall is None and not _off_limits_readable(workspace_root) else {}),
             "past": past[-PAST_MEETINGS_CAP:], "past_days": PAST_DAYS,
             # review of #1669, note 12: how many older ones the cap left out
             "past_more": max(0, len(past) - PAST_MEETINGS_CAP),
@@ -4187,6 +4247,52 @@ def _priority_last_action(p: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _priority_owner_names(root: Path) -> Dict[str, str]:
+    """cr1#1789: `{priority id: its owner's name}` for each open priority owned
+    by someone other than the Hub's owner (`owner_person_id` on its thread,
+    `objective_state.list_open_objectives`). Nobody off limits or personal is
+    named; with the fence unread nobody is. Names only, never an id."""
+    from objective_state import list_open_objectives
+
+    hp = _hidden_people(root)
+    if hp.get("unread"):
+        return {}
+    hidden = set(hp.get("ids") or ())
+    owner, names = _owner_id(root), _person_names(root)
+    out: Dict[str, str] = {}
+    for row in list_open_objectives(root):
+        pid = str(row.get("owner_person_id") or "")
+        if row.get("thread_id") and pid and pid != owner and pid not in hidden and names.get(pid):
+            out[str(row["thread_id"])] = str(names[pid])[:120]
+    return out
+
+
+def _priority_states(root: Path, now_iso: str, conf: List[Dict[str, Any]]) -> Optional[Dict[str, int]]:
+    """cr1#1789: sets `state` and `state_words` on each confirmed priority
+    (`people_followups.priority_states`, over the `last_action` already on the
+    row, on the workspace's own calendar) and `owner` (`{name}`) where it is
+    not the Hub's owner, in place. Answers the counts by state, or None when
+    the states could not be read (the rows are then left as they were)."""
+    try:
+        import people_followups
+
+        st = people_followups.priority_states(conf, now_iso=now_iso, tzinfo=_workspace_tz(root))
+    except Exception:  # noqa: BLE001 - no state: the page shows none
+        return None
+    by = {r["id"]: r for r in st.get("rows") or []}
+    try:
+        owners = _priority_owner_names(root)
+    except Exception:  # noqa: BLE001 - no owner named: the Hub's owner is assumed
+        owners = {}
+    for c in conf:
+        r = by.get(c["id"])
+        if r:
+            c["state"], c["state_words"] = r["state"], r["words"]
+        if owners.get(c["id"]):
+            c["owner"] = {"name": owners[c["id"]]}
+    return dict(st.get("counts") or {})
+
+
 def _feed_priorities(tc, root: Path, now_iso: str) -> Dict[str, Any]:
     """The Priorities tab: the confirmed priorities and the suggested ones,
     apart (ruling B2), from the priority cards. No money. cr1#1294: each
@@ -4209,7 +4315,14 @@ def _feed_priorities(tc, root: Path, now_iso: str) -> Dict[str, Any]:
              "threads": list(p.get("built_from") or []),
              "waits_for": str(p.get("waits_for") or "")}
             for p in pv.get("suggested") or []]
+    # cr1#1789: each priority's state (moving, quiet this week, no signal),
+    # from the `last_action` above and no second reading, and who owns it when
+    # that is not the Hub's owner. Fields on a priority row only; the counts
+    # are the Priorities bar's one line.
+    states = _priority_states(root, now_iso, conf)
     out = {"confirmed": conf[:PRIORITIES_CAP], "n_confirmed": len(conf), "suggested": sugg}
+    if states is not None:
+        out["states"] = states
     # cr1#1540: the owner's own order for them, and which a star on the Hub
     # made (with the press its Undo names). Optional: the list above keeps
     # the order every other reader has; a page that knows `order` sorts by it.
@@ -6617,6 +6730,74 @@ def feed_stillyours(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     return still_yours.feed(workspace_root, now_iso)
 
 
+def _urgent_wall(workspace_root) -> Optional[Dict[str, Any]]:
+    """Review round 1 of #1819 (must 1): the wall Urgent names people by, or
+    None (Urgent holds). Since cr1#1830 the meeting wall itself holds on a
+    mail-rules store that is there but cannot be parsed
+    (`account_scope_gate.off_limits_readable`), so Urgent's wall is that one."""
+    return _meeting_wall(workspace_root)
+
+
+def _inbox_listed(feed: Any) -> set:
+    """Review round 1 of #1819 (must 2): the threads and messages the Inbox
+    feed just built lists, after the owner's hide and drop rules."""
+    out: set = set()
+    for r in (feed.get("items") or []) if isinstance(feed, dict) else []:
+        if isinstance(r, dict):
+            out |= {str(r.get(k) or "") for k in ("thread_id", "message_id")} - {""}
+    return out
+
+
+def _urgent_kept(items: Any, feed: Any) -> List[Dict[str, Any]]:
+    """Review round 1 of #1819 (must 2): of the inbox read's raw items, only
+    those the Inbox feed just built lists, so a sender the owner hid or a
+    thread they dropped never reaches the Urgent store."""
+    listed = _inbox_listed(feed)
+    return [i for i in (items or []) if isinstance(i, dict)
+            and ({str(i.get(k) or "") for k in ("thread_id", "message_id")} - {""}) & listed]
+
+
+def feed_urgent(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
+    """READ. cr1#1786: the Hub's Urgent document, `feed/urgent`. The ranking
+    (`hub_urgent.urgent_view`) over the store the inbox part keeps
+    (`hub_urgent_store`, ruling 127f): an item answered since (an
+    `email_sent` on its thread) or older than the store's age limit drops
+    out, and a deadline that has passed no longer counts. Up to three
+    waiting-on-others rows always ride it (130f). Stamped `generated_at`.
+    The wall again, as it stands now: nobody behind it is listed, and an
+    unreadable wall lists nobody (`held`). No mail is read here (130e).
+
+    Review round 1 of #1819: the wall is `_urgent_wall` (held when the
+    hidden-people read is unread too), and `lines.held` is what the page says
+    then, never "Nothing urgent". A calendar invite saved from mail is not
+    ranked: the page offers invites from the calendar it holds, where the
+    owner's answer is known, so an answered invite never ranks for the
+    store's three days or doubles the calendar's row."""
+    import hub_urgent as hu
+    import hub_urgent_store as hus
+
+    now_s = _iso(_now(now_iso))
+    if workspace_root is None:
+        out = hu.rank_urgent([], now=_now(now_s), owed_to_you=[])
+        return dict(out, held=True, base_saved_at=None,
+                    lines={"free": hu.NOTHING_URGENT_FREE_LINE, "clear": hu.NOTHING_URGENT_CLEAR_LINE})
+    store = hus.load(workspace_root)
+    wall = _urgent_wall(workspace_root)
+    held = wall is None or store.get("held") is True
+    try:
+        import events_io
+
+        events = events_io.load_events_org_scoped(workspace_root)[0]
+    except Exception:  # noqa: BLE001 - an unread book answers nothing, so nothing counts as answered
+        events = []
+    items = [] if held else [i for i in hus.current(store, answered=hus.answered_threads(events), now_iso=now_s)
+                             if not hus.walled(i, wall) and str(i.get("kind") or "") != "calendar_invite"]
+    out = hu.urgent_view(workspace_root, items, owed=[] if held else None, now_iso=now_s)
+    return dict(out, held=held, base_saved_at=store.get("saved_at"),
+                lines={"free": hu.NOTHING_URGENT_FREE_LINE, "clear": hu.NOTHING_URGENT_CLEAR_LINE,
+                       "held": hu.URGENT_HELD_LINE})
+
+
 def feed_followups(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     """READ. cr1#1745: the follow-ups drafted after meetings and waiting for
     the owner's press (`followup_draft.feed_followups`): at most the newest
@@ -6625,6 +6806,20 @@ def feed_followups(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     import followup_draft
 
     return followup_draft.feed_followups(workspace_root, now_iso=now_iso)
+
+
+def feed_pfollow(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. cr1#1789: Today's People follow-ups and key relationships, its
+    own document (`feed/pfollow`) so no people row or plate row gains a
+    field (ruling 111): `people_followups.build` over every person on file,
+    fenced (not only the People tab's first rows), and the waiting follow-up drafts. It
+    reads no Today feed and nothing of another task or session: the meetings
+    that ended and are not written up, and Open prep, are joined on the page
+    from its own Today feed (coordinator's ruling, cr1#1809's pattern). The
+    module's order is the order; nothing is ranked here."""
+    import people_followups
+
+    return people_followups.build(workspace_root, now_iso=_iso(_now(now_iso)))
 
 
 def feed_settings(workspace_root, *, now_iso=None) -> Dict[str, Any]:
@@ -7651,6 +7846,13 @@ def feed_inbox(workspace_root=None, page_html: str = "", *, fire_stamp: str = ""
     for it in items or []:
         if isinstance(it, dict):
             by_subject.setdefault(_norm(it.get("subject")), []).append(it)
+    # cr1#1792 (P2): the page numbers its rows in the selection's order, so
+    # row n is the selection's thread n (its subject must agree); the unique
+    # subject join is the fallback, so two threads with one subject keep theirs.
+    try:
+        top = list(_ih.select_priority(str(workspace_root), items)["top"]) if items else []
+    except Exception:  # noqa: BLE001 - no selection: the subject join alone
+        top = []
     rows = []
     for it in parser.items:
         if it.get("n") is None:
@@ -7658,8 +7860,18 @@ def feed_inbox(workspace_root=None, page_html: str = "", *, fire_stamp: str = ""
         subject = re.sub(r"^[\s—·-]+", "", it["subject"])
         kind = "calendar_invite" if ("accept" in it["actions"] or "\U0001f4c5" in it["icon"]) else "email_reply"
         thread = None
+        try:
+            pick = top[int(it["n"]) - 1] if int(it["n"]) >= 1 else None
+        except (TypeError, ValueError, IndexError):
+            pick = None
         cands = by_subject.get(_norm(subject)) or by_subject.get(_norm(it["subject"])) or []
-        if len(cands) == 1:
+        if isinstance(pick, dict) and _norm(pick.get("subject")) in (_norm(subject), _norm(it["subject"])):
+            # review of #1822: when threads share the subject, the row's own To
+            # must name the thread's sender too (no To read: no join)
+            row_to = {_ih._own_key(a) for a in _ih._addresses(it["meta"].get("to", ""))}
+            if len(cands) < 2 or any(_ih._own_key(a) in row_to for a in _ih._addresses(pick.get("sender_email"))):
+                thread = pick
+        if thread is None and len(cands) == 1:
             thread = cands[0]
         meta = it["meta"]
         body = "\n".join(it["body"]).strip()
@@ -7682,7 +7894,11 @@ def feed_inbox(workspace_root=None, page_html: str = "", *, fire_stamp: str = ""
         cc = list(dict.fromkeys(cc))
         draft = {"to": ", ".join(to) if to else meta.get("to", ""), "cc": ", ".join(cc),
                  "subject": meta.get("subject", ""), "body": body, "blanks": blanks,
-                 "voice_block_sha256": (thread.get("voice_block_sha256") if thread else None)}
+                 "voice_block_sha256": (thread.get("voice_block_sha256") if thread else None),
+                 # cr1#1792, ruling 130c: the stamp of the voice rules applied
+                 # ("In your voice"), and which they were
+                 "voice_rules_sha256": (thread.get("voice_rules_sha256") if thread else None),
+                 "voice_source": (thread.get("voice_source") if thread else None)}
         if not to and str(meta.get("to") or "").strip():
             # cr1#1250: the page's To named no one but the owner, so the To
             # above is that To unfiltered. The page never sends a Microsoft
@@ -10061,6 +10277,69 @@ def _meeting_people(root, meeting_id: str) -> Optional[set]:
     return people if found else None
 
 
+#: cr1#1701 (A): the senders of the threads this Update's waiting mail makes
+#: name, from the page's own feed/inbox (`update-start` reads them in code and
+#: answers them with its check; `update_claim` takes them only when the check
+#: holds). Set only for the
+#: Update's save, by `update_save`; None everywhere else.
+_PAGE_INBOX_SENDERS: "contextvars.ContextVar[Optional[Dict[str, str]]]" = contextvars.ContextVar(
+    "cockpit_page_inbox_senders", default=None)
+#: A map longer than this is not one update-start writes: dropped whole.
+PAGE_INBOX_SENDERS_CAP = 200
+
+
+def page_inbox_senders_ok(value: Any) -> Dict[str, str]:
+    """cr1#1701 (A): the map `update-start` answered, as the run passed it on,
+    checked for shape: `{thread_id: bare lower-case address}`, at most
+    `PAGE_INBOX_SENDERS_CAP` entries. Anything else (not a dict, too long, a
+    key that is not a short text, a value that is not a bare address) is
+    dropped WHOLE and answers {}: the save then checks as it did before, and
+    the off-limits fence runs either way. Pure."""
+    if not isinstance(value, dict) or len(value) > PAGE_INBOX_SENDERS_CAP:
+        return {}
+    out: Dict[str, str] = {}
+    for k, v in value.items():
+        if not isinstance(k, str) or not k.strip() or len(k) > 300 or not isinstance(v, str):
+            return {}
+        addr = _mr_address(v)
+        if "@" not in addr or addr != v:
+            return {}
+        out[k.strip()] = addr
+    return out
+
+
+def _page_inbox_senders(reads_dir: str) -> Dict[str, str]:
+    """cr1#1701 (A), page side: the sender of each thread a waiting mail make
+    names (`<reads>/waiting/choices`, the `applied == false` query saved as
+    files), as the page's own `feed/inbox` (`<reads>/feed`) lists it. A thread
+    not in that feed, or with no address there, is left out. Reads no
+    workspace."""
+    try:
+        feed = next((f for d, f, _v in _saved_docs(reads_dir, "feed") if d == "inbox"), None)
+        items = feed.get("items") if isinstance(feed, dict) else None
+        if not isinstance(items, list):
+            return {}
+        tids = set()
+        for _d, f, _v in _saved_docs(str(Path(reads_dir) / "waiting"), "choices"):
+            inp = f.get("input") if isinstance(f.get("input"), dict) else {}
+            tid = str(inp.get("thread_id") or "").strip()
+            if tid and f.get("applied") is not True:
+                tids.add(tid)
+        out: Dict[str, str] = {}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            tid = str(it.get("thread_id") or "").strip()
+            addr = _mr_address(it.get("sender"))
+            if tid in tids and tid not in out and "@" in addr:
+                out[tid] = addr
+            if len(out) >= PAGE_INBOX_SENDERS_CAP:
+                break
+        return out
+    except Exception:  # noqa: BLE001 - none read: the save checks as before
+        return {}
+
+
 def _mail_make_gate(root, inp) -> Optional[str]:
     """Review round 1 of #1699 (B1, B5): the line that refuses a To-do,
     Remind me or Waiting on them made from a message, or None to go on. A
@@ -10083,6 +10362,12 @@ def _mail_make_gate(root, inp) -> Optional[str]:
     if known is None:
         return MAIL_MAKE_FEED_LINE
     if known and known != addr:
+        return MAIL_MAKE_SENDER_LINE
+    # cr1#1701 (A): the page's own feed/inbox, as update-start read it for this
+    # run. A thread there under another sender is refused; a thread not there
+    # (a live-mail row, #1772) passes as before, and the fence below still runs.
+    page_known = (_PAGE_INBOX_SENDERS.get() or {}).get(str(inp.get("thread_id") or "").strip())
+    if page_known and page_known != addr:
         return MAIL_MAKE_SENDER_LINE
     try:
         import hub_work
@@ -12931,8 +13216,11 @@ APPLY_EDIT_FEEDS = {"stream_edit": ("feed/projects", "feed/board"),
 #: with them (review round 1 of #1768), and Today's to-do lists (`feed/mine`)
 #: too: a to-do is a work item (fix check of round 1).
 _UPDATE_WORK = ("feed/plate", "feed/projects", "feed/board", "feed/people", "feed/review", "feed/week",
-                "status/maintenance", "feed/mine")
-_UPDATE_TODO = ("feed/mine", "feed/plate", "feed/projects", "feed/people", "status/maintenance")
+                "status/maintenance", "feed/mine", "feed/pfollow",
+                # cr1#1786: Urgent's waiting-on-others rows are open items others owe
+                "feed/urgent")
+_UPDATE_TODO = ("feed/mine", "feed/plate", "feed/projects", "feed/people", "status/maintenance", "feed/pfollow",
+                "feed/urgent")
 #: Fix check of round 1 of #1768 (coordinator's decision): the narrow rebuild
 #: is safe by construction. A landed press rebuilds only the documents named
 #: here for its list and verb (`update_press_key`); any list, kind or verb not
@@ -12954,11 +13242,11 @@ UPDATE_NARROW: Dict[str, Tuple[str, ...]] = {
     **{"stillyours:" + v: _UPDATE_WORK + ("feed/stillyours",) for v in ("refresh", "keep", "done", "drop")},
     **{"settings:" + v: ("feed/settings", "feed/week") for v in ("rule edit", "rule off", "rule delete", "budget")},
     # a star moves the person on the People tab and the top line's ranking
-    **{"people:" + v: ("feed/people", "feed/plate") for v in ("star", "unstar")},
+    **{"people:" + v: ("feed/people", "feed/plate", "feed/pfollow", "feed/urgent") for v in ("star", "unstar")},  # cr1#1786: a starred sender
     # a to-do and a "waiting on them" are open items with no home yet: they are
     # on the plate, under No home yet on the work streams, and on that person
     "hub:todo:add": _UPDATE_TODO,
-    "hub:waiting:add": _UPDATE_TODO,
+    "hub:waiting:add": _UPDATE_TODO + ("feed/urgent",),  # cr1#1786: Urgent's waiting-on-others
     # the Record tab's recap lists the open priorities
     **{"hub:priority_edit:" + v: ("feed/projects", "feed/board", "feed/plate", "feed/week")
        for v in ("add", "rename", "star", "order", "undo")},
@@ -13025,7 +13313,10 @@ UPDATE_FULL_FIELD = "full_at"
 #: A send, a draft or a meeting change the page made itself, now on the book.
 #: A follow-up drafted or sent from a meeting's wrap-up (#1752) is a record
 #: too, and its row takes the draft off the follow-ups (fix check of #1768).
-UPDATE_RECORD_FEEDS: Tuple[str, ...] = ("feed/people", "feed/week", "feed/followups")
+#: cr1#1789: and off Today's People follow-ups too.
+UPDATE_RECORD_FEEDS: Tuple[str, ...] = ("feed/people", "feed/week", "feed/followups", "feed/pfollow",
+                                        # cr1#1786: a reply the page sent answers an Urgent row
+                                        "feed/urgent")
 #: The light's lines.
 UPDATE_NOTHING_LINE = "Nothing to save."
 UPDATE_SAVE_FAILED_LINE = "Couldn't save {n} of your {total} changes: {why}"
@@ -13978,6 +14269,9 @@ REFRESH_READS: Tuple[Tuple[str, str], ...] = (
     ("feed/mail_rules", "feed_mail_rules"),
     ("feed/people", "feed_people"),
     ("feed/brief", "feed_brief"),
+    # cr1#1789: Today's People follow-ups and key relationships, read after the people, in
+    # the same place as in the reads part (REFRESH_STAGES), so both orders agree
+    ("feed/pfollow", "feed_pfollow"),
     ("feed/review", "feed_review"),
     ("feed/settings", "feed_settings"),
     # cr1#1706: the "Still yours?" review's document, a READ of the small file
@@ -13985,6 +14279,8 @@ REFRESH_READS: Tuple[Tuple[str, str], ...] = (
     ("feed/stillyours", "feed_stillyours"),
     # cr1#1745: the follow-ups waiting on the wrap-up page, their words kept out of the plate
     ("feed/followups", "feed_followups"),
+    # cr1#1786: Urgent, re-ranked from the inbox part's store at every Update
+    ("feed/urgent", "feed_urgent"),
 )
 REFRESH_PLATE_FAILED_LINE = "The plate could not be read, so the Hub was not refreshed."
 #: Every document a refresh may write, and no other (never another task's light).
@@ -14170,15 +14466,15 @@ def _keep_built(workspace_root, task: str, report: List[Dict[str, Any]],
 REFRESH_STAGES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("plate", ("feed/plate",)),
     ("reads", ("feed/projects", "feed/board", "feed/mine", "feed/mail_rules",
-               "feed/people", "feed/brief")),
+               "feed/people", "feed/brief", "feed/pfollow")),
     ("review", ("feed/review",)),
-    ("record", ("feed/settings", "feed/stillyours", "feed/followups", "feed/week", "status/maintenance")),
+    ("record", ("feed/settings", "feed/stillyours", "feed/followups", "feed/urgent", "feed/week", "status/maintenance")),
 )
 REFRESH_STAGE_NAMES: Tuple[str, ...] = tuple(s for s, _d in REFRESH_STAGES)
 #: What a part that did not finish is called in the light's line.
 REFRESH_STAGE_WORDS: Dict[str, str] = {
     "plate": "the plate",
-    "reads": "the work streams, the Week board, your lists, the mail rules, the people and the brief",
+    "reads": "the work streams, the Week board, your lists, the mail rules, the people, the brief and the follow-ups on Today",
     "review": "To confirm",
     "record": "Settings and the Record tab",
 }
@@ -14190,6 +14486,8 @@ REFRESH_DOC_WORDS: Dict[str, str] = {
     "feed/mail_rules": "the mail rules", "feed/people": "the people", "feed/brief": "the brief",
     "feed/review": "To confirm", "feed/settings": "Settings", "feed/week": "the Record tab",
     "feed/stillyours": "the Still yours? review", "feed/followups": "the follow-ups",
+    "feed/pfollow": "the follow-ups on Today",
+    "feed/urgent": "Urgent",
     "status/maintenance": "the Maintenance record",
 }
 REFRESH_DOCS_FAILED_LINE = "{plate} Not updated: {what}; the Hub keeps its last copy of those."
@@ -14756,7 +15054,37 @@ def refresh_start(reads_dir: str, out_dir: str, *, now_iso=None, leg: str = "ref
     if own_leg == "update":
         answer["scope"] = scope
         answer[UPDATE_FULL_FIELD] = full_at
+        # cr1#1701 (A): read in code here, from the saved page
+        answer["inbox_senders"] = _page_inbox_senders(reads_dir)
+        # Review of #1817: a check over what the start answered, which the
+        # claim recomputes from what the run passes on
+        answer["start_check"] = update_start_check(run_id, scope, full_at, answer["inbox_senders"])
     return answer
+
+
+#: Review of #1817: `update-start` runs where the page's saved reads are (on a
+#: device seat, the cloud container) and `update_claim` where the workspace is
+#: (on that seat, the computer, through device_bash): two machines that share
+#: no folder. So nothing is kept between them: the start answers a check over
+#: what it answered, the run passes the values and the check on as they came,
+#: and the claim recomputes it. A value the run invented, changed or dropped
+#: fails the check. It is a check on the run's copying, not a secret: anyone
+#: can compute it.
+UPDATE_START_CHECK_SALT = "cr1-update-start-v1"
+#: Review of #1821: the claim keeps this when the start's check did not hold
+#: (missing, malformed or another answer), and `update_finish` counts it on
+#: the receipt, so a miscopy that turned the run whole is on the record.
+UPDATE_CHECK_FAILED = "check_failed"
+
+
+def update_start_check(run_id: Any, scope: Any, full_at: Any, inbox_senders: Any) -> str:
+    """The check `update-start` answers and `update_claim` recomputes: the
+    SHA-256 of the four values in one fixed form (sorted keys, no spaces). Pure."""
+    # an empty map and a map left out are the same answer: no senders
+    body = json.dumps({"full_at": full_at, "inbox_senders": {} if inbox_senders is None else inbox_senders,
+                       "run_id": run_id, "scope": scope},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256((UPDATE_START_CHECK_SALT + "|" + body).encode("utf-8")).hexdigest()
 
 
 #: cr1#1722 step 2: the Morning run's parts, in the order it runs them. The
@@ -15224,7 +15552,7 @@ def _update_light_words(man: Dict[str, Any], state: str, line: str) -> Tuple[str
 def update_claim(workspace_root, waiting: Optional[List[Any]] = None,
                  page: Optional[List[Any]] = None, *, run_id: str = "",
                  fired_via: str = "scheduled", scope: str = "all", full_at: str = "",
-                 now_iso=None) -> Dict[str, Any]:
+                 inbox_senders: Any = None, start_check: str = "", now_iso=None) -> Dict[str, Any]:
     """A WRITER (it keeps the run's state in the Update's scratch folder; the
     book is not written here). The Update's first call (cr1#1722): Apply's
     `apply_start` with no light and no receipt of its own.
@@ -15234,14 +15562,27 @@ def update_claim(workspace_root, waiting: Optional[List[Any]] = None,
     `scope` what `update-start` answered: `touched` for a run the page fired
     after a press, else `all`; `full_at` the time `update-start` answered
     (cr1#1809: the last whole rebuild, from the page's own light; anything
-    that is not a time counts as none). Answers `apply_start`'s own `{ok, stop: false,
+    that is not a time counts as none); `inbox_senders` (cr1#1701) and
+    `start_check` what it answered too. Review of #1817: the four are taken
+    only when `start_check` is what `update_start_check` gives for them;
+    otherwise the run is `all` with no record and no map, so it rebuilds
+    everything and the save checks mail as it did before. Answers `apply_start`'s own `{ok, stop: false,
     run_id, writes, n_more, line}`; with nothing to claim, `nothing: true` and
     no writes: the run skips `update_save` and goes on to `update_build`."""
     ans = apply_start(workspace_root, waiting, page, None, run_id=run_id, fired_via=fired_via,
                       now_iso=now_iso, task="update")
-    state = {"run_id": str(ans.get("run_id") or ""), "scope": scope if scope in UPDATE_SCOPES else "all",
+    copied = isinstance(start_check, str) and re.fullmatch(r"[0-9a-f]{64}", start_check) is not None \
+        and start_check == update_start_check(run_id, scope, full_at, inbox_senders)
+    state = {"run_id": str(ans.get("run_id") or ""),
+             "scope": scope if (copied and scope in UPDATE_SCOPES) else "all",
              "saved": {}, "touched": [], "all": False,
-             UPDATE_FULL_FIELD: _full_at_of(full_at, _now(now_iso))}
+             UPDATE_FULL_FIELD: _full_at_of(full_at, _now(now_iso)) if copied else "",
+             # cr1#1701 (A): only as the start answered it, checked for shape
+             "inbox_senders": page_inbox_senders_ok(inbox_senders) if copied else {}}
+    if not copied:
+        # Review of #1821: a check that does not hold makes the run whole and
+        # drops the senders. Kept here so the receipt counts it, never silent.
+        state[UPDATE_CHECK_FAILED] = 1
     ans["kept"] = _update_state_write(workspace_root, state)
     return ans
 
@@ -15257,10 +15598,15 @@ def update_save(workspace_root, waiting: Optional[List[Any]] = None,
     rebuild will build, kept for it here by the run's id. `next: detail` is
     left only for a connector part (a confirmed send or draft, a "Missed
     something?" search)."""
-    ans = apply_run(workspace_root, waiting, page, None, run_id=run_id, fired_via=fired_via,
-                    n_more=n_more, now_iso=now_iso, task="update")
+    kept = _update_state(workspace_root, run_id)
+    tok = _PAGE_INBOX_SENDERS.set(page_inbox_senders_ok((kept or {}).get("inbox_senders")) or None)
+    try:
+        ans = apply_run(workspace_root, waiting, page, None, run_id=run_id, fired_via=fired_via,
+                        n_more=n_more, now_iso=now_iso, task="update")
+    finally:
+        _PAGE_INBOX_SENDERS.reset(tok)
     ans["light"] = None
-    state = _update_state(workspace_root, run_id) or {"run_id": str(run_id or ""), "scope": "all"}
+    state = kept or {"run_id": str(run_id or ""), "scope": "all"}
     saved = dict(ans.get("counts") or {})
     saved["first_failed"] = str(ans.get("first_failed") or (ans.get("line") if ans.get("ok") is False else "") or "")
     saved["n_more"] = int(n_more or 0)
@@ -15353,6 +15699,15 @@ def _update_only(state: Dict[str, Any], workspace_root=None, now: Optional[_dt.d
     return only
 
 
+#: cr1#1808: `update_build` with `stage: "all"` runs the rebuild's parts in
+#: one door call, in order, and starts another part only within this many
+#: seconds of the call's start. Each part stops itself at
+#: `REFRESH_STAGE_BUDGET_S` (120), so the last part it starts ends by 140 s at
+#: worst, under the door's 150 s; a part it did not reach is named as `next`
+#: and the run calls it as before, so a heavy book still ends with `record`.
+UPDATE_ALL_START_S = 20
+
+
 def update_build(workspace_root, *, run_id: str = "", stage: str = "", token: str = "",
                  results: Optional[Dict[str, Any]] = None, now_iso=None,
                  budget_s: Optional[float] = None) -> Dict[str, Any]:
@@ -15370,8 +15725,32 @@ def update_build(workspace_root, *, run_id: str = "", stage: str = "", token: st
     (`record`) writes the run's light with the documents and answers the
     parts to pull. A part with nothing to build is skipped by `next`. With
     no `stage`, every part runs in this one process (in-process callers and
-    tests)."""
+    tests).
+
+    cr1#1808: `stage: "all"` is the plate's call that goes on: after the
+    plate it runs each part the last answer named, in this one call, while
+    it is inside `UPDATE_ALL_START_S`. It answers the last part's answer (the
+    record's, when it got there), with `ran`, the parts it ran. When time ran
+    out first, that answer's `next` names the part to call next, with the
+    plate's `token`, exactly as after a single part. Nothing is built that a
+    part-by-part run would not build, in the same order."""
     want = str(stage or "").strip()
+    if want == "all":
+        import time
+
+        t0 = time.monotonic()
+        first = update_build(workspace_root, run_id=run_id, stage="plate", results=results, now_iso=now_iso,
+                             budget_s=budget_s)
+        ans, ran, tok = first, ["plate"], str(first.get("token") or "")
+        while (tok and ans.get("stage") != "record" and ans.get("next")
+               and time.monotonic() - t0 < UPDATE_ALL_START_S):
+            nxt = str(ans["next"])
+            ans = update_build(workspace_root, run_id=run_id, stage=nxt, token=tok, now_iso=now_iso, budget_s=budget_s)
+            ran.append(nxt)
+        out = dict(ans, ran=ran)
+        if tok and not out.get("token"):
+            out["token"] = tok
+        return out
     if want not in ("", "plate"):
         return refresh_all(workspace_root, now_iso=now_iso, run_id=run_id or None, stage=want,
                            token=token, budget_s=budget_s, task="update")
@@ -15415,16 +15794,43 @@ def update_finish(workspace_root, *, run_id: str = "", token: str = "", error: s
         counts.update({k: v for k, v in (man.get("counts") or {}).items() if k in ("plate", "closed")})
         counts["built"] = len([r for r in man.get("report") or [] if r.get("ok") and str(r.get("doc")) != "status/update"])
         counts["not_built"] = len([r for r in man.get("report") or [] if not r.get("ok")])
+        # cr1#1764: the parts that did not finish or never ran, by name, and
+        # the documents not built (a part skipped for holding nothing to build
+        # is neither). A clean run has none, so its receipt is unchanged.
+        # `failed` is the save's count, so the documents have their own key.
+        ran = set(man.get("stages") or []) | set(man.get("skipped") or [])
+        unfinished = [s for s in REFRESH_STAGE_NAMES if s not in ran]
+        if unfinished:
+            counts["not_finished"] = unfinished
+        failed_docs = [str(r.get("doc")) for r in man.get("report") or [] if not r.get("ok")]
+        if failed_docs:
+            counts["failed_docs"] = failed_docs
+    if state.get(UPDATE_CHECK_FAILED):
+        counts[UPDATE_CHECK_FAILED] = 1
     err = str(error or "").strip()
     kept_light: Dict[str, Any] = {}
-    if mine and not err:
+    # cr1#1764: the light in the task's scratch folder is this run's only when
+    # this run's last part wrote it (its manifest says `record` ran, finished
+    # or not). Until then the file there is the last run's, and a run whose
+    # rebuild never got that far is not complete.
+    wrote = mine and ("record" in (man.get("stages") or []) or "record" in (man.get("not_finished") or []))
+    if wrote and not err:
         try:
             kept_light = json.loads(_refresh_file(_task_scratch(workspace_root, "update"), "status/update")
                                     .read_text(encoding="utf-8"))
         except (OSError, ValueError):
             kept_light = {}
+        # Review of cr1#1764: a record part cut off by its budget is in the
+        # manifest before its light is kept, so the file can still be the last
+        # run's. Every light names its run: one that is not this run's (or
+        # names none) is not trusted.
+        if not isinstance(kept_light, dict) or not run_id or str(kept_light.get("run_id") or "") != str(run_id):
+            kept_light = {}
     line = err or str(kept_light.get("line") or "")
-    bad = bool(err) or str(kept_light.get("state") or "done") != "done"
+    if not line and mine and not wrote:
+        line = UPDATE_STAGE_MISSING_LINE.format(what="; ".join(
+            REFRESH_STAGE_WORDS[s] for s in counts.get("not_finished") or ["record"]))
+    bad = bool(err) or not kept_light or str(kept_light.get("state") or "") != "done"
     log_run_receipt(workspace_root, fired_via=fired_via, legs=["update"], counts={"update": counts},
                     task_id="cockpit-update", now_iso=now_s, status="partial" if bad else "complete")
     light = None
@@ -15520,6 +15926,9 @@ PREP_ONE_LINES = {
     "unchecked": "Who is on that meeting could not be checked just now, so nothing was prepared.",
     "off_limits": "Everyone else on that meeting is off limits, so nothing was prepared.",
 }
+#: cr1#1825: a press's own run that finds no request of its own preps nothing,
+#: never the usual next four; Hub Morning's prep part says the same words.
+PREP_ONE_NONE_LINE = "No Prep this one press was waiting, so nothing was prepped."
 
 
 def prep_one_pick(workspace_root, requests: Optional[List[Dict[str, Any]]] = None,
@@ -15552,7 +15961,13 @@ def prep_one_pick(workspace_root, requests: Optional[List[Dict[str, Any]]] = Non
     passes its `run_id`. The page stamps each request it starts a run for
     with that run's id, so only requests carrying THIS run's id are judged:
     a press another run was started for never narrows or is satisfied by
-    this one, and those requests go back in `doc` exactly as read."""
+    this one, and those requests go back in `doc` exactly as read.
+
+    cr1#1825: a run the press fired (`press_fired` with a `run_id`) that finds
+    no request of its own waiting (dropped, already judged, or overwritten by
+    a later press) is still narrowed, to nothing: `narrowed: True`,
+    `meetings: []`, `none: True` and `line` (`PREP_ONE_NONE_LINE`). It never
+    falls back to the next four the owner did not ask for."""
     now = _now(now_iso)
     out: Dict[str, Any] = {"ok": True, "narrowed": False, "meetings": [], "n_refused": 0,
                            "doc": {"at": _iso(now), "requests": []}}
@@ -15572,6 +15987,11 @@ def prep_one_pick(workspace_root, requests: Optional[List[Dict[str, Any]]] = Non
         seen.add(jk)
         waiting.append({"jk": jk, "at": str(r.get("at") or "")[:40]})
     waiting = waiting[:PREP_ONE_CAP]
+    if not waiting and press_fired is True and mine:
+        # cr1#1825: the press's own run with no request of its own preps nothing
+        out.update(narrowed=True, none=True, line=PREP_ONE_NONE_LINE)
+        out["doc"]["requests"] = others
+        return out
     if not waiting or press_fired is not True:
         out["doc"]["requests"] = others
         return out
@@ -15717,6 +16137,24 @@ def inbox_all(workspace_root, *, items: Optional[List[Dict[str, Any]]] = None,
                                   items=items, page_rel=rel, now_iso=now_s)
 
             _one_call_build(built, report, "feed/inbox", _feed)
+            # cr1#1786 (ruling 127f): what the Urgent ranking needs from this
+            # read, walled, for every Update to re-rank; a failure here never
+            # stops the inbox run (Urgent keeps its last base). Review round 1
+            # of #1819: only the threads the Inbox feed just built lists (the
+            # owner's hide and drop rules applied), and held when the
+            # hidden-people read is unread; no Inbox feed, no new base.
+            try:
+                import hub_urgent_store as hus
+
+                if "feed/inbox" in built:
+                    blocked_now = fetch_blocked or ih.fetch_wall(str(workspace_root))
+                    kept = _urgent_kept(items, built["feed/inbox"])
+                    hus.save(workspace_root, hus.build([] if blocked_now else kept,
+                                                       wall=_urgent_wall(workspace_root),
+                                                       own=ih.own_addresses(str(workspace_root)),
+                                                       tzinfo=_workspace_tz(workspace_root), now_iso=now_s))
+            except Exception:  # noqa: BLE001
+                pass
     # cr1#1614 review: the page text and the delivery calls are the Inbox
     # chat's to post; this run posts neither, so neither rides its answer.
     result = ({k: v for k, v in (res or {}).items() if k not in ("text", "html", "calls")}
@@ -15932,7 +16370,7 @@ __all__ = [
     "INBOX_VERBS", "INBOX_WIRE_ACTION", "CHOICE_EXPIRY_DAYS",
     "RUNNING_TIMEOUT_MINUTES", "CONFIG_REL", "TEMPLATE_REL",
     "CALENDAR_LIVE", "CALENDAR_LIVE_MARK", "EVENT_KEY_LEN", "calendar_live", "event_key", "prep_one_pick",
-    "PREP_ONE_DOC", "PREP_ONE_LINES", "PREP_ONE_MAX_AGE_MINUTES", "PREP_ONE_CAP",
+    "PREP_ONE_DOC", "PREP_ONE_LINES", "PREP_ONE_NONE_LINE", "PREP_ONE_MAX_AGE_MINUTES", "PREP_ONE_CAP",
     "load_config", "save_config", "setup_check", "capabilities", "connector_display_name", "render_page",
     "render_page_file", "template_path", "status_doc", "running_timed_out",
     "scrub_chats_note", "HIDDEN_CHAT_ACTS",
@@ -15942,7 +16380,7 @@ __all__ = [
     "newer_message_arrived", "prep_text", "PREP_TEXT_CAP", "sent_tokens_update", "SENT_TOKENS_CAP",
     "plan_prune_choices",
     "add_chat_priority",
-    "feed_week", "apply_week_choices", "WEEK_EMPTY_LINE",
+    "feed_week", "apply_week_choices", "WEEK_EMPTY_LINE", "feed_urgent",
     "feed_brief", "BRIEF_NONE_LINE", "BRIEF_TEXT_CAP",
     "ORIGIN_LINE_CAP",
     "feed_review", "apply_review_choices", "REVIEW_EMPTY_LINE",

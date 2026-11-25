@@ -84,6 +84,10 @@ KEEP_ROWS = 2000
 #: two steps starts a new one.
 STEP_CAP_S = 150
 RUN_CEILING_S = 30 * 60
+#: cr1#1764: the longest gap between a lead step and the next step of its
+#: run (the opener, or the next lead step). A lead step further back is
+#: another chat's, and the run's clock starts after it.
+LEAD_GAP_S = 5 * 60
 #: Who measured: named on every receipt's `timings`.
 MEASURED_BY = "workspace_access"
 
@@ -234,7 +238,8 @@ TASKS: Dict[str, Dict[str, Any]] = {
         ("feeds", (_CH + "feed_plate", _CH + "feed_projects", _CH + "feed_board", _CH + "feed_mine",
                    _CH + "feed_mail_rules", _CH + "feed_people", _CH + "feed_brief", _CH + "feed_review",
                    "friday_wrap_helpers:week_sections", _CH + "feed_week", _CH + "feed_settings",
-                   _CH + "feed_stillyours", _CH + "feed_followups", _CH + "maintenance_status")),
+                   _CH + "feed_stillyours", _CH + "feed_followups", _CH + "feed_pfollow",
+                   _CH + "maintenance_status", _CH + "feed_urgent")),
     ]),
     "morning-brief": {
         "opener": ("morning_brief_helpers:lateness", None), "lead": (),
@@ -601,6 +606,18 @@ def timings_for(workspace_root, task_id: str, *, now: Any = None,
         first_lead = max((i for i, r in enumerate(prior) if r.get("name") == lead_order[0]),
                          default=None) if lead_order else None
         lead = prior[first_lead:] if first_lead is not None else prior[-1:]
+        # cr1#1764: a lead step is this run's only when it leads straight into
+        # it: no gap longer than LEAD_GAP_S from its end to the next lead step
+        # or the opener. A set-up chat's `load_config` a quarter of an hour
+        # earlier started a run's clock there and doubled its total.
+        nxt = _epoch(window[start].get("at")) or now_s
+        chained: List[Dict[str, Any]] = []
+        for r in reversed(lead):
+            if nxt - _end(r) > LEAD_GAP_S:
+                break
+            chained.insert(0, r)
+            nxt = _epoch(r.get("at")) or nxt
+        lead = chained
         mine = lead + [r for r in window[start:] if _mine(spec, r)]
         t0 = _epoch((lead or [window[start]])[0]["at"]) or now_s
         others = _overlapping(str(task_id), steps, t0)

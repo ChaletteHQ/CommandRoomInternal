@@ -340,6 +340,27 @@ def _stamp(path: Path):
         return None
 
 
+def off_limits_readable(workspace_root) -> bool:
+    """cr1#1830: whether the mail rules store, where onboarding's off-limits
+    answers live, can be told apart from an empty one. Missing is empty
+    (nobody was put off limits there): True. Present and unparseable, not
+    an object, or with `rules` that is not a list: False, because
+    `off_limits_senders` answers "nobody" for it, which is no answer. A
+    caller that names people treats False as held: it names nobody. Never
+    raises."""
+    try:
+        try:
+            import mail_rules
+        except ImportError:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import mail_rules
+        # the writers' own loader, which tells missing from broken
+        mail_rules._load_for_write(Path(str(workspace_root)))
+    except Exception:  # noqa: BLE001 - unreadable
+        return False
+    return True
+
+
 def off_limits_senders(workspace_root) -> set:
     """cr1#1181: the senders the owner put off limits, as bare lower-case
     addresses (`mail_rules.address_of`).
@@ -353,7 +374,8 @@ def off_limits_senders(workspace_root) -> set:
         mail from the inbox, and is not read here.
     Read on every append, so it is cached until entities.json or the rules
     file changes. Never raises: a store that cannot be read puts nobody off
-    limits."""
+    limits here, so anything that names people asks `off_limits_readable`
+    first and names nobody when it says False (cr1#1830)."""
     try:
         import mail_rules
     except ImportError:
@@ -848,7 +870,7 @@ def enforce_record_scope(workspace_root, *, provenance: Optional[dict] = None,
 
 
 __all__ = ["AccountScopeError", "enforce_scope", "enforce_record_scope",
-           "off_limits_senders", "off_limits_person_ids", "sender_off_limits",
+           "off_limits_readable", "off_limits_senders", "off_limits_person_ids", "sender_off_limits",
            "IMPORT_SKILLS", "import_walled_ids",
            "live_masks", "live_masks_from_events", "filter_masked_events",
            "ORIGIN_CONNECTOR", "ORIGIN_USER_STATED"]

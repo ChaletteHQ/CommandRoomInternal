@@ -272,13 +272,12 @@ def _rules_readable(root: Path) -> bool:
     put off limits there), present and unparseable is unreadable. The shared
     reader (`mail_rules.load`) answers empty for both, as an inbox read must;
     this asks its writers' own loader, which says which."""
-    import mail_rules
+    # cr1#1830: one answer for every reader, the gate's; it also counts a
+    # store whose rules are not a list as unreadable (the writers' loader
+    # reads that as an empty list, which put nobody off limits).
+    from account_scope_gate import off_limits_readable
 
-    try:
-        mail_rules._load_for_write(root)
-    except ValueError:
-        return False
-    return True
+    return off_limits_readable(root)
 
 
 def looks_done_items(workspace_root, now: _dt.datetime) -> Dict[str, Dict[str, Any]]:

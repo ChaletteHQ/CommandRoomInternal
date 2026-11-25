@@ -50,6 +50,9 @@ if str(_HERE) not in sys.path:
 #: Said on the page when the wall could not be read (fail closed).
 UNREADABLE_LINE = ("New mail is not listed here, because your account "
                    "settings could not be read.")
+#: cr1#1830: said when the off-limits list is there but cannot be read.
+OFF_LIMITS_UNREADABLE_LINE = ("Your off-limits list could not be read, so no new mail "
+                              "is listed here.")  # = inbox_helpers.OFF_LIMITS_UNREADABLE_LINE
 #: Said when every classified mailbox is walled, so none may be listed.
 WALLED_ONLY_LINE = ("New mail is not listed here, because none of your "
                     "mailboxes is set to be shown.")
@@ -129,6 +132,10 @@ def _off_limits(workspace_root) -> tuple:
     import account_scope_gate as gate
     from people_writer import get_person_emails
 
+    # cr1#1830: an off-limits list that cannot be read is no answer; the gate
+    # would say "nobody", so every wall built from this one holds instead.
+    if not gate.off_limits_readable(workspace_root):
+        raise ValueError("off-limits list unreadable")
     off = set(gate.off_limits_senders(workspace_root))
     addrs = {_plain(a) for a in off if a}
     names: set = set()
@@ -182,9 +189,13 @@ def wall(workspace_root) -> Dict[str, Any]:
         import connector_reads
         import inbox_helpers
 
+        import account_scope_gate as gate
+
         cwall = connector_reads.chat_wall(workspace_root)
         if not cwall.get("readable"):
             return _closed(UNREADABLE_LINE)
+        if not gate.off_limits_readable(workspace_root):
+            return _closed(OFF_LIMITS_UNREADABLE_LINE)
         plan, line = inbox_helpers.fetch_plan_and_line(str(workspace_root), None)
         accounts = cc.accounts(workspace_root)
         walled = {_plain(a.get("address")) for a in accounts if inbox_helpers._is_personal(a)}

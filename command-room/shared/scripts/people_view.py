@@ -375,12 +375,13 @@ def _added_lately(workspace_root, today) -> Dict[str, int]:
 
 
 def people(workspace_root, *, now_iso: Optional[str] = None,
-           hidden_ids: Optional[set] = None) -> Dict[str, Any]:
+           hidden_ids: Optional[set] = None, cap: Any = "default") -> Dict[str, Any]:
     """READ. `{generated_at, people: [...], starred: [ids], n_people}`: every
     person on file but the owner, the starred first, then anyone added in the
     last `NEW_DAYS` days (newest first), then most recently in touch first,
     each with their open items. Never writes; a missing entities.json answers
-    no one.
+    no one. `cap` is how many rows travel (`PEOPLE_CAP` by default); None lists everyone
+    (cr1#1789: Today's follow-ups rank the quietest, who sort last).
 
     cr1#1012 part 3d: the tab reads the person cards (`person_cards`) for who
     they are, where they work, how they are known and when they were last in
@@ -488,7 +489,7 @@ def people(workspace_root, *, now_iso: Optional[str] = None,
     out.sort(key=lambda r: (not r["starred"], r["id"] not in fresh, -fresh.get(r["id"], 0),
                             -(int(r["last_contact"].replace("-", "")) if r["last_contact"] else 0),
                             r["name"].lower()))
-    return {"generated_at": _iso(_now(now_iso)), "people": [lean_row(r) for r in out[:PEOPLE_CAP]], "n_people": len(out),
+    return {"generated_at": _iso(_now(now_iso)), "people": [lean_row(r) for r in (out if cap is None else out[:PEOPLE_CAP if cap == "default" else int(cap)])], "n_people": len(out),
             "starred": [s for s in stars if s in cards], "errors": errors,
             "counted_from_log": bool(cards_from_log or open_from_log),
             **({"not_shown": {"n": len(not_shown), "names": sorted(not_shown, key=str.lower)}} if hidden_ids is not None else {})}

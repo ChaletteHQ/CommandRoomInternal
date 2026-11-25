@@ -10,6 +10,7 @@
 - **The run's id** is the `run_id` that step 3 answers. Never this session's id, local or remote.
 - **The run's scope** is the `scope` that step 3 answers (`all` or `touched`). It is passed to step 4 as it came and never chosen here.
 - **The last whole rebuild** is the `full_at` that step 3 answers (a time, or empty when none is on record). It is passed to step 4 as it came, never typed from anywhere else.
+- **The senders and the check** are the `inbox_senders` (an object, often empty) and `start_check` that step 3 answers. Both are passed to step 4 exactly as they came, with `scope` and `full_at` beside them: the claim recomputes the check, and any value changed, added or left out makes the run rebuild everything.
 - **No time is typed.** No call below passes a time, and no write carries a time made by hand: each helper and command reads its own clock.
 - **No list of feeds is typed.** What the rebuild builds is decided in code from what the save kept; step 6 passes no list.
 - **Every answer passes through unchanged.** The documents go in exactly as read; `writes` and `batches` go to the page exactly as they came back; parts are saved whole. Never rebuild a claim, a plan, a result or a pin from the page's data.
@@ -24,9 +25,9 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 
 `found: false`: say "No Command Room Hub is set up for this folder; say `set up my hub` in a Command Room chat." and STOP. Load the page's database tool (`ArtifactData`; a listed deferred tool counts as present) and use the answer's `url` for every read and write. With no such tool, say "The Hub page could not be reached from this run." and STOP: the choices live on the page.
 
-## 2. The page's reads: five reads in one turn
+## 2. The page's reads: six reads in one turn
 
-Three into files, each with `out_dir` set to the same new folder in this session's own scratch, `<scratch>/page`: `list` on `status`; `query` on `choices` with `where: [["applied", "==", true]]` and `limit: 1000`; `list` on `feed`. Only the file names come back from those, which is all this run needs of them.
+Three into files, each with `out_dir` set to the same new folder in this session's own scratch, `<scratch>/page`: `list` on `status`; `query` on `choices` with `where: [["applied", "==", true]]` and `limit: 1000`; `list` on `feed`. A fourth into files with `out_dir` `<scratch>/page/waiting`: `query` on `choices` with `where: [["applied", "==", false]]` (cr1#1701: the start reads which messages the waiting presses name). Only the file names come back from those, which is all this run needs of them.
 
 Two as read, kept for step 4: `query` on `choices` with `where: [["applied", "==", false]]`; `query` on `choices` with `where: [["by_page", "==", true]]`.
 
@@ -59,7 +60,7 @@ Send its `batches[0]` as ONE `batch`, exactly as printed. Nothing here stops the
 ## 4. The claim
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"fired_via": "<scheduled or manual>", "full_at": "<step 3's full_at>", "page": [<the by_page documents as read>], "run_id": "<step 3's run_id>", "scope": "<step 3's scope>", "waiting": [<the applied == false documents as read>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_claim"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"fired_via": "<scheduled or manual>", "full_at": "<step 3's full_at>", "inbox_senders": <step 3's inbox_senders>, "page": [<the by_page documents as read>], "run_id": "<step 3's run_id>", "scope": "<step 3's scope>", "start_check": "<step 3's start_check>", "waiting": [<the applied == false documents as read>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_claim"}'
 ```
 
 `nothing: true`: nothing waits; go to step 6, skipping step 5. Otherwise send its `writes` as ONE `batch`. A batch refused because a document changed (another run claimed it, or the owner pressed Undo): step 2's two as-read queries again, then this call again, once.
@@ -84,15 +85,15 @@ When the answer carries `wall_again: true` (the save changed the mail rules, or 
 
 `next: detail` means a connector part is left, named by choice id: a confirmed send or draft (`connectors.inbox`) or a "Missed something?" search (`connectors.miss`). Only then read `cockpit-apply-detail.md` and do ITS STEP 1 AND ITS STEP 3 ONLY, with these three differences: the run's id there is step 3's `run_id` here; `status` in its `apply_repin` call is `null`; and its step 2 (the feeds) and its step 4 (`apply_finish`, the Apply light and the Apply receipt) are NEVER run from this file, because step 6 rebuilds the feeds and step 9 writes this run's receipt. Keep its `{<choice id>: <its result>}` for step 6. A step there that fails is "When a call says no" below, with that step's line.
 
-## 6. The rebuild: one writer call per part
+## 6. The rebuild: as few writer calls as time allows
 
-First the plate's part. `results` is step 5's `{<choice id>: <its result>}` from the connector part, or `null` when there was none:
+First the plate's call, which goes on to the later parts while there is time (cr1#1808). `results` is step 5's `{<choice id>: <its result>}` from the connector part, or `null` when there was none:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"results": <the connector part's results, or null>, "run_id": "<step 3's run_id>", "stage": "plate", "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_build"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"results": <the connector part's results, or null>, "run_id": "<step 3's run_id>", "stage": "all", "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_build"}'
 ```
 
-Its answer carries `token` and `next`. Then call the part its answer names as `next`, with that token, and the part THAT answer names, until the `record` part has answered. One call each, never two in one call, and never a part the answers did not name: on a run the page started after a press, a part with nothing to rebuild is skipped by `next`, and `record` always runs.
+When its answer is the `record` part's (`stage: "record"`), the rebuild is done: go to step 7. Otherwise its answer carries `token` and `next`: call the part it names as `next`, with that token, and the part THAT answer names, until the `record` part has answered. Every command here is the one printed in this file, never one written by hand. One call each, never two in one call, and never a part the answers did not name: on a run the page started after a press, a part with nothing to rebuild is skipped by `next`, and `record` always runs.
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"run_id": "<step 3's run_id>", "stage": "<the answer's next>", "token": "<the plate's token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_build"}'
