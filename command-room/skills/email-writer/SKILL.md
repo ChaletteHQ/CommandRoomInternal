@@ -400,7 +400,11 @@ This rule applies to all reply paths — `N send`, `N draft`, on-demand reply dr
 
 ```bash
 printf '%s' "$SUBJECT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context subject
+# a reply: also pass the subject you carried (the message replied to's), so its own text is not counted as yours
+printf '%s' "$SUBJECT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context subject --inbound "$INBOUND_SUBJECT"
 ```
+
+A "Re:" or "Fwd:" prefix alone exempts nothing: a bracketed fill-in after it (`Re: [date] review`) fails, so a reply passes `--inbound` with the subject you carried.
 
 It hard-fails on any dash used as punctuation (em dash, en dash, spaced hyphen — the BRAND_VOICE hard rule the body gate never applied to subjects: F-47 P2d and F-53 shipped em-dash subjects twice in one day), and on the banned phrases + shared vocabulary words. On exit 1, rewrite the subject (comma, colon, or reword — "Q2 deck — status" becomes "Q2 deck: status") and re-run until it exits 0. `Re: <inbound subject>` replies are exempt from the dash rule ONLY for the carried-through inbound portion — never edit the recipient's own subject text, and never let the gate force a thread-splitting rewrite of a reply subject; when the inbound subject itself contains a dash, keep it verbatim and skip the gate for that reply.
 

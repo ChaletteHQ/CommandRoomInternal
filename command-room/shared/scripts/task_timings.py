@@ -110,12 +110,35 @@ KEY_ARGS = {
     "cockpit_helpers:status_doc": "leg",
     "cockpit_helpers:log_run_receipt": "task_id",
     "maintenance_dispatcher:run_job": "job_id",
+    # cr1#1843: which input a stage landed (a word from the fire's closed
+    # set, never content), so a refused stage's row says which source it was
+    "eod_helpers:stage_fire_input": "kind",
 }
 #: cr1#1679: a Hub light's state ("running", "done", "error") is kept on its
 #: row, so only a light that STARTS a run can start a new window.
 STATE_ARGS = {"cockpit_helpers:status_doc": "state"}
+#: cr1#1843: the stage of a fire's staged inputs, whose row names its fire
+#: and kind as `<fire>:<kind>`, both from the closed sets below (review of
+#: fa78b9be0: an unchecked argument never reaches `by_job`). The suite proves
+#: they equal `eod_helpers.STAGE_DIRS` and `eod_helpers.FIRE_KINDS`.
+STAGE_STEP = "eod_helpers:stage_fire_input"
+STAGE_FIRES = frozenset({"end-of-day", "maintenance", "morning-brief", "run-maintenance"})
+STAGE_KINDS = frozenset({"sent_messages", "chat_messages", "inbound_messages", "calendar_events",
+                         "meeting_records", "decision_transcripts", "shadow_payloads",
+                         # cr1#1838: the capture pass stages the calendar reads (train D)
+                         "capture_calendar", "capture_calendar_personal"})
+
+
+def stage_key(args: Any) -> Optional[str]:
+    """The stage row's key, `<fire>:<kind>`, or None when either is not one
+    of the closed words (the stage's own default fire is the End of Day)."""
+    if not isinstance(args, dict):
+        return None
+    fire = str(args.get("fire") or "end-of-day")
+    kind = str(args.get("kind") or "")
+    return f"{fire}:{kind}" if fire in STAGE_FIRES and kind in STAGE_KINDS else None
 #: Steps whose key is a job, not a run: every key counts.
-_ANY_KEY = frozenset({"maintenance_dispatcher:run_job"})
+_ANY_KEY = frozenset({"maintenance_dispatcher:run_job", "eod_helpers:stage_fire_input"})
 
 _CH = "cockpit_helpers:"
 _WALL = "connector_reads:chat_wall"
@@ -252,7 +275,7 @@ TASKS: Dict[str, Dict[str, Any]] = {
                    _CH + "feed_mail_rules", _CH + "feed_people", _CH + "feed_brief", _CH + "feed_review",
                    "friday_wrap_helpers:week_sections", _CH + "feed_week", _CH + "feed_settings",
                    _CH + "feed_stillyours", _CH + "feed_followups", _CH + "feed_pfollow",
-                   _CH + "maintenance_status", _CH + "feed_urgent", _CH + "feed_focus", _CH + "feed_allopen")),
+                   _CH + "maintenance_status", _CH + "feed_urgent", _CH + "feed_focus", _CH + "feed_allopen", _CH + "feed_prepx")),
     ]),
     "morning-brief": {
         "opener": ("morning_brief_helpers:lateness", None), "lead": (),
@@ -373,6 +396,10 @@ DOOR_CODES = frozenset({
     "ledger_outside_data", "append_refused", "lock_timeout",
     "manifest_mismatch", "manifest_unreadable", "pointer_write_failed",
     "read_failed", "write_failed", "answered_no",
+    # cr1#1843: a staged input's four refusals (`eod_helpers.
+    # STAGE_REFUSAL_REASONS`) and the word its writer answers after one
+    # (`eod_helpers.STAGE_REFUSED`); the suite proves both lists are here.
+    "too_large", "no_content", "no_count", "count_mismatch", "not_landed", "stage_refused",
 })
 #: ...and the language's own exception type names (`KeyError`, `TimeoutError`),
 #: a closed set fixed by Python, never by what a helper answered.
@@ -410,7 +437,10 @@ def append_step(workspace_root, name: str, *, started: float, elapsed_ms: int, o
         if not ok and failure_code(code):
             row["code"] = failure_code(code)   # a listed word, or `other`
         key_arg = KEY_ARGS.get(str(name))
-        if key_arg and isinstance(args, dict) and args.get(key_arg) is not None:
+        if str(name) == STAGE_STEP:
+            if stage_key(args):
+                row["key"] = stage_key(args)   # cr1#1843: closed words only
+        elif key_arg and isinstance(args, dict) and args.get(key_arg) is not None:
             row["key"] = str(args.get(key_arg))[:80]
         state_arg = STATE_ARGS.get(str(name))
         if state_arg and isinstance(args, dict) and args.get(state_arg) is not None:

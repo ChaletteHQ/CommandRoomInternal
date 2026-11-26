@@ -13942,6 +13942,27 @@
     m.title_whole = false;
     return m;
   }
+  // cr1#1815: a built meeting stamped with the calendar it was read from
+  // (`ck`, a key) and the connector it was read through (`ckind`) is on this
+  // read only where both match what the read covers. No stamp: not shown on it.
+  function tlOnRead(m, cv) {
+    return !!(m && cv && typeof m.ck === "string" && m.ck && typeof m.ckind === "string" && m.ckind &&
+      typeof cv.kind === "string" && m.ckind === cv.kind && Array.isArray(cv.cks) && cv.cks.indexOf(m.ck) >= 0);
+  }
+  // The calendars one read covers: the one its arguments name, else the
+  // connector's main calendar, by its name and (review of cr1#1815) by the
+  // address of the ONE account this read is of, as its own events say it
+  // (the owner's own entry on them). Never every address the owner has: a
+  // second account's or an alias's main calendar is not this read. Two
+  // addresses in one read, or none: the name alone. Empty with no sound wall.
+  function tlReadCals(got) {
+    var a = CALLIVE && CALLIVE.args ? CALLIVE.args : {}, w = liveWall(), named = a.calendarId != null ? a.calendarId : a.calendar_id;
+    if (named != null) return lowerOf(named) ? ["cal:" + lowerOf(named)] : [];
+    if (!w || !w.ok) return [];
+    var mine = [];
+    (got || []).forEach(function (e) { (e && e.att || []).forEach(function (x) { var v = x && x.self === true ? lowerOf(x.addr) : ""; if (v && mine.indexOf(v) < 0) mine.push(v); }); });
+    return ["primary"].concat(mine.length === 1 ? mine : []).map(function (v) { return "cal:" + v; });
+  }
   function tlApply(feed, L, nowMs) {
     var from = calMs(L.from), to = calMs(L.to), byJk = {}, bySk = {}, used = [], auth = L.authority === true;
     var covers = L.covers || {}, days = feed.week && Array.isArray(feed.week.days) ? feed.week.days : [];
@@ -13997,8 +14018,10 @@
       // Review of cr1#1771 (should 2): a read of one calendar is not a read of
       // every calendar the build read. Missing is struck only where the read
       // shows it covers that meeting's calendar: another occurrence of the
-      // same series came back. A single event it does not hold is left as built.
-      if (covers.missing === false && !(m.sk && bySk[m.sk])) return m;
+      // same series came back, or (cr1#1815) the build stamped the meeting
+      // with a calendar this read covers, on the connector it read. A single
+      // event with no stamp, or one it does not cover, is left as built.
+      if (covers.missing === false && !(m.sk && bySk[m.sk]) && !tlOnRead(m, covers)) return m;
       c = tlCopy(m); c.live = "gone"; return c;
     }
     // The feed's own counts move only by what this layer changed: a row that
@@ -14219,14 +14242,15 @@
       });
     }
     return page("").then(function () {
-      var ids = [], vals = [];
+      var ids = [], vals = [], cals = tlReadCals(got);
       got.forEach(function (e) { ids.push(e.id); if (e.series) ids.push(e.series); e.att.forEach(function (a) { vals.push(a.addr, a.name); });
         if (typeof toWords === "function") vals = vals.concat(toWords(e.title));   // cr1#1845: no held flash before a clean title shows
       });
+      ids = ids.concat(cals);
       // Hash first: the keys the join reads, and everyone the wall is asked about.
       return evKeyAll(ids).then(function () { return hashAll(vals); }).then(function () {
         got.forEach(function (e) { e.jk = EVKEYS[e.id] || ""; e.sk = e.series ? EVKEYS[e.series] || "" : ""; });
-        T.layers.calendar = { name: "calendar", authority: true, ok: true, at: nowIso(), from: calIso(from), to: calIso(to), covers: { business: true, personal: false, missing: false }, rows: got };
+        T.layers.calendar = { name: "calendar", authority: true, ok: true, at: nowIso(), from: calIso(from), to: calIso(to), covers: { business: true, personal: false, missing: false, kind: lowerOf(CALLIVE.provider), cks: cals.map(function (v) { return EVKEYS[v] || ""; }).filter(Boolean) }, rows: got };
         T.state = "ok"; T.line = ""; T.why = ""; T.allow = false;
       });
     }).then(null, function (e) {

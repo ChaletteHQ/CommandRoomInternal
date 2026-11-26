@@ -105,7 +105,7 @@ Strip or rewrite these phrases before returning any output. These are LLM tells 
 
 - **No dashes as punctuation in email subject lines** — no em dash, no en dash, no spaced hyphen. Use a comma, a colon, or rewrite ("Q2 deck — status" → "Q2 deck: status"). Hyphenated compounds ("follow-up", "check-in") stay legal. F-47 P2d and F-53 shipped em-dash subjects twice in one dogfood day. Subjects have NO pile-up allowance — one dash fails. As of FB-16 the body gate enforces the same ban on body prose, so this is the BRAND_VOICE hard rule on every generated surface, not just the subject line the body gate did not scan.
 - The banned phrases and vocabulary words above apply to subjects too — a subject that leads with "Circling back" or "leverage" is still the voice.
-- Enforced by `voice_tell_detector.scan_subject` (`--context subject` on the CLI). Every surface that mints a subject — email-writer Phase 3.5, the commitments-chat chase drafts, follow-up-ritual — runs it before showing the draft.
+- Enforced by `voice_tell_detector.scan_subject` (`--context subject` on the CLI). Every surface that mints a subject — email-writer Phase 3.5, the commitments-chat chase drafts, follow-up-ritual — runs it before showing the draft. A reply passes `--inbound` with the subject it carried (email-writer, the chase drafts); follow-up-ritual writes a new subject, never a reply. A prefix alone exempts nothing.
 
 ### Vocabulary (one shared list, one owner)
 

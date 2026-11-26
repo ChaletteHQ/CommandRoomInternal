@@ -755,6 +755,15 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
             lines.append(OFF_LIMITS_UNREADABLE_ALARM)
     except Exception:  # noqa: BLE001 - a check that cannot run says nothing
         pass
+    # cr1#1788 (fix check, required item a): the Prep page's edits store is
+    # there but cannot be read; the page shows no edits without this.
+    try:
+        from hub_prep_edit import health_line as _prep_edits_line
+        _pl = _prep_edits_line(workspace_root)
+        if _pl:
+            lines.append(_pl)
+    except Exception:  # noqa: BLE001 - a check that cannot run says nothing
+        pass
     # cr1#1837: the list did not go. Review round 1 (must 1): read from the
     # newest Hub Update receipt that says "sent" or "not_sent"; only a newer
     # one that says "sent" clears it (an Update that ended early after its

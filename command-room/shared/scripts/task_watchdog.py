@@ -2554,16 +2554,35 @@ def operator_only_jobs(workspace_root) -> frozenset:
     """cr1#1489 (owner ruling 2026-11-22, "Yes, hide it"): the passes the
     health check never names to the owner right now: the chat capture while
     its newest record is a skip for want of a chat reader
-    (`session_sweep.reader_missing`). Nothing the seat can do fixes that, so
-    it reaches Chalette through the receipts instead. Any other state of the
+    (`session_sweep.reader_missing`), and (cr1#1844) any job the newest fire
+    named as not runnable on this seat whose own newest record is not an
+    error (a read that errored is said as before). Nothing the seat can do
+    fixes that,
+    so it reaches Chalette through the receipts instead. Any other state of the
     pass (a read that errored, a run that read) is said as before. Never
     raises: an unreadable answer hides nothing."""
+    hidden: set = set()
     try:
         from session_sweep import reader_missing
 
-        return frozenset({CHAT_CAPTURE_JOB}) if reader_missing(workspace_root) else frozenset()
+        if reader_missing(workspace_root):
+            hidden.add(CHAT_CAPTURE_JOB)
     except Exception:  # noqa: BLE001 - a health read never breaks a surface
-        return frozenset()
+        pass
+    try:
+        # cr1#1844: a job the newest fire named as not runnable on this seat
+        # (`maintenance_dispatcher.NOT_ON_SEAT_FIELD`) has no new receipt by
+        # design, so its age is never a line to the owner either, but only
+        # while its OWN newest record is not an error (review of 776c112c5:
+        # the #1489 ruling says an errored read as before)
+        from maintenance_dispatcher import (JOB_ERROR_STATUSES, job_newest_status,
+                                            jobs_not_on_this_seat)
+
+        hidden |= {job for job in jobs_not_on_this_seat(workspace_root)
+                   if job_newest_status(workspace_root, job) not in JOB_ERROR_STATUSES}
+    except Exception:  # noqa: BLE001
+        pass
+    return frozenset(hidden)
 
 
 def honestly_due_line(workspace_root) -> str:

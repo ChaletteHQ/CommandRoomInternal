@@ -26,7 +26,19 @@ SEVERITY MODEL (SPEC B2 D1, amended by FB-16 and SPEC DASHBAN)
           PLUS `dash_as_punctuation` (FB-16): em dash, en dash or spaced
           hyphen in body prose, one finding per OCCURRENCE, no pile-up
           allowance. This is a brand-voice hard rule, not a judgment call.
+          PLUS `bracketed_blank` (cr1#1803): a placeholder such as
+          "[date]", "[single-seat price]", "[___]", "{name}", "{{name}}" or
+          "<insert date>" in an email body or subject, in any script. A
+          draft never carries a blank; "[sic]", a numbered reference, a
+          label followed by its link and a line quoted with ">" (the mail
+          replied to) are not blanks, and neither is a subject carried over
+          from the message replied to ("Re: [EXTERNAL] ..."). Scoped to
+          email bodies and subjects only, so no brief, memo or document
+          verdict moves.
   warn  — structural tells (tri-colon, hedging stacks, bullets-in-email).
+          Ruling 135d: a `proposal` or `next_steps` email may use bullets and
+          labelled lines, so for those kinds neither the bullets rule nor the
+          labelled-line (tri-colon) rule warns; every other kind as before.
           These are judgment calls; the markdown itself hedges ("where prose
           fits"), so they advise, never block.
   pass  — clean.
@@ -228,6 +240,76 @@ _BULLET_MARKER_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 # and stay legal. Shared by the subject gate and the body gate.
 _DASH_PUNCT_RE = re.compile(r"—|–|\s-\s")
 
+# cr1#1803: a bracketed blank, the placeholder a model leaves where a fact
+# belongs ("[date]", "[single-seat price]", "[Name]", "[X]"). Review round 1
+# of #1813: also two side by side ("[Name][Company]"), one followed by words
+# in parentheses ("[Name] (from the call)"), a fill line in brackets
+# ("[___]", "[...]"), curly ("{name}", "{{name}}") and angle
+# ("<insert date>") placeholders, and a blank in any script. Not blanks: one
+# holding no letter ("[1]", "[ ]"), the editorial "[sic]", a label followed
+# by its link in parentheses ("[label](https://...)", "[label] (https://...)")
+# or after a colon ("[docs]: https://..."), an address or link in angle
+# brackets ("<sam@example.com>"), a few HTML tags, and a line quoted with ">"
+# under skip_quoted. `_BLANK_LETTER` is any letter; the page's generated
+# copy reads it as \p{L} (gen_hub_voice_checks.py).
+_BLANK_LETTER = "[^\\W\\d_]"
+_BLANK_LINK = r"(?:https?://|mailto:|www\.|/|#)"
+_BLANK_RE = re.compile(
+    r"\[(?!\s*sic\s*\])[^\[\]\n]*" + _BLANK_LETTER + r"[^\[\]\n]*\](?!\s*\(\s*" + _BLANK_LINK + r"|\s*:\s*" + _BLANK_LINK + r")"
+    r"|\[\s*(?:_{2,}|\.{3,}|\u2026)\s*\]"
+    r"|\{\{?\s*" + _BLANK_LETTER + r"[^{}\n]*\}\}?"
+    r"|<(?!/|(?:br|p|b|i|u|em|strong|div|span|a|li|ul|ol|hr|tr|td|th|table|tbody|html|body|head)\b)\s*"
+    + _BLANK_LETTER + r"[\w \-]{0,40}>",
+    re.IGNORECASE)
+#: Review round 1 of #1813 (must): a reply or forward prefix. What follows it
+#: is the subject replied to, which the draft did not write; the check takes
+#: the prefix off and, given the inbound subject, takes that out, and scans
+#: what is left (fix check of #1813: a blank after the prefix still fails).
+_REPLY_PREFIX_RE = re.compile(r"^\s*(?:(?:re|fwd?|aw|wg|sv|tr|antw|rif|vs)\s*(?:\[\d+\])?\s*:\s*)+", re.IGNORECASE)
+_BLANK_HINT = "fill in the bracketed blank or cut the line: a draft never carries a placeholder"
+
+# The structural rules' hints, named so the page's generated copy of this
+# check (scripts/dev/gen_hub_voice_checks.py, cr1#1812) reads the same words.
+_HINT_DASH = ("no dashes as punctuation — use a comma, a "
+              "colon, or rewrite (the “— Name” sign-off "
+              "is exempt)")
+_HINT_TRI_COLON = "rewrite the colon-chained clauses as prose where prose fits"
+_HINT_HEDGING = "commit or cut — stacked hedges read as evasive"
+_HINT_BULLETS = "the CEO would write this as prose — collapse the bullets"
+_HINT_SUBJECT_DASH = ("no dashes as punctuation in subject lines — "
+                      "use a comma, a colon, or rewrite")
+
+# Ruling 135d: the email kinds that may use bullets and labelled lines. The
+# kind is named by the caller; a kind not here (or none) is checked as before.
+LIST_ALLOWED_KINDS = frozenset({"proposal", "next_steps"})
+LIST_RULES = frozenset({"structural_bullets_in_email", "structural_tri_colon"})
+
+
+def _norm_kind(kind) -> str:
+    return str(kind or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _scan_blanks(text: str, *, skip_quoted: bool) -> List[dict]:
+    """cr1#1803: every bracketed blank, one finding each, at fail severity.
+    Review round 1 of #1813: only a line quoted with ">" (the mail replied
+    to) is skipped; a line the draft opened with a quote mark is its own."""
+    findings: List[dict] = []
+    for line_no, line in enumerate(str(text or "").split("\n"), start=1):
+        if skip_quoted and line.lstrip().startswith(">"):
+            continue
+        for m in _BLANK_RE.finditer(line):
+            findings.append(
+                {
+                    "rule": "bracketed_blank",
+                    "severity": "fail",
+                    "line_no": line_no,
+                    "line": line.strip(),
+                    "match": m.group(0),
+                    "hint": _BLANK_HINT,
+                }
+            )
+    return findings
+
 # A standalone sign-off line ("— Sam", "— Sam Sample", "— S.", "– Bo"): a
 # line that is ONLY a leading dash + a name of 1–3 capitalized tokens (a
 # sign-off hierarchy's longest form is a full first + last name).
@@ -365,9 +447,7 @@ def _scan_structural(
                             "line_no": start + offset,
                             "line": line.strip(),
                             "match": m.group(0),
-                            "hint": "no dashes as punctuation — use a comma, a "
-                                    "colon, or rewrite (the “— Name” sign-off "
-                                    "is exempt)",
+                            "hint": _HINT_DASH,
                         }
                     )
 
@@ -381,7 +461,7 @@ def _scan_structural(
                     "line_no": start,
                     "line": first_line.strip(),
                     "match": "tri-colon construction",
-                    "hint": "rewrite the colon-chained clauses as prose where prose fits",
+                    "hint": _HINT_TRI_COLON,
                 }
             )
 
@@ -395,7 +475,7 @@ def _scan_structural(
                         "line_no": start,
                         "line": sentence.strip()[:120],
                         "match": "hedging stack",
-                        "hint": "commit or cut — stacked hedges read as evasive",
+                        "hint": _HINT_HEDGING,
                     }
                 )
                 break
@@ -415,7 +495,7 @@ def _scan_structural(
                         "line_no": start,
                         "line": bullet_lines[0].strip(),
                         "match": f"{len(bullet_lines)} bullet lines in email body",
-                        "hint": "the CEO would write this as prose — collapse the bullets",
+                        "hint": _HINT_BULLETS,
                     }
                 )
     return findings
@@ -436,6 +516,7 @@ def scan_text(
     allow_phrases: Optional[Sequence[str]] = None,
     skip_quoted: bool = True,
     ban_dashes: bool = True,
+    kind: Optional[str] = None,
 ) -> Dict:
     """Scan `text` for voice tells.
 
@@ -453,6 +534,12 @@ def scan_text(
         whose calibrated voice keeps dashes. The "— Name" sign-off is always
         exempt; a demonstrably-used dashed phrase can also be fed through
         allow_phrases.
+      kind: the kind of email (ruling 135d). `proposal` and `next_steps` may
+        use bullets and labelled lines, so neither rule warns for them; any
+        other kind, or none, is checked as before.
+
+    With context="email" a bracketed blank fails (cr1#1803), whatever the
+    kind; other contexts are not scanned for blanks.
 
     Returns:
       {"verdict": "fail"|"warn"|"pass", "findings": [ {rule, severity,
@@ -462,10 +549,15 @@ def scan_text(
         text = ""
     allow_norm = _normalize_allow(allow_phrases)
     findings = _scan_phrases(text, allow_norm=allow_norm, skip_quoted=skip_quoted)
-    findings += _scan_structural(
+    structural = _scan_structural(
         text, context=context, skip_quoted=skip_quoted,
         allow_norm=allow_norm, ban_dashes=ban_dashes,
     )
+    if _norm_kind(kind) in LIST_ALLOWED_KINDS:
+        structural = [f for f in structural if f["rule"] not in LIST_RULES]
+    findings += structural
+    if context == "email":
+        findings += _scan_blanks(text, skip_quoted=skip_quoted)
     return {"verdict": _verdict(findings), "findings": findings}
 
 
@@ -473,6 +565,7 @@ def scan_subject(
     subject: str,
     *,
     allow_phrases: Optional[Sequence[str]] = None,
+    inbound: Optional[str] = None,
 ) -> Dict:
     """The subject-line gate (v4.6.1 S3; F-53 / F-47 P2d — em dashes in
     email subjects twice in one dogfood day; the body gate never saw
@@ -484,6 +577,15 @@ def scan_subject(
         allowance (unlike the body's warn-at->2 structural rule)
       - the universal banned phrases + shared vocabulary words (a subject
         that LEADS with "Circling back" or "leverage" is still the voice)
+      - a bracketed blank ("[date]"), cr1#1803, in what the draft wrote
+        only (review round 1 of #1813, fix check): a reply or forward prefix
+        is taken off and `inbound` (the subject of the message replied to,
+        its own prefixes off too) is taken out wherever it appears, and the
+        rest is scanned. So "Re: [EXTERNAL] Sample plan" passes when the
+        message replied to was "[EXTERNAL] Sample plan", and "Re: [date]
+        Sample plan" fails; with no `inbound`, all of it after the prefix is
+        the draft's own and is scanned. The inbound subject is taken out
+        once, directly after the prefix, spaces folded (`_drafted_subject`)
 
     Returns the same {"verdict", "findings"} shape as scan_text. Empty /
     missing subjects are the threading rule's problem (email-writer Phase
@@ -501,11 +603,29 @@ def scan_subject(
                 "line_no": 1,
                 "line": subject.strip(),
                 "match": m.group(0),
-                "hint": "no dashes as punctuation in subject lines — "
-                        "use a comma, a colon, or rewrite",
+                "hint": _HINT_SUBJECT_DASH,
             }
         )
+    findings += _scan_blanks(_drafted_subject(subject, inbound), skip_quoted=False)
     return {"verdict": _verdict(findings), "findings": findings}
+
+
+def _drafted_subject(subject: str, inbound: Optional[str] = None) -> str:
+    """What the draft wrote of a subject (review round 1 of #1813, its fix
+    checks): the reply or forward prefix taken off, then the inbound subject
+    (its own prefixes off too) taken out ONCE, directly after the prefix,
+    never from inside the rest (so a fill-in made of its words still fails).
+    Runs of spaces are one on both sides, and a subject cut short is matched
+    as the start of the inbound one (a page cuts both to 200 characters).
+    What is left is scanned."""
+    s = " ".join(_REPLY_PREFIX_RE.sub("", str(subject or ""), count=1).split())
+    carried = " ".join(_REPLY_PREFIX_RE.sub("", str(inbound or ""), count=1).split())
+    if carried:
+        if s[:len(carried)].casefold() == carried.casefold():
+            s = s[len(carried):]
+        elif carried[:len(s)].casefold() == s.casefold():
+            s = ""
+    return s
 
 
 def _cell_strings(value) -> List[str]:
@@ -605,12 +725,14 @@ def summarize_findings(findings: List[dict], *, limit: int = 10) -> str:
 __all__ = [
     "scan_text",
     "scan_subject",
+    "_drafted_subject",
     "check_sections",
     "summarize_findings",
     "VoiceTellError",
     "FAIL_BLOCKING_KINDS",
     "ALWAYS_BLOCKING_RULES",
     "FAIL_RULE_COUNT",
+    "LIST_ALLOWED_KINDS",
 ]
 
 
@@ -618,6 +740,8 @@ def _main(argv: List[str]) -> int:
     import sys
 
     context = "email"
+    kind = None
+    inbound = None
     paths: List[str] = []
     i = 0
     while i < len(argv):
@@ -626,13 +750,23 @@ def _main(argv: List[str]) -> int:
             i += 1
             if i < len(argv):
                 context = argv[i]
+        elif a == "--kind":
+            i += 1
+            if i < len(argv):
+                kind = argv[i]
+        elif a == "--inbound":
+            # fix check of #1813: the subject of the message replied to, for --context subject
+            i += 1
+            if i < len(argv):
+                inbound = argv[i]
         else:
             paths.append(a)
         i += 1
 
     if len(paths) != 1:
         print(
-            "usage: voice_tell_detector.py <file|-> [--context email|brief|subject]",
+            "usage: voice_tell_detector.py <file|-> [--context email|brief|subject] [--kind <email kind>]"
+            " [--inbound <subject replied to>]",
             file=sys.stderr,
         )
         return 2
@@ -650,9 +784,9 @@ def _main(argv: List[str]) -> int:
         text = p.read_text(encoding="utf-8", errors="replace")
 
     if context == "subject":
-        result = scan_subject(text.strip("\n"))
+        result = scan_subject(text.strip("\n"), inbound=inbound)
     else:
-        result = scan_text(text, context=context)
+        result = scan_text(text, context=context, kind=kind)
     verdict = result["verdict"]
     findings = result["findings"]
 

@@ -846,11 +846,39 @@ def _carried_lines(carried: Optional[List[Any]]) -> List[str]:
     return [x for x in out if x][:PARTS_LIST_CAP]
 
 
+#: cr1#1788 (Humble Inquiry): the words a yes-or-no question opens with. Such
+#: a question stays in the call guide with a flag (`ask_closed`).
+_CLOSED_OPENERS = frozenset(
+    "is are am was were do does did can could will would should shall have has had may might must "
+    "isn't aren't wasn't weren't don't doesn't didn't can't couldn't won't wouldn't shouldn't haven't hasn't".split())
+
+
+#: cr1#1788 review: a request put as a question ("Can you walk me through
+#: ...", "Could you give me an example ...", "Would you tell me more ...")
+#: opens with an auxiliary verb and asks for an explanation all the same.
+_REQUEST_RE = re.compile(
+    r"^(?:can|could|would|will|won't|wouldn't)\s+you\s+(?:please\s+|maybe\s+|perhaps\s+|kindly\s+)?"
+    r"(?:walk|talk|take|tell|explain|describe|share|give|show|help|say|expand|elaborate|outline|unpack|"
+    r"clarify|go|run|paint|break|sketch|summari[sz]e|lay|spell)\b")
+
+
+def is_closed_question(q: Any) -> bool:
+    """True for a yes-or-no question: it opens with an auxiliary verb, offers
+    no choice ("... or ...") and is not a request for an explanation ("Can
+    you walk me through ..."). Pure."""
+    t = _part_text(q).lower().lstrip("\"'([- ")
+    first = t.split(" ", 1)[0].rstrip(",:;") if t else ""
+    return first in _CLOSED_OPENERS and " or " not in t and not _REQUEST_RE.match(t)
+
+
 def prep_parts(*, verdict: str, decide_lines: List[str], questions: List[str], talking_points: List[str],
                owed_table: Optional[dict], changed_lines: List[str], carried: List[str]) -> Dict[str, Any]:
     """cr1#1632 slice 1: the brief's parts as lists (design E1's data shape):
     `{v, walk, decide[{q, opts}], ask[], cover[], you_owe[], they_owe[],
-    changed[], carried[]}`. Pure: no read, no write."""
+    changed[], carried[], ask_closed[]}`. Pure: no read, no write.
+    cr1#1788: a yes-or-no question (Humble Inquiry) stays in `ask`, where
+    the page reads it, and is also named in `ask_closed`, the flag the page
+    shows beside it; no question goes only to a key the page never reads."""
     walk = _part_text(verdict)
     if walk.lower().startswith("walk out with:"):
         walk = walk[len("walk out with:"):].strip()
@@ -862,9 +890,11 @@ def prep_parts(*, verdict: str, decide_lines: List[str], questions: List[str], t
             if _part_text(row[1]):
                 them.append(_part_text(row[1]))
     cap = PARTS_LIST_CAP
+    asks = [_part_text(x) for x in questions if _part_text(x)][:cap]
     return {"v": PARTS_VERSION, "walk": walk,
             "decide": [decide_options(x) for x in decide_lines if _part_text(x)][:cap],
-            "ask": [_part_text(x) for x in questions if _part_text(x)][:cap],
+            "ask": asks,
+            "ask_closed": [x for x in asks if is_closed_question(x)],
             "cover": [_part_text(x) for x in talking_points if _part_text(x)][:cap],
             "you_owe": you[:cap], "they_owe": them[:cap],
             "changed": [_part_text(x) for x in changed_lines if _part_text(x)][:cap],

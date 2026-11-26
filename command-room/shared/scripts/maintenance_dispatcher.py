@@ -1888,6 +1888,113 @@ def _plan_root_check(workspace_root, *, machine: Optional[str] = None) -> dict:
             "reason": verdict.get("reason")}
 
 
+#: cr1#1844 (coordinator decision on the issue, option A): the jobs a cloud
+#: fire can never run, whatever the app ships. The session sweep reads the
+#: Claude app's own past chats through a session-transcript tool that exists
+#: only inside the desktop app, if at all (cr1#1489); a scheduled fire on a
+#: merged seat runs in the cloud, and its device shell reaches the computer's
+#: shell, not the app's chats. On such a fire the job is not counted as due:
+#: no writer call and no skip receipt, so its cursor stays where it is.
+CLOUD_UNRUNNABLE_JOBS = frozenset({"session-sweep"})
+#: The plan's key and the `maintenance_run` field naming them, the receipt's
+#: as `[{job, last_read}]` (the day of the job's last read that happened, or
+#: None). Chalette's record only: no client surface reads it (the owner
+#: ruling of 2026-11-22 on cr1#1489 stands), and the health check never
+#: names a job listed here (`task_watchdog.operator_only_jobs`).
+NOT_ON_SEAT_FIELD = "not_on_this_seat"
+
+
+def _cloud_fire_now(fired_via=None) -> bool:
+    """cr1#1844: this plan or receipt is a cloud fire's: the session sweep's
+    own rule (`session_sweep._cloud_fire`: a merged seat and not a person's
+    typed run; `manual` is a typed run). An unreadable answer is not one, so
+    a seat that cannot be told keeps today's behaviour."""
+    try:
+        from session_sweep import _cloud_fire
+
+        return bool(_cloud_fire(fired_via=fired_via))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _last_read_day(workspace_root, job_id: str) -> Optional[str]:
+    """The day of `job_id`'s last read that happened (the session sweep's
+    receipts), or None. Never raises."""
+    if job_id != "session-sweep":
+        return None
+    try:
+        import session_sweep as _ss
+
+        days = [when for when, data in _ss._sweep_receipts(workspace_root, _ss.RECEIPT_SWEEP)
+                if _ss._read_happened(data)]
+        return max(days).date().isoformat() if days else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+#: cr1#1844 (review of 776c112c5): a job's own record that says its read
+#: errored. The #1489 ruling hides the chat capture only while it cannot read;
+#: an error is still said to the owner, whatever the newest fire named.
+JOB_ERROR_STATUSES = frozenset({"blocked", "failed", "error"})
+
+
+def job_newest_status(workspace_root, job_id: str) -> Optional[str]:
+    """The status of `job_id`'s own newest receipt, or None with none.
+    Never raises: unreadable is None."""
+    try:
+        from receipts import iter_receipts
+
+        newest = None
+        for r in iter_receipts(workspace_root, task_ids=[job_id]):
+            if r.get("dt") is None:
+                continue
+            if newest is None or r["dt"] >= newest["dt"]:
+                newest = r
+        if newest is None:
+            return None
+        data = (newest.get("raw") or {}).get("data") or {}
+        return str(data.get("status") or newest.get("status") or "").strip().lower() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _not_on_seat_entry(workspace_root, job_id: str) -> dict:
+    """`{job, last_read, days_since_read}`: the day of the job's last read
+    that happened and how many whole days ago that is, both null with none."""
+    day = _last_read_day(workspace_root, job_id)
+    days = None
+    if day:
+        try:
+            days = (_dt.date.today() - _dt.date.fromisoformat(day)).days
+        except ValueError:
+            days = None
+    return {"job": job_id, "last_read": day, "days_since_read": days}
+
+
+def jobs_not_on_this_seat(workspace_root) -> frozenset:
+    """READ ONLY (cr1#1844): the jobs the newest `maintenance_run` named as
+    not runnable on this seat, for the health check. A fire that stood down
+    behind another ran nothing and is read past. Never raises: unreadable is
+    the empty set."""
+    try:
+        from receipts import iter_receipts
+
+        newest = None
+        for r in iter_receipts(workspace_root, task_ids=[MAINTENANCE_TASK_ID]):
+            if r.get("type") != RECEIPT_EVENT_TYPE or _stood_down(r) or r.get("dt") is None:
+                continue
+            if newest is None or r["dt"] >= newest["dt"]:
+                newest = r
+        if newest is None:
+            return frozenset()
+        data = (newest.get("raw") or {}).get("data") or {}
+        rows = data.get(NOT_ON_SEAT_FIELD)
+        return frozenset(str(x.get("job")) for x in rows if isinstance(x, dict) and x.get("job")) \
+            if isinstance(rows, list) else frozenset()
+    except Exception:  # noqa: BLE001
+        return frozenset()
+
+
 def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None,
                   *, machine: Optional[str] = None,
                   fired_via: Optional[str] = None,
@@ -2191,10 +2298,23 @@ def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None,
         due = kept
         if refused_container:
             refused_line = CONTAINER_REFUSAL_LINE
+    # cr1#1844: a job a cloud fire can never run is not owed by this fire.
+    # It is named on the plan (and on the run's receipt), never counted due,
+    # and its writer is not called, so its cursor holds for a seat that can.
+    not_on_seat: list[str] = []
+    if _cloud_fire_now(fired_via):
+        kept = []
+        for d in due:
+            if d["job_id"] in CLOUD_UNRUNNABLE_JOBS:
+                not_on_seat.append(d["job_id"])
+            else:
+                kept.append(d)
+        due = kept
     return {
         "now": now.isoformat(),
         "fire_id": fire_id,
         "due": due,
+        NOT_ON_SEAT_FIELD: not_on_seat,
         "skipped_disabled": skipped_disabled,
         "root_repair": root_repair,
         "min_gap": min_gap,
@@ -4181,6 +4301,39 @@ def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
         "phase and run the receipt line below with `n_meetings` 0, "
         "`connectors_read` [] and `fetch_blocked` saying why in plain words "
         "(the receipt lands blocked and the same window is read next time). "
+        # cr1#1838: the pass reads the calendar for its own window, so the
+        # write-ups are tied to their calendar events in code, not by judgment
+        "CALENDAR (cr1#1838): read the calendar for this page's `start` to "
+        "`end`, two hours either side, from the calendar connector and, when "
+        "the seat has one, the personal calendar. STAGE each read as it came "
+        "back, as its own JSON list, one object per event, each with `id`, "
+        "`title`, `start` and `end` (each with its zone, as the read gave "
+        "it) and `attendees` (their addresses); anything else an object "
+        "carries is dropped in code, and which read an event came from is "
+        "its business or personal mark, set in code. Write each list to a "
+        "file in this session's own scratch with your own file-writing tool, "
+        "build each stage's file from it with `{ printf '{\"content_base64\": "
+        "\"'; base64 < <the list file> | tr -d '\\n'; printf '\"}'; } > <your "
+        "scratch>/<the stage file>` (never a python body), and stage the "
+        "calendar connector's read with `n_returned` how many events it "
+        "returned (0 when it returned none):\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"fire": "' + fire + '", "kind": "capture_calendar", '
+                  '"n_returned": <how many events the calendar connector returned>, '
+                  '"workspace_root": "<WS>"}, "args_file": "<your scratch>/'
+                  'cr_capture_calendar.json", "name": "' + MAINT_STAGE_WRITER + '"}') +
+        "      then, when the personal calendar was read, its read the same way "
+        "(never an event of one read in the other's list):\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"fire": "' + fire + '", "kind": "capture_calendar_personal", '
+                  '"n_returned": <how many events the personal calendar returned>, '
+                  '"workspace_root": "<WS>"}, "args_file": "<your scratch>/'
+                  'cr_capture_calendar_personal.json", "name": "' + MAINT_STAGE_WRITER + '"}') +
+        "      The first stage's `rel` is this pass's `calendar_rel`, passed to "
+        "the two row builders (Phase 4 steps 8 and 9); the personal read is "
+        "found beside it in code. No calendar connector, or a calendar "
+        "connector read that failed: stage nothing and pass no "
+        "`calendar_rel`; the row builders then work as before. "
         "CONNECTOR and WRITES: run skills/enable-command-room-schedules/"
         "references/orchestrator-past-meetings.md Phases 3 through 4.8 "
         "exactly as that file's merged-seat lines spell them - every line "
@@ -6062,8 +6215,91 @@ def _standing_blocked(workspace_root, listed) -> set:
     return out
 
 
+#: cr1#1843: the jobs whose input a refused stage stands for, by the kind it
+#: stages. A refused stage leaves its job due with no receipt, and without
+#: this the owner read "not confirmed as read" for a connection that worked.
+STAGE_KIND_JOBS = {"chat_messages": "reconcile-chat", "sent_messages": "reconcile-sent",
+                   "inbound_messages": "inbound-mail"}
+#: The receipt field naming them, omitted when none refused.
+STAGES_REFUSED_FIELD = "stages_refused"
+#: The plain words for each of the stage's four refusals.
+STAGE_REFUSAL_WORDS = {
+    "too_large": "the messages were more than one pass can read",
+    "no_content": "no messages reached it",
+    "no_count": "the number of messages read was not given",
+    "count_mismatch": "the messages did not match the number read",
+    "not_landed": "the messages could not be read",
+}
+
+
+def _stages_refused(workspace_root, start: Optional[_dt.datetime], fire: str = MAINT_FIRE) -> list:
+    """cr1#1843: `[{job, kind, reason}]`, one per kind, for each input whose
+    stage refused on THIS fire, read from the door's own step rows: the
+    stage's row is keyed `<fire>:<kind>` and its word is the row's code
+    (measured by code, never handed in). Only rows of this fire's own folder
+    (`fire`: the scheduled fire's, or a typed run's `TYPED_FIRE`) and since
+    its start count (review of fa78b9be0: another run's landed stage never
+    hides this fire's refusal). With no start (a typed run's receipt), the
+    run's own start is its newest opening step in the step log, bounded by
+    `eod_helpers.STALE_STAGE_MINUTES`; with none, nothing is named. Never
+    raises."""
+    try:
+        import time as _time
+
+        import task_timings
+        from eod_helpers import STAGE_MARKER_WORDS, STALE_STAGE_MINUTES
+
+        steps = task_timings.read_steps(workspace_root)
+        if start is not None:
+            floor = start.timestamp()
+        else:
+            # review of 8cfc04142 (SHOULD 1): a typed run's floor is its OWN
+            # start, the newest opening step of a Maintenance run in the
+            # step log, bounded by STALE_STAGE_MINUTES; never another run's
+            # receipt, which a scheduled fire may land mid-run
+            opener = task_timings.TASKS[MAINTENANCE_TASK_ID]["opener"][0]
+            now_s = _time.time()
+            starts = [task_timings._epoch(r.get("at")) for r in steps if r.get("name") == opener]
+            starts = [x for x in starts if x is not None and x <= now_s]
+            if not starts:
+                return []
+            floor = max(max(starts), now_s - STALE_STAGE_MINUTES * 60)
+        newest: dict = {}
+        for r in steps:
+            if r.get("name") != task_timings.STAGE_STEP:
+                continue
+            at = task_timings._epoch(r.get("at"))
+            r_fire, _sep, kind = str(r.get("key") or "").partition(":")
+            if at is None or at < floor or r_fire != fire or kind not in STAGE_KIND_JOBS:
+                continue
+            newest[kind] = r  # oldest first: the last stage of a kind stands
+        return [{"job": STAGE_KIND_JOBS[kind], "kind": kind, "reason": r.get("code")}
+                for kind, r in sorted(newest.items())
+                if r.get("ok") is False and r.get("code") in STAGE_MARKER_WORDS]
+    except Exception:  # noqa: BLE001 - a receipt never fails over this read
+        return []
+
+
+def stages_refused_line(refused) -> str:
+    """The owner's sentence for the inputs a stage refused (cr1#1843), "" for
+    none. It says the step refused what it was given, and why, never that
+    the connection was not read: the read may well have worked."""
+    try:
+        from schedule_config import task_display_name
+    except Exception:  # noqa: BLE001
+        def task_display_name(job):  # type: ignore[no-redef]
+            return job
+    out = []
+    for r in refused or []:
+        why = STAGE_REFUSAL_WORDS.get(r.get("reason"), STAGE_REFUSAL_WORDS["no_content"])
+        out.append(f"{task_display_name(r.get('job'))} refused the messages it was handed "
+                   f"because {why}, so it was not run. It stays due for the next run.")
+    return " ".join(out)
+
+
 def _connector_fields(workspace_root, connectors_unreachable, env, *,
-                      listed=(), done_ids=(), own: Optional[dict] = None) -> dict:
+                      listed=(), done_ids=(), own: Optional[dict] = None,
+                      refused_jobs=()) -> dict:
     """cr1#667: `{connectors_unreachable, connector_scope}` for the receipt.
 
     cr1#743: the field is the caller's list, the fire's own (`_fire_unread`)
@@ -6084,6 +6320,14 @@ def _connector_fields(workspace_root, connectors_unreachable, env, *,
         from connector_reads import (connector_scope, job_connectors, unread_line,
                                      unreachable_declared)
         said, unsure = _fire_unread(workspace_root, listed, done_ids, own)
+        if refused_jobs:
+            # cr1#1843: a job whose stage refused its input is said by its own
+            # sentence, so its connection is not "not confirmed as read",
+            # unless another job left unread on this fire reads it too
+            others = {c for job in listed if job not in set(refused_jobs) and job not in set(done_ids)
+                      for c in job_connectors(workspace_root, job)}
+            unsure -= {c for job in refused_jobs
+                       for c in job_connectors(workspace_root, job)} - others
         standing = _standing_blocked(workspace_root, listed)
         said |= standing
         names = set(handed) | set(unreachable_declared(workspace_root, env=env))
@@ -6604,8 +6848,20 @@ def maintenance_receipt(
     }
     if skipped_min_gap and _stands_behind_marker(workspace_root, fired_at_slot):
         extra_data["in_flight"] = True  # cr1#772, see `_stood_down`
+    refused = [r for r in _stages_refused(workspace_root, start,
+                                          TYPED_FIRE if via == "manual" else MAINT_FIRE)
+               if r["job"] in set(listed) and r["job"] not in set(done_ids)]
     extra_data.update(_connector_fields(workspace_root, connectors_unreachable, env,
-                                        listed=listed, done_ids=done_ids, own=own))
+                                        listed=listed, done_ids=done_ids, own=own,
+                                        refused_jobs=[r["job"] for r in refused]))
+    if _cloud_fire_now(via):
+        # cr1#1844: named once on the run's own receipt, with the day of the
+        # job's last read; Chalette's record, never a line to the owner
+        # (review of 776c112c5, SHOULD 2: how old the last read is, in days)
+        extra_data[NOT_ON_SEAT_FIELD] = [
+            _not_on_seat_entry(workspace_root, j)
+            for j in sorted(CLOUD_UNRUNNABLE_JOBS)
+            if j in MAINTENANCE_JOBS and j not in set(listed)]
     gap_unread = _fire_gap_unread(workspace_root, own)
     if gap_unread:
         extra_data[GAP_UNREAD_FIELD] = gap_unread
@@ -6619,7 +6875,15 @@ def maintenance_receipt(
         extra_data[LEFT_UNREAD_FIELD] = left_unread
         extra_data["summary"] = " ".join(
             x for x in (extra_data.get("summary"),
-                        left_unread_line(left_unread)) if x)
+                        left_unread_line([j for j in left_unread
+                                          if j not in {r["job"] for r in refused}])) if x)
+    if refused:
+        # cr1#1843: the inputs a stage refused, named with the stage's own
+        # word, and the owner's line says the step refused them (the job is
+        # still left due, so the run stays partial as before)
+        extra_data[STAGES_REFUSED_FIELD] = refused
+        extra_data["summary"] = " ".join(
+            x for x in (extra_data.get("summary"), stages_refused_line(refused)) if x)
     silent = maintenance_silent_sources(workspace_root)
     if silent:
         # cr1#1007: a source that usually brings items in has read nothing on

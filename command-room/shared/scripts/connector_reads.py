@@ -60,7 +60,7 @@ JOB_READS: Dict[str, tuple] = {
     "reconcile-sent": ("mail",),
     "reconcile-chat": ("chat",),
     "calendar-close": ("calendar",),
-    "meeting-capture": ("meetings",),
+    "meeting-capture": ("meetings", "calendar"),  # cr1#1838: the capture pass reads the calendar (capture_calendar, capture_calendar_personal)
     "inbound-mail": ("mail",),  # cr1#664: opens and closes from inbound mail
     "tasks-capture": ("tasks",),
     "tasks-close": ("tasks",),

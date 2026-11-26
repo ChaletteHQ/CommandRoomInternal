@@ -951,7 +951,7 @@ Sub-items render as:
 **Pre-build resolution rules (your job, BEFORE calling renderer):**
 - Resolve every `person_NNN` / `org_NNN` to canonical name in name + body_lines + context_tag — and the name is the RESOLVED record's spelling, never a transcript/ASR spelling (F-50 P2b; `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names)
 - Subject fallback per Rule 12 — never ship blank subjects
-- Every OUTBOUND draft subject passes the subject voice gate (v4.6.1 S3): `printf '%s' "$SUBJECT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context subject` — no dashes as punctuation, no banned phrases, no vocabulary words (F-47 P2d's em-dash subject shipped from THIS surface). The inbound `original_thread.subject` stays verbatim — never rewrite the sender's own subject.
+- Every OUTBOUND draft subject passes the subject voice gate (v4.6.1 S3): `printf '%s' "$SUBJECT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context subject`, and a reply in a thread adds `--inbound "<original_thread.subject>"` (the subject you carried, so a tag in it is not counted as yours) — no dashes as punctuation, no banned phrases, no vocabulary words (F-47 P2d's em-dash subject shipped from THIS surface). The inbound `original_thread.subject` stays verbatim — never rewrite the sender's own subject.
 - Source thread → `original_thread` field (v2.14.36+ MANDATORY when `source_ref` exists). Mirror the inbox-triage pattern. Drop the legacy inline `("Originally", ...)` metadata key — the renderer no longer paints it.
 - Grouping applies only when one owner owes multiple things (Phase 4) — never invent groups across owners
 

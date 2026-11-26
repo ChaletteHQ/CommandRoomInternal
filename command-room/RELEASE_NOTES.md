@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.12.2 (2026-11-26)
+
+A draft with a blank in square brackets, in its body or its subject, no longer passes the voice check, and an off-limits person's last name on its own is now held. Each meeting's write-up is tied to its own calendar event, and live Today can mark a single meeting gone from your calendar. Maintenance says why a step was refused and no longer lists the session sweep as skipped on every cloud run. After updating, say "update my hub" once and reload the Hub tab.
+
 ## v6.12.1 (2026-11-25)
 
 Today now opens with a header: the date and time, a greeting from your AI, and a box that opens a chat with your question typed in. The calendar lists today's meetings with a Now line, each with one status line and at most one button. To do opens on Focus, the items you are working on, with All open and search one press away. A meeting whose title names someone off limits now offers nothing anywhere on the Hub. After updating, say "update my hub" once and reload the Hub tab.

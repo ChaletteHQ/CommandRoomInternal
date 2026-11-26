@@ -434,6 +434,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_settings",  # cr1#781 - the Settings tab: what was learned and every setting, read only
     "cockpit_helpers:feed_followups",  # cr1#1745 - the follow-ups waiting on the wrap-up page, read only
     "cockpit_helpers:feed_urgent",  # cr1#1786 - Urgent, re-ranked from the inbox part's store, read only
+    "cockpit_helpers:feed_prepx",  # cr1#1788 - the Prep page's edits, read only
     "followup_draft:feed_followups",  # cr1#1745 - the same, with the wall checked as it stands
     "cockpit_helpers:feed_focus",  # cr1#1785 - Focus, the list the owner picks, read only
     "cockpit_helpers:feed_allopen",  # cr1#1785 - every open item, lean, for All open's search, read only
@@ -1677,8 +1678,8 @@ def _fill_placeholder(value: Any, anchored: str, depth: int = 0,
                 return anchored + "/" + text[len(WS_PLACEHOLDER) + 1:]
         return value
     if isinstance(value, dict):
-        return {k: (v if isinstance(k, str)
-                    and k.lower().endswith(CONTENT_KEY_SUFFIXES)
+        return {k: (v if (isinstance(k, str)
+                          and k.lower().endswith(CONTENT_KEY_SUFFIXES)) or _content_text(k, v)
                     else _fill_placeholder(v, anchored, depth + 1, k, left))
                 for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -2163,6 +2164,21 @@ def _read_args_file(args_file: Any) -> Tuple[Any, Optional[str]]:
 #: whole names match only themselves. The key itself is still walked.
 CONTENT_KEY_SUFFIXES = ("_base64", "confirm_reply", "verdict_reply")
 
+#: cr1#1788 (fix check, MUST 1; second check, SHOULD 1): keys whose STRING
+#: value is words, never a path, matched EXACTLY (no suffix, no case fold).
+#: `invite_description` is a calendar event's own invite text, which the Today
+#: feed screens and never opens: a "/ Weekly sync" or "// Agenda" invite was
+#: fenced as a path and refused the whole prep run. Only a string is skipped,
+#: and only the path shape: the computer-link refusal (cr1#1058) still reads
+#: it, and any other value under the key (a list, an object) is walked as
+#: before. `description`, `title` and every other key are fenced as before.
+CONTENT_TEXT_KEYS = frozenset({"invite_description"})
+
+
+def _content_text(key: Any, value: Any) -> bool:
+    """True for a value the path fence reads as words (`CONTENT_TEXT_KEYS`)."""
+    return isinstance(key, str) and key in CONTENT_TEXT_KEYS and isinstance(value, str)
+
 #: cr1#931: the read helpers that take the scheduler's listing as DATA, and
 #: the argument that carries it. A listing record's `folders` (or the
 #: listing's own `derived_state.folders`) names the folder the task runs in
@@ -2326,6 +2342,13 @@ def fence_helper_args(vm_path: Path, args: Any) -> Optional[Tuple[str, str]]:
             if reason is not None:
                 return (item, reason)
         elif isinstance(item, dict):
+            # cr1#1788: an invite's words are never a path, but a computer
+            # link in them is still refused (cr1#1058); the walk then reads
+            # them as empty words
+            for k, v in item.items():
+                if _content_text(k, v) and _carries_computer_link(v):
+                    return (v, R_REFUSED_COMPUTER_LINK)
+            item = {k: ("" if _content_text(k, v) else v) for k, v in item.items()}
             stack.extend(item.keys())
             # A content key's value is a document's bytes (base64), never a
             # path (DOCS1 fix round 3, review N-19); every other value walks.

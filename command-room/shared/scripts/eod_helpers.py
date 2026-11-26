@@ -1211,9 +1211,22 @@ CHAT_KEEP_FIELDS = ("chat_or_channel_id", "message_id", "ts", "user_id",
                     "channel_name", "chat_name")
 
 #: One kept-field list per raw input, by staged kind.
+#: cr1#1838: what ONE calendar event of the capture pass's own reads keeps,
+#: for `meeting_binding` (which occurrence a write-up is): its id, title,
+#: start and end, and who was invited. The calendar connector's read is
+#: staged as `capture_calendar` and the personal calendar's as
+#: `capture_calendar_personal`; which of the two an event was staged in is
+#: its business or personal mark, set in code (`meeting_binding.READ_MARKS`),
+#: so a mark the run wrote on an event is cut here with everything else.
+CAPTURE_CALENDAR_KEEP_FIELDS = ("id", "title", "start", "end", "attendees")
+#: The two staged kinds of the capture pass's calendar reads.
+CAPTURE_CALENDAR_KINDS = ("capture_calendar", "capture_calendar_personal")
+
 KEEP_FIELDS = {"sent_messages": SENT_KEEP_FIELDS,
                "chat_messages": CHAT_KEEP_FIELDS,
-               "calendar_events": CALENDAR_KEEP_FIELDS}
+               "calendar_events": CALENDAR_KEEP_FIELDS,
+               "capture_calendar": CAPTURE_CALENDAR_KEEP_FIELDS,
+               "capture_calendar_personal": CAPTURE_CALENDAR_KEEP_FIELDS}
 
 #: EODHARD3 MUST 2: the most one staged input may hold, in decoded bytes.
 #: The bytes cross in the caller's `args_file`, which no command line
@@ -1243,7 +1256,9 @@ STAGE_UNREAD_LINE = ("End of Day stopped because today's mail, chat or "
 #: keep after the cut for the batch to count as read.
 IDENTITY_FIELDS = {"sent_messages": "message_id",
                    "chat_messages": "message_id",
-                   "calendar_events": "start"}
+                   "calendar_events": "start",
+                   "capture_calendar": "id",
+                   "capture_calendar_personal": "id"}
 
 
 #: WAVE 2 MAINTHARD2 MUST 1 (D-W2-3, EODHARD3 N-8): the fires that stage,
@@ -1276,7 +1291,7 @@ STALE_STAGE_MINUTES = 90
 #: same kinds.
 MAINT_FIRE_KINDS = ("sent_messages", "chat_messages", "inbound_messages",
                     "meeting_records", "decision_transcripts",
-                    "shadow_payloads")
+                    "shadow_payloads", "capture_calendar", "capture_calendar_personal")
 
 #: The kinds each fire stages, and the only kinds `stage_fire_input` lands
 #: in that fire's folder: the End of Day every kind; the maintenance fire
@@ -1348,6 +1363,122 @@ def _unread(reason: str, fire: str = "end-of-day") -> Dict[str, Any]:
             "line": STAGE_LINES[fire]["unread"]}
 
 
+#: cr1#1843: the four words a refused stage answers in `error`, and the only
+#: ones its marker keeps beside `not_landed` (`task_timings.DOOR_CODES`
+#: carries them all, so the door's step row keeps the word).
+STAGE_REFUSAL_REASONS = ("too_large", "no_content", "no_count", "count_mismatch")
+#: Review of fa78b9be0 (SHOULD 1): the word a stage writes BEFORE it parses
+#: anything, so a stage that raises, or a refusal whose own word could not be
+#: written, still leaves its writer refused. A stage that lands lifts it.
+STAGE_NOT_LANDED = "not_landed"
+STAGE_MARKER_WORDS = STAGE_REFUSAL_REASONS + (STAGE_NOT_LANDED,)
+#: The word a staged writer answers when its kind's stage refused this fire.
+STAGE_REFUSED = "stage_refused"
+#: The marker a stage keeps beside the batch, named by kind:
+#: `<kind>.refused.json`, holding `{"reason": <a marker word>, "at": <UTC ISO,
+#: when it was written>}` and nothing else, or nothing at all once lifted. It
+#: is NEVER deleted to lift it (a mount that refuses deletes would keep it):
+#: a stage that lands empties it, the fire's clear removes or empties it.
+REFUSED_SUFFIX = ".refused.json"
+
+
+def _refused_path(workspace_root: str, fire: str, kind: str) -> Path:
+    return Path(workspace_root) / _stage_dir(fire) / f"{kind}{REFUSED_SUFFIX}"
+
+
+def _write_marker(workspace_root: str, fire: str, kind: str, reason: Optional[str]) -> bool:
+    """cr1#1843: write the kind's marker (`reason` one of the marker words,
+    stamped with the time it was written) or lift it (`None`: the file is
+    emptied, never deleted). Only in the fire's own folder inside the
+    workspace. Never raises; answers whether it landed."""
+    try:
+        from atomic_write import atomic_write_text
+        import json as _json
+
+        if reason is not None and reason not in STAGE_MARKER_WORDS:
+            return False
+        target = _refused_path(workspace_root, fire, kind)
+        if not _inside_workspace(workspace_root, target.parent) or not _own_folder(workspace_root, fire):
+            return False
+        if reason is None and not target.is_file():
+            return True  # nothing to lift
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not _own_folder(workspace_root, fire):
+            return False
+        text = "" if reason is None else _json.dumps(
+            {"reason": reason, "at": _dt.datetime.now(_dt.timezone.utc).isoformat()})
+        atomic_write_text(target, text)
+        return True
+    except Exception:  # noqa: BLE001 - the stage's own answer stands either way
+        return False
+
+
+def _since_instant(since: Any) -> Optional[_dt.datetime]:
+    """A fire's start as an aware instant, or None when it is not one."""
+    if not since:
+        return None
+    try:
+        at = _dt.datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo is not None else at.astimezone()
+
+
+def stage_refusal(workspace_root: str, fire: str, kind: str,
+                  since: Any = None) -> Optional[str]:
+    """READ. cr1#1843: the word THIS fire's stage of `kind` refused with, or
+    None. Rule 140h (review of fa78b9be0, MUST 1): only a marker written in
+    this fire counts. `since` is the fire's own start (the plan's
+    `fire_start`, which every staged writer is handed as
+    `exclude_captured_since`); a marker written before it is another fire's
+    and is never honoured, so a fire that stopped before its clear, or the
+    same fire on another computer, never refuses this one. With no start
+    handed in, only a marker younger than `STALE_STAGE_MINUTES` counts. An
+    emptied marker is lifted. A marker that will not parse is dated by its
+    file and refuses as `not_landed` within that bound."""
+    try:
+        import json as _json
+        import time as _time
+
+        target = _refused_path(workspace_root, fire, kind)
+        if not target.is_file():
+            return None
+        text = target.read_text(encoding="utf-8").strip()
+        if not text:
+            return None
+        try:
+            body = _json.loads(text)
+            reason = body.get("reason") if isinstance(body, dict) else None
+            at = _since_instant(body.get("at")) if isinstance(body, dict) else None
+        except ValueError:
+            reason, at = None, None
+        if at is None:
+            at = _dt.datetime.fromtimestamp(target.stat().st_mtime, _dt.timezone.utc)
+        floor = _since_instant(since)
+        if floor is None:
+            floor = _dt.datetime.fromtimestamp(_time.time() - STALE_STAGE_MINUTES * 60, _dt.timezone.utc)
+        if at < floor:
+            return None
+    except Exception:  # noqa: BLE001 - a marker that cannot be read refuses nothing
+        return None
+    return reason if reason in STAGE_MARKER_WORDS else STAGE_NOT_LANDED
+
+
+def _refused_writer(workspace_root: str, fire: str, kind: str,
+                    since: Any = None) -> Optional[Dict[str, Any]]:
+    """cr1#1843: the answer a staged writer gives, BEFORE it reads or writes
+    anything, when its kind's stage refused in THIS fire (`since`, the
+    writer's own `exclude_captured_since`): not ok, the word
+    `stage_refused`, the stage's own word, and the stage's own line. None
+    when the stage did not refuse."""
+    reason = stage_refusal(workspace_root, fire, kind, since)
+    if reason is None:
+        return None
+    lines = STAGE_LINES[fire]
+    return {"ok": False, "error": STAGE_REFUSED, "stage_reason": reason,
+            "line": lines["too_large"] if reason == "too_large" else lines["unread"]}
+
+
 def _inside_workspace(workspace_root: str, path: Path) -> bool:
     """Review N-7: the staging folder, resolved, sits under the resolved
     workspace (a link planted out of it is never followed)."""
@@ -1417,23 +1548,33 @@ def stage_fire_input(workspace_root: str, *, kind: str = "",
     text = str(content_base64 or "")
     # review N-9: the ceiling is asked of the length before anything decodes
     early = len(text) // 4 * 3 - text[-2:].count("=")
+    # cr1#1843 (review of fa78b9be0, SHOULD 1): the marker is written BEFORE
+    # anything is parsed, so a stage that raises leaves its writer refused;
+    # every refusal below writes its own word over it; only a landing lifts it.
+    _write_marker(workspace_root, fire, kind, STAGE_NOT_LANDED)
     if early > STAGE_MAX_BYTES:
+        _write_marker(workspace_root, fire, kind, "too_large")
         return {"ok": False, "error": "too_large", "line": lines["too_large"],
                 "bytes": early, "limit": STAGE_MAX_BYTES}
     raw = _b64.b64decode(text, validate=True)  # review N-1: no silent drops
     if len(raw) > STAGE_MAX_BYTES:  # EODHARD3 MUST 2: the one real limit
+        _write_marker(workspace_root, fire, kind, "too_large")
         return {"ok": False, "error": "too_large", "line": lines["too_large"],
                 "bytes": len(raw), "limit": STAGE_MAX_BYTES}
     if not raw:  # review N-1: no batch is not an empty batch
+        _write_marker(workspace_root, fire, kind, "no_content")
         return _unread("no_content", fire)
-    counted = kind in RAW_INPUTS or n_returned is not None
+    # cr1#1838: the capture pass's calendar reads are raw inputs too (their counts stated)
+    counted = kind in RAW_INPUTS or kind in CAPTURE_CALENDAR_KINDS or n_returned is not None
     if counted and (not isinstance(n_returned, int)
                     or isinstance(n_returned, bool) or n_returned < 0):
+        _write_marker(workspace_root, fire, kind, "no_count")
         return _unread("no_count", fire)
     loaded = _json.loads(raw.decode("utf-8"))
     if not isinstance(loaded, list):
         raise ValueError("a staged input is a JSON list")
     if counted and len(loaded) != n_returned:
+        _write_marker(workspace_root, fire, kind, "count_mismatch")
         return _unread("count_mismatch", fire)
     rel = f"{folder}/{kind}.json"
     target = Path(workspace_root) / rel
@@ -1442,6 +1583,7 @@ def stage_fire_input(workspace_root: str, *, kind: str = "",
         raise ValueError("the staging folder is not this fire's own folder "
                          "inside the workspace")
     atomic_write_text(target, _json.dumps(loaded, ensure_ascii=False))
+    _write_marker(workspace_root, fire, kind, None)  # cr1#1843: landed, so lifted (emptied)
     return {"ok": True, "rel": rel, "n": len(loaded), "bytes": len(raw)}
 
 
@@ -1515,6 +1657,10 @@ def reconcile_sent_staged(workspace_root: str, *,
     from reconcile_sent_commitments import reconcile_and_receipt
 
     _stage_dir(fire)
+    refused = _refused_writer(workspace_root, fire, "sent_messages",
+                              exclude_captured_since)  # cr1#1843: this fire only
+    if refused is not None:
+        return refused
     messages = (_read_raw(workspace_root, sent_rel, "sent_messages", fire)
                 if sent_rel else [])
     return _jsonable(reconcile_and_receipt(
@@ -1559,6 +1705,10 @@ def reconcile_chat_staged(workspace_root: str, *,
     from chat_reconcile import reconcile_chat_and_receipt
 
     _stage_dir(fire)
+    refused = _refused_writer(workspace_root, fire, "chat_messages",
+                              exclude_captured_since)  # cr1#1843: this fire only
+    if refused is not None:
+        return refused
     messages = (_read_raw(workspace_root, chat_rel, "chat_messages", fire)
                 if chat_rel else [])
     return _jsonable(reconcile_chat_and_receipt(
@@ -1615,6 +1765,10 @@ def inbound_mail_staged(workspace_root: str, *,
                          + ", ".join(unknown) + " (not a key of the "
                          "inbound-mail plan's answer)")
     _stage_dir(fire)
+    refused = _refused_writer(workspace_root, fire, "inbound_messages",
+                              exclude_captured_since)  # cr1#1843: this fire only
+    if refused is not None:
+        return refused
     messages: List[Dict[str, Any]] = []
     if inbound_rel:
         staged = _read_staged(workspace_root, inbound_rel, "inbound_messages",
@@ -1633,7 +1787,9 @@ def inbound_mail_staged(workspace_root: str, *,
 
 
 def _staged_names(fire: str = "end-of-day") -> frozenset:
-    return frozenset(f"{kind}.json" for kind in FIRE_KINDS[fire])
+    # cr1#1843: a refused stage's marker goes with the batch it stands for
+    return frozenset([f"{kind}.json" for kind in FIRE_KINDS[fire]]
+                     + [f"{kind}{REFUSED_SUFFIX}" for kind in FIRE_KINDS[fire]])
 
 
 def _clear_staging(workspace_root: str,
@@ -1673,14 +1829,41 @@ def _clear_staging(workspace_root: str,
                                       and path.suffix == ".json")
         if not ours or not path.is_file():
             continue
+        # cr1#1843: a stage's marker holds no message, so it is reported
+        # apart (`markers`), and the lists above keep naming the batches
+        marker = path.name.endswith(REFUSED_SUFFIX)
         if stale_only:
             try:
                 fresh = path.stat().st_mtime > cutoff
             except OSError:
                 fresh = True  # unreadable age: never remove a live batch
             if fresh:
-                out["kept"].append(path.name)
+                if not marker:
+                    out["kept"].append(path.name)
                 continue
+        if marker:
+            # review of 8cfc04142 (SHOULD 3): an empty marker is already
+            # lifted, so it is tidied quietly and never reported again; one
+            # that can be neither removed nor emptied is named in `left`
+            try:
+                empty = path.stat().st_size == 0
+            except OSError:
+                empty = False
+            try:
+                os.unlink(str(path))
+                if not empty:
+                    out.setdefault("markers", []).append(path.name)
+                continue
+            except OSError:
+                pass
+            if empty:
+                continue
+            try:
+                atomic_write_text(path, "")  # emptied is lifted
+                out.setdefault("markers", []).append(path.name)
+            except OSError:
+                out["left"].append(path.name)
+            continue
         try:
             os.unlink(str(path))
             out["removed"].append(path.name)
@@ -1703,7 +1886,8 @@ def clear_fire_staging(workspace_root: str,
     stages anything (so a fire that stopped early is cleaned by the next),
     and again once its receipt has landed, so a day's transcripts and raw
     mail never rest in the synced folder between fires. Answers
-    `{removed, emptied, left}` by file name.
+    `{removed, emptied, left}` by file name, and (cr1#1843) `markers`, the
+    stages' refusal markers it cleared, when there were any.
 
     MAINTHARD2 MUST 1: `fire` clears only that fire's own folder; the End of
     Day's (the default) is untouched by a maintenance clear, and the other

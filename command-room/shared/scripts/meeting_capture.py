@@ -117,6 +117,23 @@ def _norm_ref_keys(ref) -> set:
 MEETING_CALENDARS = frozenset({"business", "personal"})
 
 
+def _calendar_binding(workspace_root, *, source_ref, title, start, attendees, calendar_event_id,
+                      calendar_rel, fire) -> dict:
+    """cr1#1838: `meeting_binding.bind_from_stage` over the write-up's own
+    facts; a binding of none (`no_calendar`) when it cannot be read."""
+    try:
+        import meeting_binding
+
+        return meeting_binding.bind_from_stage(
+            workspace_root, {"source_ref": source_ref, "title": title or "", "start": start,
+                             "participants": list(attendees or []),
+                             "calendar_event_id": calendar_event_id or ""}, calendar_rel, fire)
+    except Exception:  # noqa: BLE001 - unread is none, never a guess
+        import meeting_binding
+
+        return meeting_binding.none("no_calendar")
+
+
 def build_meeting_event(
     title: str,
     *,
@@ -137,6 +154,9 @@ def build_meeting_event(
     working_session: Optional[bool] = None,
     workspace_root=None,
     calendar: Optional[str] = None,
+    calendar_rel: Optional[str] = None,
+    calendar_event_id: Optional[str] = None,
+    calendar_fire: str = "maintenance",
 ) -> dict:
     """The one sanctioned constructor for a `meeting` event (BUG-8244).
 
@@ -245,6 +265,14 @@ def build_meeting_event(
         data["transcript_class"] = tc
     if working_session:
         data["working_session"] = True
+    if calendar_rel is not None:
+        # cr1#1838: the capture pass staged its calendar read; which occurrence
+        # this is, and the business or personal stamp, come from that read in
+        # code (`meeting_binding`), never from the caller's word
+        data["calendar_binding"] = _calendar_binding(
+            workspace_root, source_ref=source_ref, title=title, start=ts, attendees=attendees,
+            calendar_event_id=calendar_event_id, calendar_rel=calendar_rel, fire=calendar_fire)
+        calendar = data["calendar_binding"]["calendar"] or None
     if calendar is not None and str(calendar).strip():
         cal = str(calendar).strip().lower()
         if cal not in MEETING_CALENDARS:
@@ -908,6 +936,11 @@ def build_meeting_processed_event(
     n_written: Optional[int] = None,
     n_deduped_on_disk: Optional[int] = None,
     workspace_root=None,
+    start: Optional[str] = None,
+    attendees: Optional[List[str]] = None,
+    calendar_rel: Optional[str] = None,
+    calendar_event_id: Optional[str] = None,
+    calendar_fire: str = "maintenance",
 ) -> dict:
     """The processing receipt (F-46 P2a: past-meetings emits one, meeting-notes
     didn't — the no-prep / already-processed detectors read receipts, and
@@ -960,6 +993,12 @@ def build_meeting_processed_event(
         data["brief_path"] = brief_path
     if title:
         data["title"] = title
+    if calendar_rel is not None:
+        # cr1#1838: the occurrence this write-up is, from the pass's own
+        # calendar read, add-only on the receipt (`meeting_binding`)
+        data["calendar_binding"] = _calendar_binding(
+            workspace_root, source_ref=source_ref, title=title, start=start, attendees=attendees,
+            calendar_event_id=calendar_event_id, calendar_rel=calendar_rel, fire=calendar_fire)
     counts = capture_telemetry(capture_summary, appended=appended)
     # CAPTUREONCE1 (review F-2, 2026-09-14) — THE RECEIPT DERIVES ITS OWN
     # ON-DISK COUNT. `route_meeting_captures` cannot know this number: the

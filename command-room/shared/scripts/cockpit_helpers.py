@@ -207,6 +207,8 @@ MAIL_SURFACE = "cockpit-mail"
 #: cr1#1020 slice 3: the People tab's presses (`people_view`).
 PERSON_VERBS = frozenset({"star", "unstar"})
 PEOPLE_SURFACE = "cockpit-people"
+#: cr1#1788: the Prep page's edits (agenda, Goal, call guide) write their audit rows under this.
+PREPEDIT_SURFACE = "cockpit-prepedit"
 #: cr1#1785: Focus, the list the owner picks, writes its audit rows under this.
 FOCUS_SURFACE = "cockpit-focus"
 #: What each page verb becomes on the apply-choices wire (inbox only; the
@@ -965,11 +967,73 @@ def event_key(value: Any) -> str:
     return hashlib.sha256(("ev:" + v).encode("utf-8")).hexdigest()[:EVENT_KEY_LEN]
 
 
-def _join_keys(m: Dict[str, Any]) -> Dict[str, str]:
+def calendar_key(value: Any) -> str:
+    """READ/COMPUTE. cr1#1815: the key of the calendar one event was read
+    from: `event_key` of `cal:` and the calendar's id in lower case (a
+    calendar id is an address or a name, never told apart by its capitals).
+    `` for no id. The feed never carries the id itself: a personal or a
+    shared calendar's id can be someone's address."""
+    v = str(value if value is not None else "").strip().lower()
+    return event_key("cal:" + v) if v else ""
+
+
+def calendar_kind(workspace_root) -> str:
+    """READ ONLY. cr1#1815: the provider of the seat's declared calendar
+    connector (`google_calendar`, ...) in lower case, or `` when none is
+    declared or it cannot be read. Never raises."""
+    if workspace_root is None:
+        return ""
+    try:
+        import connector_config
+        row = connector_config.declared_backend("calendar", workspace_root)
+    except Exception:  # noqa: BLE001 - nothing declared is a supported state
+        return ""
+    return str(row.get("provider") or "").strip().lower() if isinstance(row, dict) else ""
+
+
+def calendar_stamp(workspace_root) -> Dict[str, Any]:
+    """READ ONLY. cr1#1815: what a build stamps each meeting with: `kind`, the
+    seat's calendar connector (`calendar_kind`), and `one_account`, True only
+    when the seat names exactly one account (then a main calendar the read
+    calls `primary` can only be that account's). Never raises."""
+    try:
+        import connector_config
+        one = len(connector_config.accounts(workspace_root)) == 1 if workspace_root is not None else False
+    except Exception:  # noqa: BLE001 - unknown is not one
+        one = False
+    return {"kind": calendar_kind(workspace_root), "one_account": one}
+
+
+def _calendar_of(m: Dict[str, Any], one_account: bool) -> str:
+    """cr1#1815 review: the calendar one event was read from, as the stamp
+    names it. A main calendar the read calls `primary` is named by its
+    account's address where the event says it (the owner's own entry on it,
+    one address only); with no address it stays `primary` only on a seat of
+    one account. On a seat of more than one account two `primary` calendars
+    are not the same calendar, so such an event is stamped with nothing."""
+    cal = str(m.get("calendar_id") or "").strip().lower()
+    if cal != "primary":
+        return cal
+    mine = {str(a.get("email") or "").strip().lower() for a in (m.get("attendees") or [])
+            if isinstance(a, dict) and a.get("self") is True and str(a.get("email") or "").strip()}
+    if len(mine) == 1:
+        return mine.pop()
+    return cal if one_account else ""
+
+
+def _join_keys(m: Dict[str, Any], stamp: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     """`{jk, sk}` for one event of the run's calendar read, each only when
     the read gave its id: `jk` from `event_id`, `sk` from `series_id` (the
     recurring series it belongs to). Every row carries them, a personal and
-    an all-day one too (cr1#1758, coordinator decision 1)."""
+    an all-day one too (cr1#1758, coordinator decision 1).
+
+    cr1#1815: with them `ck`, the key of the calendar the event was read
+    from (`calendar_id`), and `ckind`, the connector it was read through,
+    both only when the read named the calendar and the seat names its
+    connector. The page strikes a single meeting it no longer finds only
+    where its own read covers that calendar on that connector. The key of
+    a shared calendar is a hash of its id, an address, unsalted: the same
+    class as the wall's own hashes (`_calendar_of` names the calendar)."""
     out: Dict[str, str] = {}
     jk = event_key(m.get("event_id"))
     if jk:
@@ -977,6 +1041,11 @@ def _join_keys(m: Dict[str, Any]) -> Dict[str, str]:
     sk = event_key(m.get("series_id"))
     if sk:
         out["sk"] = sk
+    kind = str((stamp or {}).get("kind") or "")
+    ck = calendar_key(_calendar_of(m, (stamp or {}).get("one_account") is True))
+    if ck and kind:
+        out["ck"] = ck
+        out["ckind"] = kind
     return out
 
 
@@ -2246,6 +2315,14 @@ def prep_text(workspace_root, artifact: str, cap: int = PREP_TEXT_CAP) -> Option
 #: cr1#1632 slice 1: the parts of a brief the live prep page reads, and how
 #: many of each travel on the feed.
 PREP_PART_KEYS = ("walk", "decide", "ask", "cover", "you_owe", "they_owe", "changed", "carried")
+#: cr1#1788 review: marks laid over a part, never a part of their own. `ask_closed`
+#: names the questions of `ask` that read as yes-or-no; each stays in `ask`.
+#: `guide_ids` (cr1#1788 page, decision 146g) is `{"ask": [...], "cover": [...]}`,
+#: one `hub_prep_edit.guide_id` per item, in the part's own order: the id a
+#: call-guide remove names, so the page never hashes the words itself.
+PREP_PART_FLAGS = ("ask_closed", "guide_ids")
+#: The call guide's parts and the kind each item is to `hub_prep_edit`.
+GUIDE_PART_KINDS = (("ask", "question"), ("cover", "topic"))
 
 
 def prep_parts(workspace_root, artifact: str) -> Optional[Dict[str, Any]]:
@@ -2273,7 +2350,23 @@ def prep_parts(workspace_root, artifact: str) -> Optional[Dict[str, Any]]:
                       for d in items[:PARTS_LIST_CAP] if isinstance(d, dict) and txt(d.get("q"))]
         else:
             out[k] = [txt(x) for x in items[:PARTS_LIST_CAP] if txt(x)]
-    return out if any(out.get(k) for k in PREP_PART_KEYS) else None
+    # a flag names only what its part carries
+    flagged = raw.get("ask_closed") if isinstance(raw.get("ask_closed"), list) else []
+    closed = [q for q in (txt(x) for x in flagged[:PARTS_LIST_CAP]) if q and q in out.get("ask", [])]
+    if closed:
+        out["ask_closed"] = closed
+    if not any(out.get(k) for k in PREP_PART_KEYS):
+        return None
+    try:
+        import hub_prep_edit
+
+        ids = {part: [hub_prep_edit.guide_id(kind, x) for x in out.get(part) or []]
+               for part, kind in GUIDE_PART_KINDS if out.get(part)}
+    except Exception:  # noqa: BLE001 - no ids: the page offers no remove
+        ids = {}
+    if ids:
+        out["guide_ids"] = ids
+    return out
 
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -2533,6 +2626,166 @@ def _meeting_extras(m: Dict[str, Any], wall: Optional[Dict[str, Any]]) -> Dict[s
     if out.get("mine") is True and to and len(to) <= MEETING_PEOPLE_CAP and not left_out:
         out["note_to"] = to
     return out
+
+
+#: The invite's own text a meeting row carries for the Prep page (cr1#1788).
+INVITE_TEXT_CAP = 2000
+#: cr1#1788 review: only this many of Today's next meetings carry it, once
+#: each, on `feed/today`'s `meetings` rows (never the Week's or the past's).
+INVITE_ROWS_CAP = 6
+#: cr1#1788 review: feed/today's own size budget, in characters of its JSON,
+#: 85% of `REFRESH_DOC_LIMIT`. Past it the invite texts go first, from the
+#: latest meeting back, counted in `invite_cut`.
+TODAY_DOC_BUDGET = 182_500
+#: fix check, required item a: what feed/today says when it shows less.
+TODAY_INVITE_CUT_LINE = "Today is long, so the invite's own text is left off {n} of your meetings."
+TODAY_OVER_BUDGET_LINE = "Today is too long to show in full; ask in a chat for the rest."
+#: fix check, MUST 2: a meeting that moved and whose prep edits could not be matched to it.
+PREPX_UNPLACED_LINE = ("Some of your prep edits were made for another time of their meeting and could not be "
+                       "matched to it after a move; they are kept at that time, until two weeks after it.")
+#: second check, SHOULD 3: a moved meeting's edits not shown because their words name someone hidden.
+PREPX_MOVED_HELD_LINE = "Prep edits for a meeting that moved are not shown: their words name someone who cannot be named here."
+#: second check, SHOULD 3: edits for a meeting this week that is no longer on the calendar under its id.
+PREPX_GONE_LINE = ("Prep edits for {n} meetings this week are kept, but those meetings are no longer on your calendar "
+                   "at that time (moved, cancelled or made again); they are kept until two weeks after their time.")
+
+
+def _invite_screen(wall: Optional[Dict[str, Any]], hw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The words the invite's text is screened against: the edits' own
+    (`followup_draft.hidden_words`: every way a hidden person is written,
+    their addresses) and the meeting wall's off-limits addresses and names
+    besides. None when either cannot be read. Pure."""
+    if wall is None or hw is None:
+        return None
+    import followup_draft as fd
+
+    return {"emails": set(hw.get("emails") or ()) | {fd._plain(a).strip().casefold() for a in wall.get("addrs") or () if a},
+            "names": set(hw.get("names") or ()) | {f for f in (fd._flat(n) for n in wall.get("names") or ()) if f},
+            "shown": set(hw.get("shown") or ())}
+
+
+def _invite_text(value: Any, screen: Optional[Dict[str, Any]]) -> str:
+    """The invite's description as the Prep page may show it: tags taken out,
+    entities read, whitespace folded, capped; "" when there is none, when the
+    screen (`_invite_screen`) cannot be read, or when the text names anyone
+    hidden, by the same check the Prep page's edits pass
+    (`followup_draft.names_hidden`: accents, case and first names alike).
+    Pure."""
+    import html as _html
+
+    import followup_draft as fd
+
+    if screen is None or not isinstance(value, str) or not value.strip():
+        return ""
+    text = re.sub(r"<[^>]*(?:>|$)", " ", value)
+    text = re.sub(r"<[^>]*(?:>|$)", " ", _html.unescape(text)).replace("<", " ").replace(">", " ")
+    text = " ".join(text.split())[:INVITE_TEXT_CAP]
+    # second check: a name split by tags ("<span>Dus</span><span>tin</span>")
+    # is screened too, the tags taken out with nothing in their place
+    joined = re.sub(r"<[^>]*(?:>|$)", "", value)
+    joined = " ".join(re.sub(r"<[^>]*(?:>|$)", "", _html.unescape(joined)).split())[:INVITE_TEXT_CAP]
+    if not text or fd.names_hidden([text, joined], screen):
+        return ""
+    return text
+
+
+def _today_invites(workspace_root, rows: List[Dict[str, Any]], descs: Dict[int, Any],
+                   wall: Optional[Dict[str, Any]], now: Optional[_dt.datetime] = None) -> None:
+    """cr1#1788: the invite's own text on the next `INVITE_ROWS_CAP` of
+    Today's meetings that are business meetings with someone on them, once
+    each. Nothing when the wall or who is hidden cannot be read."""
+    ended = lambda r: now is not None and (_parse(r.get("end")) or now) <= now
+    want = [r for r in rows if r.get("calendar") != "personal" and not r.get("all_day") and not r.get("solo")
+            and not r.get("away") and not r.get("title_off") and not ended(r) and isinstance(descs.get(id(r)), str)
+            and descs[id(r)].strip()][:INVITE_ROWS_CAP]
+    if not want:
+        return
+    try:
+        import followup_draft as fd
+
+        screen = _invite_screen(wall, fd.hidden_words(Path(str(workspace_root))))
+    except Exception:  # noqa: BLE001 - fail closed: no invite text
+        return
+    for r in want:
+        it = _invite_text(descs[id(r)], screen)
+        if it:
+            r["invite_text"] = it
+
+
+def _today_prepx(workspace_root, rows: List[Dict[str, Any]], past: List[Dict[str, Any]],
+                 week: Dict[str, Any], now: Optional[_dt.datetime] = None) -> List[str]:
+    """cr1#1788 fix check, MUST 2: a Today row whose meeting moved carries
+    the edits made for its old time (`prepx_moved`: `{from, edit}`, the page
+    lays them on and its next press there names `moved_from`); a row whose
+    key has edits the read cannot place carries `prepx_unplaced`, and one
+    whose moved edit names someone hidden `prepx_held`. The read is every row
+    of this feed (Today, past and the Week); only edits from now to the end
+    of the read can move (a past occurrence never does). Answers the
+    document's lines. Never raises."""
+    try:
+        import hub_prep_edit
+
+        read: Dict[str, List[str]] = {}
+        every = list(rows) + list(past) + [x for d in (week or {}).get("days") or [] for x in d.get("meetings") or []]
+        for r in every:
+            if isinstance(r, dict) and r.get("jk") and r.get("start"):
+                starts = read.setdefault(str(r["jk"]), [])
+                if r["start"] not in starts:
+                    starts.append(r["start"])
+        lo = now or _now(None)
+        # the read ends at the workspace's midnight after its last day (the
+        # Week's own dates), and the day it is said from begins at midnight
+        tzinfo = _workspace_tz(workspace_root)
+        today = lo.astimezone(tzinfo).date()
+        midnight = lambda d: _dt.datetime(d.year, d.month, d.day, tzinfo=tzinfo)
+        hi = midnight(_week_dates(today)[-1] + _dt.timedelta(days=1))
+        got_all = hub_prep_edit.today_places(workspace_root, rows, read, (lo, hi), say_from=midnight(today))
+        placed = got_all.get("rows") or {}
+    except Exception:  # noqa: BLE001 - feed/prepx still carries every edit by its own time
+        return []
+    unplaced = held = False
+    for i, got in placed.items():
+        if "edit" in got:
+            rows[i]["prepx_moved"] = got
+        elif got.get("held"):
+            rows[i]["prepx_held"] = True
+            held = True
+        elif got.get("unplaced"):
+            rows[i]["prepx_unplaced"] = int(got["unplaced"])
+            unplaced = True
+    lines = []
+    if unplaced:
+        lines.append(PREPX_UNPLACED_LINE)
+    if held:
+        lines.append(PREPX_MOVED_HELD_LINE)
+    if got_all.get("gone"):
+        lines.append(PREPX_GONE_LINE.format(n=int(got_all["gone"])))
+    return lines
+
+
+def _fit_today(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """cr1#1788 review: keep feed/today under `TODAY_DOC_BUDGET`, the invite
+    texts going first from the latest meeting back (`invite_cut` says how
+    many); `over_budget` when it is over all the same."""
+    size = lambda: len(json.dumps(doc, separators=(",", ":"), default=str))
+    if size() <= TODAY_DOC_BUDGET:
+        return doc
+    cut = 0
+    for r in reversed(doc.get("meetings") or []):
+        if isinstance(r, dict) and r.pop("invite_text", None) is not None:
+            cut += 1
+            if size() <= TODAY_DOC_BUDGET:
+                break
+    lines = list(doc.get("size_lines") or [])
+    if cut:
+        doc["invite_cut"] = cut
+        lines.append(TODAY_INVITE_CUT_LINE.format(n=cut))
+    if size() > TODAY_DOC_BUDGET:
+        doc["over_budget"] = True
+        lines.append(TODAY_OVER_BUDGET_LINE)
+    if lines:
+        doc["size_lines"] = lines
+    return doc
 
 
 def _title_names_off(title: Any, wall: Optional[Dict[str, Any]]) -> bool:
@@ -2861,6 +3114,7 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
     working hours around every timed event read for it, a personal one
     included (it is time taken, and the gap says nothing of what took it).
     A day marked away has none; today's start at the next quarter hour."""
+    ckind = calendar_stamp(workspace_root)   # cr1#1815
     tzinfo = _workspace_tz(workspace_root)
     today = now.astimezone(tzinfo).date()
     dates = _week_dates(today)
@@ -2915,7 +3169,7 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
                 by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
                                   "start": None, "end": None, "all_day": True,
                                   "personal": personal, "clash": False, "solo": False})
-                by_day[d][-1].update(_join_keys(m))   # cr1#1758
+                by_day[d][-1].update(_join_keys(m, ckind))   # cr1#1758
                 if kind:
                     by_day[d][-1]["away"] = kind   # cr1#1707
             continue
@@ -2949,7 +3203,7 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
                 by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
                                   "start": None, "end": None, "all_day": True,
                                   "personal": personal, "clash": False, "solo": False, "away": "other"})
-                by_day[d][-1].update(_join_keys(m))   # cr1#1758
+                by_day[d][-1].update(_join_keys(m, ckind))   # cr1#1758
             continue
         extras = _meeting_extras(m, wall)
         # cr1#1707: a shorter event that is time away all the same (the
@@ -2966,7 +3220,7 @@ def _week_days(workspace_root, meetings, now: _dt.datetime, wall: Any = False) -
             row = {"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
                    "start": _iso(start), "end": _iso(end), "all_day": False,
                    "personal": personal, "clash": False, "solo": _no_one_else(m)}
-            row.update(_join_keys(m))   # cr1#1758
+            row.update(_join_keys(m, ckind))   # cr1#1758
             row.update(extras)
             if away_kind:
                 row["away"] = away_kind
@@ -3338,6 +3592,7 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
     `past`, so "Past meetings" lists the whole day and `meetings` (what the
     day's sentence, its count and its clash read) is the list it always was.
     Every new field is optional: an older page reads none of them."""
+    ckind = calendar_stamp(workspace_root)   # cr1#1815
     now = _now(now_iso)
     horizon = now + _dt.timedelta(hours=UPCOMING_HOURS)
     hold = _dt.timedelta(minutes=PREP_HOLD_MINUTES)
@@ -3346,6 +3601,7 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
     past: List[Dict[str, Any]] = []
     ended: set = set()
     wall = _meeting_wall(workspace_root)
+    descs: Dict[int, Any] = {}
     day_start = None
     # cr1#1707: the names a time-away title is checked against, read once and only when needed
     names_box: List[Dict[str, List[str]]] = []
@@ -3384,7 +3640,7 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
                     gone = {"meeting_id": str(m.get("meeting_id") or "").strip(),
                             "title": str(m.get("title") or "").strip()[:200],
                             "start": _iso(start), "end": _iso(end), "solo": _no_one_else(m)}
-                    gone.update(_join_keys(m))   # cr1#1758
+                    gone.update(_join_keys(m, ckind))   # cr1#1758
                     # a personal one says so, as a row does; any other names no calendar
                     if str(m.get("calendar") or "").lower() == "personal":
                         gone["calendar"] = "personal"
@@ -3421,7 +3677,10 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
         })
         # cr1#1758: the keys the page joins its own calendar read on, on every
         # row: a personal and an all-day one too (a key is a hash, never the id)
-        rows[-1].update(_join_keys(m))
+        rows[-1].update(_join_keys(m, ckind))
+        # cr1#1788: the invite's text, attached once below; it travels as
+        # `invite_description`, the one key the door's path fence reads as words
+        descs[id(rows[-1])] = m.get("invite_description")
         if not all_day:
             rows[-1].update(_meeting_extras(m, wall))
         # cr1#1833 (decision 141n, add-only): as on the past list
@@ -3484,6 +3743,8 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
                 r["prep_at"] = _iso(rec["dt"])
     rows.sort(key=lambda r: r["start"])
     past.sort(key=lambda r: r["start"])
+    # cr1#1788: the invite's own text, once per meeting, on the next few only
+    _today_invites(workspace_root, rows, descs, wall, now)
     # cr1#1632 slice 1: a meeting whose live prep page was saved says so, with
     # the press its Undo names.
     try:
@@ -3541,9 +3802,12 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
         _week_prep(workspace_root, week, rows, hold)
     except Exception:  # noqa: BLE001 - a bad book leaves the week's rows without prep, as the list's
         pass
-    return _with_words(workspace_root, {"generated_at": _iso(now), "meetings": rows,
+    prepx_lines = _today_prepx(workspace_root, rows, past, week, now)
+    return _fit_today(_with_words(workspace_root, {"generated_at": _iso(now), "meetings": rows,
             "n_meetings": sum(1 for r in rows if not r["solo"]), "n_prepped": sum(1 for r in rows if r["prep"]),
             "week": week, "about": _today_about(workspace_root, now),
+            # cr1#1788 fix check: edits a move left at another time of their meeting
+            **({"prepx_line": " ".join(prepx_lines)} if prepx_lines else {}),
             # cr1#1830: why the rows name nobody, only when the list cannot be read
             **({"people_line": OFF_LIMITS_UNREAD_TODAY_LINE}
                if wall is None and not _off_limits_readable(workspace_root) else {}),
@@ -3555,7 +3819,7 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
             # not one per row: a per-row list grows with the square of a title's count)
             # cr1#1833: a walled title is never carried here either
             "past_hidden": [{"meeting_id": r.get("meeting_id") or "", "title": "" if r.get("title_off") else r.get("title") or "", "start": r["start"]}
-                            for r in past[:-PAST_MEETINGS_CAP] if r.get("wrap")][-PAST_HIDDEN_CAP:]})
+                            for r in past[:-PAST_MEETINGS_CAP] if r.get("wrap")][-PAST_HIDDEN_CAP:]}))
 
 
 def _today_about(workspace_root, now: _dt.datetime) -> Optional[Dict[str, Any]]:
@@ -8768,6 +9032,7 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
     mail: List[Dict[str, Any]] = []
     people: List[Dict[str, Any]] = []
     stillyours: List[Dict[str, Any]] = []
+    prepedit: List[Dict[str, Any]] = []
     focus: List[Dict[str, Any]] = []
     refused: List[Dict[str, Any]] = []
     seen = set()
@@ -8935,6 +9200,26 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             if verb == "undo" and isinstance(raw.get("undo"), list):
                 row["undo"] = [t for t in raw["undo"][:still_yours.UNDO_TOKEN_CAP] if isinstance(t, dict)]
             stillyours.append(row)
+        elif kind == "prepedit":
+            # cr1#1788: the Prep page's edits (agenda, Goal, a call-guide add or
+            # remove), for `hub_prep_edit`, which writes its own store
+            import hub_prep_edit
+
+            if verb not in hub_prep_edit.VERBS:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            typed = raw.get("input") if isinstance(raw.get("input"), dict) else {}
+
+            def _p(name, cap):
+                v = raw.get(name) if raw.get(name) not in (None, "") else typed.get(name)
+                return str(v or "")[:cap] if isinstance(v, (str, int)) and not isinstance(v, bool) else ""
+
+            prepedit.append({"id": cid, "action": verb, "meeting_key": _p("meeting_key", 64) or _p("n", 64),
+                             "start": _p("start", 40), "moved_from": _p("moved_from", 40),
+                             "text": _p("text", hub_prep_edit.TEXT_CAP), "guide_kind": _p("guide_kind", 20),
+                             "item_id": _p("item_id", 40), "back_of": _p("back_of", 160),
+                             "created_at": str(raw.get("created_at") or "")[:40]})
         elif kind == "focus":
             # cr1#1785: Focus, the list the owner picks: an item put in, taken
             # out, or the list's order, for `hub_focus.apply_choices`, which
@@ -9009,9 +9294,10 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
                             "reason": "unknown_kind"})
     return {"commitment": commitment, "inbox": inbox, "hub": hub, "review": review, "week": week,
             "settings": settings, "mail": mail, "people": people, "stillyours": stillyours,
-            "focus": focus, "refused": refused, "skipped": skipped,
+            "prepedit": prepedit, "focus": focus, "refused": refused, "skipped": skipped,
             "n_waiting": (len(commitment) + len(inbox) + len(hub) + len(review) + len(week)
-                          + len(settings) + len(mail) + len(people) + len(stillyours) + len(focus)),
+                          + len(settings) + len(mail) + len(people) + len(stillyours) + len(prepedit)
+                          + len(focus)),
             "n_refused": len(refused)}
 
 
@@ -9073,6 +9359,44 @@ def apply_people_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
         except Exception as exc:  # noqa: BLE001 - the stars landed; the answer says the audit did not
             out["audit_error"] = f"{type(exc).__name__}: {exc}"
     return out
+
+
+def _apply_prepedit(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
+                    now_iso=None, resolved_by: str = "") -> Dict[str, Any]:
+    """WRITE. The Prep page's edits (cr1#1788): the agenda, the Goal and the
+    call guide's adds and removes, in `_hq/data/hub-prep-edits.json` through
+    `hub_prep_edit.apply_choices`, then one `apply_choices_applied` audit row.
+    No prep file and no book record is changed. `resolved_by` is taken for
+    the save's one call shape and not used."""
+    import hub_prep_edit
+    from apply_audit import build_apply_choices_applied_event
+    from event_gate import append_event
+
+    out = hub_prep_edit.apply_choices(workspace_root, choices, now_iso=_iso(_now(now_iso)))
+    status = {"applied": "updated", "already": "already_resolved", "refused": "refused"}
+    by_id = {c.get("id"): c for c in choices or [] if isinstance(c, dict)}
+    audit = [{"n": (by_id.get(r.get("id")) or {}).get("meeting_key") or r.get("id"),
+              "action": "prep " + str((by_id.get(r.get("id")) or {}).get("action") or ""),
+              "handler_result": {"status": status.get(r.get("outcome"), "error")}, "said": r.get("outcome")}
+             for r in out.get("results") or []]
+    if audit:
+        try:
+            ev = build_apply_choices_applied_event(source=COMMITMENT_SRC, actions=audit)
+            ev["data"]["surface"] = PREPEDIT_SURFACE
+            append_event(Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl", ev, holder="cockpit_helpers")
+        except Exception as exc:  # noqa: BLE001 - the store landed; the answer says the audit did not
+            out["audit_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def feed_prepx(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. `feed/prepx` (cr1#1788): the Prep page's edits, keyed by each
+    occurrence (`<jk>|<start>`, the row's own on `feed/today`), in a window
+    around today and under its own size budget, for the page to lay over the
+    prep `feed/today` carries (`hub_prep_edit.feed`). Nobody hidden is named."""
+    import hub_prep_edit
+
+    return hub_prep_edit.feed(workspace_root, now_iso=_iso(_now(now_iso)))
 
 
 #: The longest note the owner may leave on a Done (cr1#1785, the To do box).
@@ -13403,6 +13727,8 @@ APPLY_FEEDS = {"hub": ("feed/mine",), "review": ("feed/review",),
                "people": ("feed/people",),
                # review round 2 of #1742: a Still yours? press refreshes its own list
                "stillyours": ("feed/stillyours",),
+               # cr1#1788: a Prep page edit refreshes the prep edits
+               "prepedit": ("feed/prepx",),
                # cr1#1785: a Focus press refreshes Focus
                "focus": ("feed/focus",)}
 #: The Hub's add and edit presses that also refresh their own tab (cr1#1431).
@@ -13466,6 +13792,8 @@ UPDATE_NARROW: Dict[str, Tuple[str, ...]] = {
     # a note on a person changes nothing but their card
     "hub:person_edit:context": ("feed/people",),
     **{"hub:commitment_edit:" + v: _UPDATE_WORK for v in ("rename", "context")},
+    # cr1#1788: the Prep page's edits are their own store and document
+    **{"prepedit:" + v: ("feed/prepx",) for v in ("agenda", "goal", "add", "remove", "undo")},
     # what is attached to a meeting is carried on the Today lists' feed
     "hub:meeting_edit:attach": ("feed/mine",),
     # cr1#1785: Focus is its own document; an item's record is never written
@@ -13494,6 +13822,7 @@ def update_press_space() -> List[str]:
     """READ/COMPUTE. Every list-and-verb key a press can land under, from the
     verb sets `plan_apply` itself reads, so a suite can hold every one of
     them to the table (fix check of round 1 of #1768)."""
+    import hub_prep_edit
     import hub_focus
     import hub_tidy
     import still_yours
@@ -13501,6 +13830,7 @@ def update_press_space() -> List[str]:
     keys = {"commitment:" + v for v in COMMITMENT_VERBS}
     keys |= {"focus:" + v for v in hub_focus.VERBS}
     keys |= {"people:" + v for v in PERSON_VERBS}
+    keys |= {"prepedit:" + v for v in hub_prep_edit.VERBS}
     keys |= {"mail:" + v for v in MAILRULE_VERBS | INBOX_RULE_VERBS}
     keys |= {"review:" + v for v in REVIEW_VERBS} | {"review:learned_rule:" + v for v in REVIEW_VERBS}
     keys |= {"week:week:" + v for v in WEEK_VERBS} | {"week:tidy:" + v for v in hub_tidy.VERBS}
@@ -13725,7 +14055,7 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
     writers = (("commitment", apply_commitment_choices), ("review", apply_review_choices),
                ("week", apply_week_choices), ("settings", apply_settings_choices),
                ("mail", apply_mail_choices), ("people", apply_people_choices),
-               ("stillyours", _apply_still_yours))
+               ("stillyours", _apply_still_yours), ("prepedit", _apply_prepedit))
     hub_rows = [r for r in plan.get("hub") or [] if str(r.get("kind") or "") != "miss"]
     miss_ids = [str(r.get("id")) for r in plan.get("hub") or [] if str(r.get("kind") or "") == "miss"]
     inbox_ids = [str(r.get("id")) for r in plan.get("inbox") or [] if r.get("id")]
@@ -14585,6 +14915,8 @@ REFRESH_READS: Tuple[Tuple[str, str], ...] = (
     ("feed/followups", "feed_followups"),
     # cr1#1786: Urgent, re-ranked from the inbox part's store at every Update
     ("feed/urgent", "feed_urgent"),
+    # cr1#1788: the Prep page's edits, laid over the prep on the page
+    ("feed/prepx", "feed_prepx"),
 )
 REFRESH_PLATE_FAILED_LINE = "The plate could not be read, so the Hub was not refreshed."
 #: Every document a refresh may write, and no other (never another task's light).
@@ -14783,7 +15115,7 @@ REFRESH_STAGES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("reads", ("feed/projects", "feed/board", "feed/mine", "feed/mail_rules",
                "feed/people", "feed/brief", "feed/pfollow", "feed/focus", "feed/allopen")),
     ("review", ("feed/review",)),
-    ("record", ("feed/settings", "feed/stillyours", "feed/followups", "feed/urgent", "feed/week", "status/maintenance")),
+    ("record", ("feed/settings", "feed/stillyours", "feed/followups", "feed/urgent", "feed/prepx", "feed/week", "status/maintenance")),
 )
 REFRESH_STAGE_NAMES: Tuple[str, ...] = tuple(s for s, _d in REFRESH_STAGES)
 #: What a part that did not finish is called in the light's line.
@@ -14803,6 +15135,7 @@ REFRESH_DOC_WORDS: Dict[str, str] = {
     "feed/stillyours": "the Still yours? review", "feed/followups": "the follow-ups",
     "feed/pfollow": "the follow-ups on Today",
     "feed/urgent": "Urgent",
+    "feed/prepx": "the prep edits",
     "feed/focus": "Focus", "feed/allopen": "All open",
     # Review round 1 of #1837 (must 1): a list that could not be built is named on the light
     WALL_CARRY_DOC: "the off-limits list",
@@ -16891,6 +17224,7 @@ def _unpack_refresh_cli(argv: List[str]) -> int:
 
 
 __all__ = [
+    "PREPEDIT_SURFACE", "feed_prepx",
     "TASK_ID", "SOURCE_SKILL", "LEGS", "STATUS_STATES", "COMMITMENT_VERBS",
     "INBOX_VERBS", "INBOX_WIRE_ACTION", "CHOICE_EXPIRY_DAYS",
     "RUNNING_TIMEOUT_MINUTES", "CONFIG_REL", "TEMPLATE_REL",
@@ -16918,6 +17252,8 @@ __all__ = [
     "render_from_recipe", "RECIPE_MISMATCH_LINE", "RECIPE_UNREADABLE_LINE",
     "refresh_all", "refresh_part", "unpack_refresh", "REFRESH_READS", "REFRESH_PART_BUDGET",
     "REFRESH_DOC_LIMIT", "REFRESH_BATCH_BUDGET", "REFRESH_PLATE_FAILED_LINE", "REFRESH_DOCS",
+    "INVITE_TEXT_CAP", "INVITE_ROWS_CAP", "TODAY_DOC_BUDGET", "PREP_PART_FLAGS", "GUIDE_PART_KINDS",
+    "TODAY_INVITE_CUT_LINE", "TODAY_OVER_BUDGET_LINE", "PREPX_UNPLACED_LINE", "PREPX_MOVED_HELD_LINE", "PREPX_GONE_LINE",
     "refresh_start", "REFRESH_BUSY_LINE", "REFRESH_BATCH_MAX",
     "feed_focus", "FOCUS_SURFACE", "feed_allopen",
     "RETIRED_TASKS", "RETIRED_TASK_NAMES", "UPDATE_NARROW", "UPDATE_RECORD_FEEDS", "UPDATE_DOCS",

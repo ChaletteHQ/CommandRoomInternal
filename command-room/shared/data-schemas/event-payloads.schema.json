@@ -93,12 +93,12 @@
   "meeting": {
     "description": "A meeting record. Has a title or summary. meeting_type (optional) is the writer's classification of the meeting — sales | internal_1_1 | external | board | ... — stamped by past-meetings; the deal-signal detector's D9.1 genesis lane keys on meeting_type='sales' (defensive read: an untyped meeting contributes no genesis signal). PERSON BINDING (BUG-8244): the canonical shape carries top-level person_ids[] (resolved) AND data.attendees[] (invitee emails, verbatim from the source) — construct via meeting_capture.build_meeting_event(), never by hand. data.attendees_external[] holds display names with no entities.json match. data.attendee_person_ids and data.attendee_emails are LEGACY read-only variants: readers fold them via event_refs.meeting_person_ids(); no new writer may emit them.",
     "required": [["title", "summary"]],
-    "properties": {"title": "string", "summary": "string", "source_ref": "string", "person_ids": "array", "attendees": "array", "attendees_external": "array", "attendee_person_ids": "array", "attendee_emails": "array", "primary_thread_id": "string", "meeting_type": "string", "duration_min": "number", "status": "string", "transcript_class": "string", "working_session": "boolean"}
+    "properties": {"title": "string", "summary": "string", "source_ref": "string", "person_ids": "array", "attendees": "array", "attendees_external": "array", "attendee_person_ids": "array", "attendee_emails": "array", "primary_thread_id": "string", "meeting_type": "string", "duration_min": "number", "status": "string", "transcript_class": "string", "working_session": "boolean", "calendar": "string", "calendar_binding": "object"}
   },
   "meeting_processed": {
     "description": "A processed meeting. References the meeting and carries a summary/title.",
     "required": [["meeting_id", "title", "summary", "source_ref"]],
-    "properties": {"meeting_id": "string", "title": "string", "summary": "string", "source_ref": "string", "person_ids": "array"}
+    "properties": {"meeting_id": "string", "title": "string", "summary": "string", "source_ref": "string", "person_ids": "array", "calendar_binding": "object"}
   },
   "interaction": {
     "description": "A passive-capture touchpoint. Carries a source_ref (dedup key) or a summary.",

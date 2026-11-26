@@ -219,6 +219,14 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 
 `set` the answer on `feed/urgent` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
+**Then the prep edits (cr1#1788).** The Prep page's own edits (the agenda, the Goal, the call guide's adds and removes), from their own small store, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_prepx"}'
+```
+
+`set` the answer on `feed/prepx` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
 **Then Focus (cr1#1785).** The list the owner picks: what is in it, in the owner's order, from its own small store, one read beside the data:
 
 ```bash

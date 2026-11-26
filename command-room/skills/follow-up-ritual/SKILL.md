@@ -176,7 +176,7 @@ The skill auto-detects the meeting — most recent Granola note, pasted transcri
    - Default register for uncalibrated workspaces is sharp and warm ("Good talk. Quick recap — …").
 4. **Draft the follow-up emails.**
    - One per attendee who owns ≥1 action item.
-   - Subject: "Follow-up: [Meeting topic], [Date]" — dash-free (S3 subject gate: no dashes as punctuation in subjects; run the drafted subject through the detector with `--context subject`, same bash gate as the body below)
+   - Subject: "Follow-up: [Meeting topic], [Date]" — dash-free (S3 subject gate: no dashes as punctuation in subjects; run the drafted subject through the detector with `--context subject`, same bash gate as the body below; a new subject, never a reply, so no `--inbound`)
    - Body: 1-sentence opener → bullet list of their actions → their dates → sign-off.
    - If a decision concerns them, surface it in one line.
    - **Warm-but-brief formula.** Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md`:
