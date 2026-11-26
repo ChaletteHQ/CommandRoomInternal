@@ -267,6 +267,13 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "chat_context:connector_read_row",
     "fire_guards:retirement",
     "fire_guards:root_guard",
+    # cr1#1808 - the fire's four questions in one call (root guard, retired,
+    # scheduled writer, migrated), each exactly as it answers alone, each with
+    # its own fall-through; reads only, like each of them.
+    "fire_guards:fire_checks",
+    # cr1#1808 (item 5 A) - call-prep's nine reads for one meeting in one call,
+    # each exactly as its own line answers, each failing into its own part.
+    "morning_brief_helpers:call_prep_context",
     # IDENT1 I-12 - the text surface for a run with no widget tool, the
     # delivery plan it follows, and the typed `draft N` reader. All three
     # read or compose; the landing is `write`, the rows are `append_jsonl`.
@@ -428,6 +435,8 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_followups",  # cr1#1745 - the follow-ups waiting on the wrap-up page, read only
     "cockpit_helpers:feed_urgent",  # cr1#1786 - Urgent, re-ranked from the inbox part's store, read only
     "followup_draft:feed_followups",  # cr1#1745 - the same, with the wall checked as it stands
+    "cockpit_helpers:feed_focus",  # cr1#1785 - Focus, the list the owner picks, read only
+    "cockpit_helpers:feed_allopen",  # cr1#1785 - every open item, lean, for All open's search, read only
     "cockpit_helpers:feed_stillyours",  # cr1#1706 - the Still yours? review's own document, as its writers left it, read only
     "usage_guide:guide",  # cr1#187 - the habits and phrases: the Settings section and the typed "how do I use this", read only
     "cockpit_helpers:feed_mine",  # cr1#662 - the Today page's priorities and reminders, read only
@@ -580,6 +589,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "morning_brief_helpers:reminders",  # BRIEFDOOR1 - Step 3f's own pins
     "morning_brief_helpers:post_text",  # BRIEFDOOR1 - the chat copy's document links
     "bridge_versions:install_versions",  # HYGIENE3 - the bridge's version triple, workspace half (D-3)
+    "bridge_versions:receipt_saved",  # LANDLINE1 (cr1#1759) - is this run's own update receipt in any computer's log
     "schedule_backend:plan_registration",  # BRIDGE2 - registration planned beside the data: the seat digest vs the declaration (R-WALK-3)
     "schedule_backend:plan_default_cron_moves",  # cr1#967 - a kept chat still at an old shipped default time moves, time only; the owner's own time never
     "schedule_config:scheduled_writer",  # BRIDGE2 - the declaration read where the folder is, so a refusal can name the computer
@@ -2360,10 +2370,19 @@ def _timed_door(fn: Callable[..., Dict[str, Any]]) -> Callable[..., Dict[str, An
                 # Review round 4 of #1613 (N3): a helper that answers ok false
                 # ran and failed; its row says so, as a door refusal does.
                 res = out.get("result")
-                ok = bool(out.get("ok")) and not (isinstance(res, dict) and res.get("ok") is False)
+                # cr1#1808 (D'): a helper that answers `{"error": ...}` (the
+                # `answers` rule) also failed; the row keeps a code token only
+                errored = isinstance(res, dict) and bool(res.get("error")) and res.get("ok") is not True
+                ok = bool(out.get("ok")) and not (isinstance(res, dict) and res.get("ok") is False) and not errored
+                code = ""
+                if not ok:
+                    if not out.get("ok"):
+                        code = str(out.get("reason") or "")
+                    elif isinstance(res, dict):
+                        code = str(res.get("reason") or res.get("code") or res.get("error") or "answered_no")
                 task_timings.append_step(out["ws"], name, started=started,
                                          elapsed_ms=int((time.monotonic() - t0) * 1000),
-                                         ok=ok, args=args)
+                                         ok=ok, args=args, code=code)
         except Exception:  # noqa: BLE001 - a timing never changes the call's answer
             pass
         return out
@@ -3141,8 +3160,16 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
                      **_origin_fields(env))
 
 
+#: cr1#1759: said beside `landed_rel`, so a run that reads only `ok` and then
+#: looks in the shared log cannot report the row as missing (it did: a real
+#: seat's update receipt sat in its computer's own log while the run said lost).
+LANDED_OWN_LOG_LINE = ("Saved in this computer's own activity log ({rel}), "
+                       "not the shared one. Every reader includes it, so "
+                       "nothing is missing.")
+
+
 def _landed_fields(target: Path, vm_path: Path) -> Dict[str, Any]:
-    """`{landed_rel}` when the rows landed in this computer's own log rather
+    """`{landed_rel, line}` when the rows landed in this computer's own log rather
     than the live one, else `{}` (cr1#1005 part 4).
 
     On a seat that knows another computer and does not own the live log, the
@@ -3161,9 +3188,10 @@ def _landed_fields(target: Path, vm_path: Path) -> Dict[str, Any]:
     if not landed:
         return {}
     try:
-        return {"landed_rel": Path(landed).resolve().relative_to(vm_path.resolve()).as_posix()}
+        rel = Path(landed).resolve().relative_to(vm_path.resolve()).as_posix()
     except (OSError, ValueError):
         return {}
+    return {"landed_rel": rel, "line": LANDED_OWN_LOG_LINE.format(rel=rel)}
 
 
 # ---------------------------------------------------------------------------

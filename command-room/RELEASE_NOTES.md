@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.12.1 (2026-11-25)
+
+Today now opens with a header: the date and time, a greeting from your AI, and a box that opens a chat with your question typed in. The calendar lists today's meetings with a Now line, each with one status line and at most one button. To do opens on Focus, the items you are working on, with All open and search one press away. A meeting whose title names someone off limits now offers nothing anywhere on the Hub. After updating, say "update my hub" once and reload the Hub tab.
+
 ## v6.12.0 (2026-11-25)
 
 Today has a new look and a new frame. Urgent lists the messages that need you now, each with one button, above your to-do lists. People shows your follow-ups and key relationships, and Priorities says which are moving. If your off-limits list cannot be read, the Hub names nobody and says so. An Update now rebuilds the page in one step where it can. Focus, the Today header and the new calendar rows come in the next release. After updating, say "update my hub" once and reload the Hub tab.

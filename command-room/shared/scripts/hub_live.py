@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import unicodedata
 from pathlib import Path
@@ -96,9 +97,22 @@ def _digests(values) -> List[str]:
     return sorted(out)
 
 
+def _word_form(value: Any) -> str:
+    """cr1#1845: a name as words only, every mark a space ("Quinn A. Sample",
+    "Dr. Quinn Sample", "O'Sample", a long dash or a hyphen, brackets), read
+    first as `_norm` reads it. The page cuts a title the same way, at every
+    mark, so a name written with marks on file still matches its title."""
+    return " ".join(re.findall(r"[^\W_]+", _norm(value)))
+
+
+def _word_digests(values) -> List[str]:
+    """cr1#1845: each value's word form, hashed (`_word_form`)."""
+    return sorted({hashlib.sha256(w.encode("utf-8")).hexdigest() for w in (_word_form(v) for v in values) if w})
+
+
 def _closed(line: str) -> Dict[str, Any]:
     return {"ok": False, "plan": [], "blocked": line, "walled": [], "off_limits": [],
-            "off_limits_names": [], "known_names": [], "hashed": "sha256", "own": [], "own_names": [],
+            "off_limits_names": [], "off_limits_words": [], "known_names": [], "hashed": "sha256", "own": [], "own_names": [],
             "chat_ok": False}
 
 
@@ -232,6 +246,8 @@ def wall(workspace_root) -> Dict[str, Any]:
                 "walled": sorted(walled),
                 "off_limits": _digests(addrs),
                 "off_limits_names": _digests(names),
+                # cr1#1845 (add-only): each name's word form, so a name with marks matches a title cut at every mark
+                "off_limits_words": _word_digests(names),
                 "known_names": _digests(known) if len(known) <= LIST_CAP else None,
                 "hashed": "sha256",
                 # the owner's names are text: each as written and as `_norm` reads it

@@ -132,6 +132,47 @@ def _workspace_stamp(workspace_root) -> Optional[str]:
         return None
 
 
+def receipt_saved(workspace_root, seq=None, ts=None, to_version=None) -> Dict[str, Any]:
+    """Is THIS run's `plugin_update` receipt in the log? On the read door
+    (`bridge_versions:receipt_saved`, cr1#1759). The receipt is named by the
+    `seq` and `ts` the append door stamped on it, and its `to_version`, and
+    looked for across every computer's log (`events_io.iter_events`).
+
+    Not "the newest receipt": the merged view orders rows by entry number, and
+    two computers out of sync can give an OLDER receipt a HIGHER number, so the
+    last row read can be another computer's earlier one (review of #1759).
+    Answers `{saved, line}`: True (found), False (read, and not there), or
+    None (could not be checked: the log could not be read, or the receipt was
+    not named by a seq and a ts, as from an older runtime's append answer).
+    A failed read is never said as a failed save (fix check of #1759). Never
+    raises."""
+    want_seq = seq if isinstance(seq, int) and not isinstance(seq, bool) else None
+    want_ts = ts.strip() if isinstance(ts, str) and ts.strip() else None
+    want_v = _clean(to_version)
+    if want_seq is None or want_ts is None or want_v is None:
+        return {"saved": None, "line": RECEIPT_NOT_CHECKED_LINE}
+    try:
+        import events_io  # noqa: WPS433
+        for ev in events_io.iter_events(workspace_root):
+            if ev.get("type") != "plugin_update" or ev.get("seq") != want_seq:
+                continue
+            if str(ev.get("ts") or "").strip() != want_ts:
+                continue
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if _clean(data.get("to_version") or ev.get("to_version")) == want_v:
+                return {"saved": True, "line": ""}
+    except Exception:  # noqa: BLE001 - a read that failed checked nothing
+        return {"saved": None, "line": RECEIPT_NOT_CHECKED_LINE}
+    return {"saved": False, "line": RECEIPT_NOT_SAVED_LINE}
+
+
+#: Said by the update when its own receipt is not found (cr1#1759).
+RECEIPT_NOT_SAVED_LINE = ("The update record did not save, so this update is "
+                          "not complete.")
+#: Said when the receipt could not be looked for (cr1#1759 fix check).
+RECEIPT_NOT_CHECKED_LINE = "The update record could not be checked just now."
+
+
 def _clean(value: Any) -> Optional[str]:
     if isinstance(value, str) and value.strip() and value.strip() != UNKNOWN:
         return value.strip()

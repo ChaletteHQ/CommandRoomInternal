@@ -1281,6 +1281,119 @@ def coaching_handoff(workspace_root: str,
         title=str(title or ""))))
 
 
+#: cr1#1808 (item 5 A): the reads call-prep makes for one meeting, each by
+#: the key its answer comes back under in `call_prep_context`.
+CALL_PREP_CONTEXT_PARTS = ("constraints", "coaching", "threads", "craft", "brief_path", "fact_closes",
+                           "carried", "attached", "owed")
+
+
+def call_prep_context(workspace_root: str, *, meeting_id: str = "", title: str = "", date_iso: str = "",
+                      attendee_person_ids: Optional[List[str]] = None,
+                      attendee_names: Optional[List[str]] = None,
+                      primary_thread_id: Optional[str] = None,
+                      craft_context: str = "", craft_subject_ids: Optional[List[str]] = None,  # None: derived
+                      recipient_id: Optional[str] = None, domain: Optional[str] = None,
+                      user_person_id: str = "") -> Dict[str, Any]:
+    """READ ONLY. cr1#1808 (item 5 A): the nine reads call-prep makes for one
+    meeting, in ONE door call, so a four-meeting morning spends about 35
+    calls fewer. Each part is EXACTLY what its own line answers when asked
+    alone (`prep_constraints`, `coaching_handoff`, `thread_payloads` with the
+    call-prep profile, `craft_recall:craft_for_task`,
+    `prep_pipeline:resolve_prep_brief_path`, `exit_doors:plan_fact_closes`,
+    `hub_meeting:carried_points`, `meeting_attach:for_brief`,
+    `commitments_helpers:meeting_today_rows`), under the key in
+    `CALL_PREP_CONTEXT_PARTS`. A part that cannot answer comes back as
+    `{"error": "<Type>: <message>"}` (the `answers` rule), and that part is
+    read exactly as its own line's `ok: false`; it never changes another
+    part. Writes nothing: the writers, the correction turn, the cite step
+    and the opener stay their own calls."""
+    ids = [str(x) for x in (attendee_person_ids or []) if str(x)]
+    names = [str(x) for x in (attendee_names or []) if str(x)]
+
+    def part(fn):
+        try:
+            return _jsonable(fn())
+        except Exception as exc:  # noqa: BLE001 - one part's failure is that part's answer only
+            if getattr(exc, "cr_refusal_reason", None):
+                raise
+            return {"error": f"{type(exc).__name__}: {exc}"[:300]}
+
+    # Review of #1808 (should 1): the nine parts read the event log once
+    # between them (the reader's own OneLogRead, as prep_all does)
+    from events_io import OneLogRead
+
+    with OneLogRead():
+        return _call_prep_context_parts(workspace_root, part, ids, names, meeting_id=meeting_id, title=title,
+                                        date_iso=date_iso, primary_thread_id=primary_thread_id,
+                                        craft_context=craft_context, craft_subject_ids=craft_subject_ids,
+                                        recipient_id=recipient_id, domain=domain, user_person_id=user_person_id)
+
+
+def _call_prep_context_parts(workspace_root, part, ids, names, *, meeting_id, title, date_iso, primary_thread_id,
+                             craft_context, craft_subject_ids, recipient_id, domain, user_person_id) -> Dict[str, Any]:
+    """`call_prep_context`'s nine parts, inside its one log read."""
+    tid = str(primary_thread_id or "").strip()
+    threads = part(lambda: thread_payloads(workspace_root, [tid] if tid else [], profile="call-prep"))
+
+    def craft_subjects() -> List[str]:
+        """The run's own list when it gave one; else, as call-prep says, every
+        resolved attendee who is not among the people the thread payload's
+        `people_craft` already carries."""
+        if craft_subject_ids is not None:
+            return [str(x) for x in craft_subject_ids if str(x)]
+        pay = threads.get(tid) if isinstance(threads, dict) and tid else None
+        sec = ((pay or {}).get("sections") or {}).get("people_craft") if isinstance(pay, dict) else None
+        have = {str(f.get("subject_id")) for f in ((sec or {}).get("content") or []) if isinstance(f, dict)}
+        return [x for x in ids if x not in have]
+
+    def craft():
+        import craft_recall
+
+        return craft_recall.craft_for_task(workspace_root, craft_subjects(), "call-prep",
+                                           context=str(craft_context or "") or None)
+
+    def brief_path():
+        import prep_pipeline
+
+        return prep_pipeline.resolve_prep_brief_path(workspace_root, str(meeting_id), title=str(title or "") or None,
+                                                     date_iso=str(date_iso))
+
+    def fact_closes():
+        import exit_doors
+
+        return exit_doors.plan_fact_closes(workspace_root, only_person_ids=ids)
+
+    def carried():
+        import hub_meeting
+
+        return hub_meeting.carried_points(workspace_root, person_ids=ids)
+
+    def attached():
+        import meeting_attach
+
+        return meeting_attach.for_brief(workspace_root, meeting_id=str(meeting_id), person_ids=ids)
+
+    def owed():
+        import commitments_helpers
+
+        return commitments_helpers.meeting_today_rows(
+            workspace_root, todays_meetings=[{"attendee_names": names, "attendee_person_ids": ids,
+                                              "meeting_id": str(meeting_id), "title": str(title or "")}],
+            user_person_id=str(user_person_id or ""))
+
+    return {
+        "constraints": part(lambda: prep_constraints(workspace_root, recipient_id=recipient_id, domain=domain)),
+        "coaching": part(lambda: coaching_handoff(workspace_root, attendee_person_ids=ids, title=str(title or ""))),
+        "threads": threads,
+        "craft": part(craft),
+        "brief_path": part(brief_path),
+        "fact_closes": part(fact_closes),
+        "carried": part(carried),
+        "attached": part(attached),
+        "owed": part(owed),
+    }
+
+
 @answers
 def prep_opener(workspace_root: str, rel: str = "",
                 drive_web_url: str = "") -> Dict[str, Any]:

@@ -100,11 +100,6 @@
 
   /* cr1#1591 (B3): the top bar's one Ask opens this panel under it: one box,
      and the owner's press says which it is, Something is wrong or Ask for a change. */
-  .missbox { border: 1px solid var(--rule); background: var(--sheet); padding: 12px 16px; margin: 8px 0; }
-  .missbox textarea { width: 100%; min-height: 54px; font: 14px var(--font-sans); box-sizing: border-box; }
-  .missbox .missacts { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
-  .missbox .missrow { margin-top: 8px; }
-  .missbox #askNote:empty { display: none; }
 
 
   /* cr1#1591 (B2): Go is a button in the top bar (square since cr1#1783); the run's four legs are a 2px
@@ -454,7 +449,6 @@
   .clock { font: 600 20px var(--font-display); color: var(--ink); letter-spacing: -.02em; }
   .light .dot { border-radius: 50%; }
   .light .name { letter-spacing: .04em; }
-  .missbox { border: 0; border-radius: var(--card); }
   section.tab { padding-top: 10px; }
 
   /* ---- the look (cr1#1783, the design's visual spec): 3px buttons, 1px cards, 18px headings at 650 and 92% width ---- */
@@ -486,7 +480,7 @@
   .firstcard { border: 0; border-radius: var(--card); background: var(--go-soft); }
   .daysent { font: 600 27px/1.2 var(--font-display); letter-spacing: -.02em; margin: 2px 0 12px; }
   .prepbox { border: 0; border-radius: var(--card); box-shadow: 0 0 0 1px var(--line); margin: 6px 0; }
-  textarea.note, input.when, textarea.draft, .search, select.prio, .missbox textarea { border-radius: var(--radius); }
+  textarea.note, input.when, textarea.draft, .search, select.prio { border-radius: var(--radius); }
   .skeleton { border-radius: var(--card); }
   .panel { border-left-color: var(--line); }
 
@@ -495,7 +489,7 @@
   .cap { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); }
   .cap.go { color: var(--go-text); }
   .cbar { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--card); padding: 10px 12px; }
-  .cbar .ctitle { font: 650 18px var(--font-display); font-stretch: 92%; letter-spacing: -.01em; color: var(--ink); }
+  .cbar .ctitle { font: 650 18px var(--font-display); font-stretch: 92%; letter-spacing: -.01em; color: var(--ink); flex: none; white-space: nowrap; }
   .cbar .csum, .cbar .cbarsum { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--ink-soft); }
   .cbar button.act { flex: none; font-size: 12px; padding: 4px 9px; border-color: var(--ink); background: var(--raise); }
   .cbar:hover { border-color: var(--ink); }
@@ -543,7 +537,7 @@
      spec's measures; the sandbox for anything it does not list. Theme variables
      only. ---- */
   /* the closed bar's title is a section title */
-  .cbar .ctitle { font: 650 18px var(--font-display); font-stretch: 92%; letter-spacing: -.01em; color: var(--ink); }
+  .cbar .ctitle { font: 650 18px var(--font-display); font-stretch: 92%; letter-spacing: -.01em; color: var(--ink); flex: none; white-space: nowrap; }
   /* a row without a check box or handle: text, then actions */
   .xrow:has(> .main:first-child) { grid-template-columns: minmax(0, 1fr) auto; }
   .xrow .title { font-size: 15px; font-weight: 400; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
@@ -640,6 +634,9 @@
      they keep the right column's one-line rows, copied rule for rule (the
      wrapper is not a .tside: the narrow two-column rule would split it). */
   .hhtodos { position: relative; }
+  /* cr1#1785, fixed by cr1#1784 part B: #fxAdd's summary (.addfold's, absolute at top right) had no positioned box
+     above it and drew in the page's top-right corner over the masthead; it sits at its own view's top right now */
+  #fxview { position: relative; }
   .hhtodos .addrow input.when { min-width: 110px; }
   .hhtodos .row { flex-direction: column; align-items: flex-start; gap: 8px; }
   .hhtodos .row .acts { justify-content: flex-start; }
@@ -684,8 +681,6 @@
   .nx button.pm .tag { flex: none; margin-left: 0; }
   .nx a.join, .nx button.nxgo { flex: none; font-size: 12px; padding: 3px 11px; }
   .nxnone { font-size: 13.5px; color: var(--ink-soft); padding: 6px 0 2px; }
-  .nxmorefold > summary { cursor: pointer; padding: 6px 0 2px; font: 500 13px var(--font-sans); color: var(--go-text); }
-  .nxmorefold > summary:hover { text-decoration: underline; text-underline-offset: 3px; }
   .nx button.pm .st.prep { color: var(--ink-soft); }
   .railnote { font-size: 12.5px; color: var(--ink-soft); margin: 8px 0 2px; }
   button.pm { display: flex; align-items: flex-start; gap: 9px; width: 100%; background: none; border: 0; border-radius: var(--radius); padding: 6px; margin-left: -6px; text-align: left; font: inherit; font-size: 13.5px; line-height: 1.35; color: var(--ink); }
@@ -723,6 +718,53 @@
   .nextcard .nk { font-size: 12.5px; color: var(--ink-soft); }
   .nextcard .nt { font: 600 20px/1.2 var(--font-display); letter-spacing: -.015em; margin: 1px 0 6px; overflow-wrap: anywhere; }
   .hublabel { font: 600 15px var(--font-display); margin: 0 0 2px; }
+  /* cr1#1784 part B: the header, and the Calendar's rows (one status line under the title, one button at the right).
+     The Look's tokens only (#1807): shapes from --card and --radius, colours from the theme. */
+  #hubhead { background: var(--surface); border: 1px solid var(--line); border-radius: var(--card); padding: 22px 24px 20px; margin: 0 0 28px; }
+  #hhbrand { display: flex; align-items: center; gap: 8px; }
+  #hhbrand .wordmark { height: 18px; }
+  #hubclock { display: flex; align-items: baseline; gap: 12px; margin-top: 10px; }
+  .hhday { font-size: 13px; color: var(--ink-soft); }
+  #hubgreet { font: 400 16px var(--font-sans); color: var(--ink-soft); margin: 4px 0 12px; }
+  .hubaskrow { display: flex; gap: 8px; max-width: 720px; align-items: center; }
+  #hubask { flex: 1 1 auto; min-width: 0; font: 14px var(--font-sans); padding: 8px 10px; background: var(--raise); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius); }
+  .hhwrong { margin-top: 6px; font-size: 12px; }
+  .nx.xrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; align-items: start; }
+  .nx.xrow > button.pm { grid-column: 1; }
+  .nx.xrow > .nxgo { grid-column: 2; align-self: start; }
+  .nx button.pm { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: baseline; text-align: left; }
+  .nx button.pm .tm { grid-column: 1; grid-row: 1 / span 2; font-size: 13px; color: var(--ink-soft); }
+  .nx button.pm .tt { grid-column: 2; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nx button.pm .tag { grid-column: 2; justify-self: start; }
+  .nx button.pm .st { grid-column: 2; font-size: 12px; color: var(--ink-soft); }
+  .nx button.pm .st.late { color: var(--need-text); }
+  details.pastdone { margin-top: 10px; }
+  details.pastdone > summary { cursor: pointer; list-style: none; font: 500 13px var(--font-sans); color: var(--ink-soft); }
+  details.pastdone > summary::-webkit-details-marker { display: none; }
+  details.pastdone > summary:hover { text-decoration: underline; text-underline-offset: 3px; }
+  details.pastdone[open] > summary { color: var(--ink); }
+  .nxnow { font-size: 13px; color: var(--go-text); font-weight: 600; border-left: 2px solid var(--go); padding-left: 8px; margin: 6px 0; }
+  /* cr1#1783 for cr1#1784-B (review j): a calendar row whose meeting has nothing to open
+     is a div.pm, and takes the same two columns as the button (time | title, the status
+     under the title; the spec's 13px secondary time and 14px meeting); a struck row's word
+     sits under its title with no old indent; Reminders' later ones fold under one quiet
+     line; the meeting's people line and Coming up's day labels. */
+  .nx div.pm { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: baseline; width: 100%; min-width: 0; padding: 6px; margin-left: -6px; font-size: 13.5px; line-height: 1.35; color: var(--ink); }
+  .nx.xrow > div.pm { grid-column: 1; }
+  .nx div.pm .tm { grid-column: 1; grid-row: 1 / span 2; font-size: 13px; color: var(--ink-soft); white-space: nowrap; }
+  .nx div.pm .tt { grid-column: 2; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nx div.pm .tag { grid-column: 2; justify-self: start; margin-left: 0; }
+  .nx div.pm .st { grid-column: 2; font-size: 12px; color: var(--ink-soft); white-space: nowrap; }
+  .nx div.pm .st.late { color: var(--need-text); }
+  .nx.off button.pm .st, .nx.off div.pm .st { padding-left: 0; flex-basis: auto; text-align: left; }
+  details.remlater { margin-top: 10px; }
+  details.remlater > summary { cursor: pointer; list-style: none; padding: 6px 0 2px; font: 500 13px var(--font-sans); color: var(--ink-soft); }
+  details.remlater > summary::-webkit-details-marker { display: none; }
+  details.remlater > summary:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+  details.remlater[open] > summary { color: var(--ink); margin-bottom: 4px; }
+  .nxpeople { font-size: 13px; color: var(--ink-soft); padding: 0 0 6px; }
+  div.cap.cday { margin: 14px 0 2px; }
+  div.cap.cday:first-child { margin-top: 0; }
   /* cr1#1591 B4: one heading with one count, and the quiet switch at its right */
   .needhead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 0 0 2px; }
   .needhead h2 { font: 600 16px var(--font-display); margin: 0; }
@@ -1105,8 +1147,8 @@
   <!-- cr1#1722: no Apply button; a press saves itself about two minutes later, and the count of what waits is kept here, not shown (the waiting line beside it is what is read out) -->
   <span class="tabside"><span class="applyn" id="applyN" hidden></span></span>
   <span class="srlive" id="waitingLive" role="status" aria-live="polite"></span>
+  <a class="ghost" id="missTop" href="#" target="_blank" rel="noopener" title="Open a chat to say what is wrong; it counts in your week">Something is wrong</a>
   <button class="ghost" id="briefBtn" type="button" aria-haspopup="dialog" aria-controls="drawer-brief" title="This morning's brief, as written">Brief</button>
-  <button class="ghost" id="missBtn" type="button" aria-expanded="false" aria-controls="missbox" title="Say what is wrong or what you would change, and open a chat about it">Ask</button>
   <button class="ghost ic" id="gearBtn" type="button" aria-label="Settings" aria-haspopup="dialog" aria-controls="drawer-settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"></circle><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"></path></svg></button>
 </header>
 <!-- cr1#1591: a banner shows under the bar, so it is in sight wherever the page is scrolled -->
@@ -1124,17 +1166,6 @@
   </div>
 </div>
 </details>
-<!-- cr1#1591 (B3): the one Ask. The owner's press says which it is, never a
-     guess from the words: Something is wrong opens the problem chat and counts
-     in the week's measure (cr1#1315); Ask for a change opens a chat and counts
-     nothing. Nothing is sent until the owner presses send in the chat. -->
-<div class="missbox" id="missbox" hidden>
-  <label for="missText">What is wrong, or what would you change?</label>
-  <textarea id="missText" maxlength="600" placeholder="For example: the sample deck I promised Rio on Friday is not on my list"></textarea>
-  <div class="missacts"><a class="act" id="missSave" href="#" target="_blank" rel="noopener">Something is wrong</a><a class="act" id="askGo" href="#" target="_blank" rel="noopener">Ask for a change</a><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-ask" aria-label="About Ask"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-ask" hidden>A new chat opens with your words typed in. Nothing is sent until you press send there.</span></span></div>
-  <div class="quiet" id="askNote" role="status"></div>
-  <div id="missrows"></div>
-</div>
 
 <!-- cr1#1645 item 11: the update is one chip in the top bar, by the status line (see #updatebar there). -->
 
@@ -1142,16 +1173,16 @@
   <!-- cr1#1636 item 7: Today's own line sits in the headline's icon (renderSentence), beside
        Today's heading, never alone under the top bar; each section's line sits beside its heading. -->
   <!-- cr1#1784 part A: the header across the three columns (#1784-B draws it; hidden until it does) -->
-  <div class="hubhead" id="hubhead" hidden><div id="hubclock"></div><div id="hubgreet"></div><div class="hubaskrow"><input id="hubask" type="text" autocomplete="off"><button class="act" id="hubaskGo" type="button">Ask</button></div></div>
+  <div class="hubhead" id="hubhead" hidden><div class="hhbrand" id="hhbrand"></div><div id="hubclock"></div><div id="hubgreet"></div><div class="hubaskrow"><input id="hubask" type="text" autocomplete="off" maxlength="600"><a class="act" id="hubaskGo" href="#" target="_blank" rel="noopener">Ask</a></div><div class="quiet" id="hhasknote" role="status" aria-live="polite"></div><div class="hhwrong"><a class="quiet" id="missSave" href="#" target="_blank" rel="noopener" title="Say in the box what is wrong, and open a chat about it">Something is wrong</a></div></div>
   <div class="today3">
   <!-- the calendar: the next meetings as a short list, then the meetings already over, folded (cr1#1591; the day grid is on Week) -->
   <aside class="tcal" aria-label="Calendar">
-    <div class="hhead"><h2>Next</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-sec-next" aria-label="About Next"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-sec-next" hidden>Your next meetings, each opening its prep when you press it</span></span></div>
+    <div class="hhead"><h2>Calendar</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-sec-next" aria-label="About Calendar"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-sec-next" hidden>This day's meetings, each opening its page when you press its name</span></span></div>
     <div class="nextlist" id="nextlist"></div>
     <div class="calacts" id="calacts"></div>
     <!-- cr1#1784 part A: Coming up, a closed bar over the coming days (#1784-B draws it) -->
     <div class="comingup" id="comingup"><div class="cbar" data-hh-bar="comingup"></div><div id="cominglist" data-hh-body="comingup"></div></div>
-    <details class="pastgrp" id="pastgrp"><summary>Past meetings<span class="pastn" id="pastN"></span></summary><div id="pastmeetings"></div></details>
+    <details class="pastgrp" id="pastgrp"><summary>Earlier this week<span class="pastn" id="pastN"></span></summary><div id="pastmeetings"></div></details>
   </aside>
   <!-- the middle: the day's headline, then Focus (the default) or Everything; a pressed meeting opens here in their place -->
   <div class="tmid">
@@ -1211,8 +1242,8 @@
       </div>
     </div>
     </div>
-    <!-- cr1#1784 part A: the to-dos' "+ Add" sits at its heading's right; its rules were the right column's, until #1785 styles To do -->
-    <div class="hhtodos" style="position: relative">
+    <!-- cr1#1784 part A: the to-dos' block; the Look's .hhtodos rules give it the right column's row shape and anchor "+ Add" -->
+    <div class="hhtodos">
     <div class="col hubblock">
       <div class="hhead"><h2>My to-dos</h2><span class="tip"><button type="button" class="tipbtn" data-tip aria-expanded="false" aria-controls="tip-sec-todos" aria-label="About My to-dos"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 7.3v4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path><circle cx="8" cy="4.8" r="1" fill="currentColor"></circle></svg></button><span class="tippop" id="tip-sec-todos" hidden>Things you mean to do, in your own words, with no date set</span></span></div>
       <details class="addfold" id="todoFold"><summary title="Add a to-do">+ Add</summary><div class="addrow"><input class="when" id="todoText" placeholder="Add a to-do" aria-label="Add a to-do"><label class="prio-label" for="todoPrio">Importance</label><select class="prio" id="todoPrio" title="How much this matters; it sets no date"><option value="1">High</option><option value="2" selected>Medium</option><option value="3">Low</option></select><button class="act primary" id="todoAdd" type="button">Add</button></div></details>
@@ -1909,16 +1940,10 @@
     try { localStorage.setItem("hub.theme", name); } catch (e) {}
   }
   try { var savedTheme = localStorage.getItem("hub.theme"); if (savedTheme === "paper" || savedTheme === "ink" || savedTheme === "day" || savedTheme === "evening") setTheme(savedTheme); } catch (e) {}
-  // cr1#1591 (B3): the top bar's Ask opens its panel under the bar; a second press, or Escape, closes it.
-  function setAsk(on) {
-    var box = $("missbox"), b = $("missBtn"); if (!box) return;
-    box.hidden = !on; if (b) b.setAttribute("aria-expanded", on ? "true" : "false");
-    if (on) { renderMiss(); bringIntoView(box); var t = $("missText"); if (t) t.focus({ preventScroll: true }); }
-  }
-  $("missBtn").addEventListener("click", function () { setAsk($("missbox").hidden); });
   // a middle click opens the link too, so it takes the same address (review)
   $("missSave").addEventListener("click", problemChat);
   $("missSave").addEventListener("auxclick", problemChat);
+  if ($("missTop")) { $("missTop").addEventListener("click", problemTop); $("missTop").addEventListener("auxclick", problemTop); }
   $("lookrow").addEventListener("click", function (ev) { var b = ev.target.closest("button[data-look]"); if (b) setTheme(b.getAttribute("data-look")); });
 
   // ---- status lights -------------------------------------------------------
@@ -2170,7 +2195,13 @@
   // own light carries (ruling of review of #1734, item 5). One more queued
   // behind a running one still reads "Updating…". Maintenance is not on the line.
   function statusLine(view) {
-    if (SEQ.starting || (view && view.anyRunning) || updateQueued) return "Updating…";
+    // cr1#1784 part B (seen on a real seat): the line names the part that is running, not only "Updating…"
+    if (SEQ.starting || (view && view.anyRunning) || updateQueued) {
+      var running = LEGS.filter(function (l) { return isRunning(l[0]); }).map(function (l) { return l[1]; });
+      if (!running.length && isRunning("morning")) running = ["Morning"];
+      // review round 1, should i: the Update alone is just "Updating…"
+      return running.length && !(running.length === 1 && running[0] === "Update") ? "Updating: " + running.join(", ") + "…" : "Updating…";
+    }
     var up = legState("update"), sv = (S.status.update || {}).saved;
     if (legBad(up) && sv && sv.failed > 0) return COULDNT_SAVE + sv.failed + " of your changes";
     var r = up, ok = r.state === "done" && r.at ? r.at : "";
@@ -2180,6 +2211,8 @@
       if (legBad(st) && (!ok || !after(ok, st.at)) && (!worst || after(st.at, worst.at))) worst = st;
     });
     if (worst) return COULDNT_UPDATE + lineReason(worst, "a part did not finish");
+    // cr1#1784 part B (ruling 135e): when nothing ran, cr1#1811's line says so, never over a failure (review round 1, should i)
+    if (typeof lrNote === "function") { var lr = ""; try { lr = lrNote() || ""; } catch (e) { lr = ""; } if (lr) return String(lr); }
     // cr1#1722 step 2: the morning's one line, until an update after it
     var mo = S.status.morning || {}, ms = legState("morning");
     if (!mo.pressed && ms.at && dayKey(new Date(ms.at)) === dayKey(new Date()) && (!ok || !after(ok, ms.at))) {
@@ -2264,6 +2297,8 @@
       // own row, never inside the heading: its words stay its owner's
       var h = document.querySelector(a[0]), host = h && h.parentNode; if (!host || !host.querySelector) return;
       var sp = host.querySelector(".asof"), t = asOfAt(a[1], now);
+      // cr1#1784 part B (130g): the Calendar's time shows only where the seat has no live calendar read
+      if (a[1] === "today" && typeof cal1Live === "function" && cal1Live()) t = null;
       if (!t) { if (sp && !sp.hidden) { sp.hidden = true; sp.innerHTML = ""; sp.removeAttribute("data-said"); } return; }
       if (!sp) { sp = document.createElement("span"); host.appendChild(sp); }
       var stale = asOfStale(t, a[2], now, a[1]), words = "as of " + asOfWords(t, now);
@@ -2331,13 +2366,19 @@
   function drawKeep(el, html) {
     if (!el) return false;
     var at = hhKeep.indexOf(el);
-    if (hhBusy(el)) { el.hhKept = html; if (at < 0) hhKeep.push(el); return false; }
+    // cr1#1852: what was shown when the draw was first kept; a direct draw since makes the kept one stale (hhFlush)
+    if (hhBusy(el)) { if (at < 0) { el.hhKeptOn = el.hubHtml; hhKeep.push(el); } el.hhKept = html; return false; }
     if (at >= 0) { hhKeep.splice(at, 1); el.hhKept = null; }
     putHtml(el, html);
     return true;
   }
   function hhFlush() {
-    hhKeep.slice().forEach(function (el) { if (!hhBusy(el)) { var h = el.hhKept; hhKeep.splice(hhKeep.indexOf(el), 1); el.hhKept = null; putHtml(el, h); } });
+    // cr1#1852: a kept draw never paints over content drawn directly after it was kept (an owner's own press draws at
+    // once); that content is newer, so the kept draw is dropped, and the press lands on what the owner sees
+    hhKeep.slice().forEach(function (el) {
+      var stale = el.hubHtml !== el.hhKeptOn;
+      if (stale || !hhBusy(el)) { var h = el.hhKept; hhKeep.splice(hhKeep.indexOf(el), 1); el.hhKept = null; el.hhKeptOn = undefined; if (!stale) putHtml(el, h); }
+    });
   }
   function hhLater() { if (hhKeep.length) setTimeout(hhFlush, 0); }
   document.addEventListener("dragstart", function () { hhDragOn = true; }, true);
@@ -2399,8 +2440,9 @@
       return n ? n + (n === 1 ? " priority" : " priorities") : "";
     }
     if (key === "comingup") {
-      var days = S.board && Array.isArray(S.board.days) ? S.board.days : [], d0 = S.board ? String(S.board.today || "") : "";
-      days.forEach(function (d) { if (d && String(d.date || "") > d0) n += (d.meetings || []).length; });
+      // review of #1784-B: the meetings are the Today feed's week, never feed/board's days (which carry none)
+      var wk = S.today && S.today.week ? S.today.week : null, d0 = String((wk && wk.today) || (S.board && S.board.today) || "");
+      (wk && Array.isArray(wk.days) ? wk.days : []).forEach(function (d) { if (d && String(d.date || "") > d0) (d.meetings || []).forEach(function (m) { if (m && m.start && !m.all_day && m.solo !== true && !m.away) n += 1; }); });
       return n ? n + (n === 1 ? " meeting" : " meetings") : "";
     }
     return "";
@@ -2497,6 +2539,118 @@
   function heldDrop(key) { var o = heldAll(); if (Object.prototype.hasOwnProperty.call(o, key)) { delete o[key]; heldSave(o); } }
   (function heldSweep() { var o = heldAll(), f = heldFresh(o, Date.now()); if (Object.keys(o).length !== Object.keys(f).length) heldSave(f); })();
   // ---- end the frame's helpers
+
+  // ---- the header (cr1#1784 part B) -----------------------------------------
+  // Above the three columns: the brand line, the date and time large and live
+  // on the workspace's clock, one line of greeting from the workspace's AI by
+  // name, and the chat box. A question typed there opens a new chat with it
+  // typed in and not sent, as typed (ruling 125h); nothing is answered on the
+  // page. The AI's name shows in the greeting and the chat box only (130i):
+  // every button keeps its plain label.
+  var HH_AI_DEFAULT = "Command Room";
+  function aiName() {
+    var n = S.settings && typeof S.settings.ai_name === "string" ? S.settings.ai_name.replace(/\s+/g, " ").trim() : "";
+    return n || HH_AI_DEFAULT;
+  }
+  // The workspace's clock (plWallOf), never the machine's zone.
+  function hhWall() {
+    if (typeof plWallOf === "function") { var w = plWallOf(Date.now()); if (w && w.date && w.at) return w; }
+    var d = new Date();
+    return { date: d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2), at: ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) };
+  }
+  // review round 1, should g: on the workspace's clock, in this browser's own 12/24-hour form, its zone named
+  // when the browser's own reads otherwise (plZoneTag), as the rows and the plan say it
+  function hhClockHtml() {
+    var z = typeof plZone === "function" ? plZone() : null, now = new Date(), o = { hour: "numeric", minute: "2-digit" }, od = { weekday: "long", month: "long", day: "numeric" };
+    if (z) { o.timeZone = z; od.timeZone = z; }
+    var time, day;
+    try { time = now.toLocaleTimeString([], o); day = now.toLocaleDateString([], od); } catch (e) { time = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); day = now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" }); }
+    var tag = typeof plZoneTag === "function" ? plZoneTag(now.getTime()) : "";
+    return '<span class="t-clock" data-hh-time>' + esc(time) + '</span> <span class="hhday">' + esc(day + tag) + "</span>";
+  }
+  function hhGreeting() {
+    var h = +hhWall().at.slice(0, 2), part = h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
+    return "Good " + part + ". Ask " + aiName() + " about your day, or hand something off.";
+  }
+  // The brand line: "COMMAND ROOM BY" as the caps label, then the wordmark
+  // outline the masthead already carries (128k), never the name in a font.
+  function hhBrandHtml() {
+    var svg = document.querySelector(".brand svg.wordmark");
+    var mark = svg ? '<svg class="wordmark" xmlns="http://www.w3.org/2000/svg" viewBox="' + esc(svg.getAttribute("viewBox") || "") + '" role="img" aria-label="chalette">' + svg.innerHTML + "</svg>" : "";
+    return '<span class="cap">Command Room by</span>' + mark;
+  }
+  function hhTick() { var c = $("hubclock"); if (c) putHtml(c, hhClockHtml()); }
+  // What the owner is typing survives the frame's restart (2026-11-25): the
+  // chat box's question and the "+ Reminder" box, each kept on input under
+  // its own key, put back once after the first draw, dropped when a chat
+  // opens, the reminder is added or the box is emptied.
+  var HH_KEEP = { hubask: "hubask:draft", remText: "remadd:draft", remDate: "remadd:draft" };
+  function hhKeepBox(id) {
+    if (typeof heldPut !== "function") return;
+    var key = HH_KEEP[id]; if (!key) return;
+    if (key === "remadd:draft") {
+      var t = $("remText"), d = $("remDate"), tv = t ? String(t.value || "") : "", dv = d ? String(d.value || "") : "";
+      if (!tv.trim()) { heldDrop(key); return; }
+      heldPut(key, { text: tv, date: dv, caret: hhCaret(t) });
+      return;
+    }
+    var b = $(id), v = b ? String(b.value || "") : "";
+    if (!v.trim()) { heldDrop(key); return; }
+    heldPut(key, { text: v, caret: hhCaret(b) });
+  }
+  function hhCaret(b) { try { return b && typeof b.selectionStart === "number" ? [b.selectionStart, b.selectionEnd] : null; } catch (e) { return null; } }
+  function hhPutBack(b, st) {
+    if (!b || !st || typeof st.text !== "string" || String(b.value || "")) return;
+    b.value = st.text;
+    if (st.caret && typeof b.setSelectionRange === "function") { try { b.setSelectionRange(st.caret[0], st.caret[1]); } catch (e) {} }
+  }
+  var hhRestored = false;
+  function hhRestore() {
+    if (hhRestored || typeof heldGet !== "function") return;
+    hhRestored = true;
+    hhPutBack($("hubask"), heldGet("hubask:draft"));
+    var r = heldGet("remadd:draft");
+    if (r) { hhPutBack($("remText"), r); var d = $("remDate"); if (d && r.date && !String(d.value || "")) d.value = r.date; var f = $("remFold"); if (f && f.setAttribute) f.setAttribute("open", ""); }
+  }
+  document.addEventListener("input", function (ev) { var t = ev.target; if (t && HH_KEEP[t.id]) hhKeepBox(t.id); });
+  document.addEventListener("change", function (ev) { var t = ev.target; if (t && t.id === "remDate") hhKeepBox("remDate"); });
+  function renderHubHead() {
+    if (!$("hubhead")) return;
+    var b = $("hhbrand"); if (b && !b.hubHtml) putHtml(b, hhBrandHtml());
+    hhTick();
+    var g = $("hubgreet"); if (g) putHtml(g, esc(hhGreeting()));
+    var box = $("hubask"), hint = "Ask " + aiName() + "...";
+    if (box && box.getAttribute("placeholder") !== hint) { box.setAttribute("placeholder", hint); box.setAttribute("aria-label", hint); }
+    hhRestore();
+  }
+  // The chat box: Enter or the button opens a new chat carrying the question
+  // as typed (no lead-in), through chatHref, as Ask for a change did. An empty box or
+  // a question too long for the link says so beside the box; the words stay.
+  function hhAsk(e) {
+    var box = $("hubask"), a = $("hubaskGo"), note = $("hhasknote");
+    var said = clip(wellFormed((box && box.value) || ""), PROBLEM_CAP);
+    var href = said ? chatHref(said) : "";
+    if (!href) {
+      if (e && e.preventDefault) e.preventDefault();
+      if (a) a.setAttribute("href", "#");
+      if (note) note.textContent = said ? "That could not be opened as a chat; shorten it and try again." : "Type a question first.";
+      if (box && box.focus) box.focus();
+      return;
+    }
+    if (note) note.textContent = "";
+    if (a) a.setAttribute("href", href);
+    // the words stay in the box and stay kept, as v6.11 kept them: where the app does not take the link, nothing is
+    // lost (the coordinator's fix check of 51621f5e8); they are dropped only when the owner empties the box
+    setTimeout(function () { if (a) a.setAttribute("href", "#"); }, 0);
+  }
+  document.addEventListener("click", function (ev) { var t = ev.target; if (t && t.closest && t.closest("#hubaskGo")) hhAsk(ev); });
+  document.addEventListener("auxclick", function (ev) { var t = ev.target; if (t && t.closest && t.closest("#hubaskGo")) hhAsk(ev); });
+  document.addEventListener("keydown", function (ev) {
+    var t = ev.target; if (!t || t.id !== "hubask" || ev.key !== "Enter" || ev.shiftKey || ev.isComposing) return;
+    if (ev.preventDefault) ev.preventDefault();
+    var a = $("hubaskGo"); if (a && typeof a.click === "function") a.click(); else hhAsk(ev);
+  });
+  // ---- end the header
 
   // ---- choices -------------------------------------------------------------
   function waitingChoices() { return S.choices.filter(function (c) { return !c.applied; }); }
@@ -3277,33 +3431,17 @@
     }).filter(Boolean).join("\n\n");
   }
   function renderSentence() {
-    var el = $("daysentence"), sub = $("daysub"), tip = $("daytip"); if (!el) return;
-    var s = sentModel(S), parts = s ? sentText(s) : [];
-    // cr1#1285 item 1: the headline is the page's only one; before the feeds
-    // can make one, or with no part to lead it, it says where the day stands.
-    // cr1#1591 review: with nothing to lead it but things needing the owner,
-    // the headline says how many, in the sentence's own words
-    var nn = s && s.need && s.need.n ? s.need.n : 0;
-    var head = parts.length ? sentHead(s) || (nn ? nn + (nn === 1 ? " thing needs you." : " things need you.") : dayLine(S.today, S.plate)) : dayLine(S.today, S.plate);
-    if (el.textContent !== head) el.textContent = head;
-    el.hidden = false;
-    var lines = parts.length ? sentLines(s) : [];
-    if (sub) { var sh = lines.map(function (x) { return "<div>" + esc(x) + "</div>"; }).join(""); if (sub.innerHTML !== sh) sub.innerHTML = sh; sub.hidden = !lines.length; }
-    // a redraw that changes nothing leaves the icon alone, so an open one stays open
-    // The info icon: the whole sentence, word for word, then each part with
-    // its detail. It is drawn again only when what it holds changes, so a
-    // redraw never closes an open one (each icon PR 1 draws is numbered).
-    // cr1#1636 item 7: the headline is Today's heading, so its one icon also
-    // holds the tab's own line, last, after each part's detail; the icon that
-    // sat alone under the top bar is gone.
-    var full = parts.length ? sentFull(s) : "", more = full ? [sentDetailText(s), TODAY_TAB_LINE].filter(Boolean).join("\n\n") : "", key = full + "\u0000" + more;
-    if (tip && tip.tipKey !== key) {
-      tip.tipKey = key;
-      tip.innerHTML = full ? infoTip("the day", '<span class="daytipfull">' + esc(full) + '</span><span class="daytipmore">' + esc(more) + "</span>") : "";
-    }
+    // cr1#1784 part B (ruling 128m): the day's sentence is cut from Today, as
+    // the design has it: no summary block and no icon that brings it back. The
+    // Brief keeps its own place and its own text (sentModel and the words
+    // above are still the Brief's to read).
+    var el = $("daysentence"), sub = $("daysub"), tip = $("daytip");
+    if (el) { if (el.textContent) el.textContent = ""; if (!el.hidden) el.hidden = true; }
+    if (sub) { if (sub.innerHTML) sub.innerHTML = ""; if (!sub.hidden) sub.hidden = true; }
+    if (tip && tip.innerHTML) { tip.innerHTML = ""; tip.tipKey = ""; }
   }
-  // Today's own line (it sat behind an icon of its own at the tab's top until cr1#1636)
-  var TODAY_TAB_LINE = "Your calendar, the few things that need you now, and your to-dos and reminders.";
+  // cr1#1784 part B (ruling 128m, as amended 2026-11-25): Today has no tab help line; the header and
+  // each section's heading carry it (the line sat in the day sentence's icon, which is cut).
   // ---- end one sentence on top --------------------------------------------------
   function renderToday() {
     var t = S.today, p = S.plate;
@@ -3311,6 +3449,7 @@
     if (t && t.meetings && t.meetings.length) {
       var endedAt = SEQ.endedAt = justEnded(t.meetings, Date.now());
       t.meetings.forEach(function (m, i) {
+        if (typeof toOff === "function" && toOff(m)) { h += '<div class="row off held-title"><div class="main">' + toLine(m.all_day ? "All day" : fmtTime(m.start), m.calendar === "personal") + "</div></div>"; return; }   // cr1#1833
         var held = m.prep_shown_until && new Date(m.prep_shown_until) > new Date();
         var pk = (m.start || "") + "|" + (m.title || ""), open = !!S.prepOpen[pk];
         // cr1#655: the brief opens in place; a page cannot open a file on the computer.
@@ -3604,15 +3743,24 @@
     if (errs.indexOf("todos") >= 0) h += '<div class="quiet">Your priorities could not be read just now; the next refresh tries again.</div>';
     // cr1#1591: an empty list says nothing; its heading and "+ Add" stand alone
     $("todos").innerHTML = h || (m ? "" : '<div class="quiet">Your to-dos show after the next refresh.</div>');
+    // cr1#1785: a to-do is a To do item now, in Focus and All open; this list is not drawn
+    if (typeof renderTodo === "function") {
+      $("todos").innerHTML = "";
+      var tb = $("todos").closest ? ($("todos").closest(".hhtodos") || $("todos").closest(".col")) : null;
+      fxHideBlock(tb);
+    }
     h = ""; ids = {};
     pendingAdds("reminder").forEach(function (c) { var iw = (c.input || {}).when; h += waitRow(c, (iw ? fmtDate(iw) : "no date") + addState(c)); });
-    (m && m.reminders ? m.reminders : []).forEach(function (r, i) { ids[r.id] = true; h += reminderRow(r, i); });
+    // cr1#1784 part B (ruling 128e): Today lists the reminders for today; one set for a later day keeps its place under "set for later days"
+    var remDay = reminderBackDay(""), remAll = m && m.reminders ? m.reminders : [], remLater = remAll.filter(function (r) { return remIsLater(r, remDay); });
+    remAll.filter(function (r) { return !remIsLater(r, remDay); }).forEach(function (r, i) { ids[r.id] = true; h += reminderRow(r, i); });
+    remLater.forEach(function (r) { ids[r.id] = true; });
     landedAdds("reminder", ids).forEach(function (c) { h += waitRow(c, "set · shows after the next refresh", "ok"); });
     if (errs.indexOf("reminders") >= 0) h += '<div class="quiet">Your reminders could not be read just now; the next refresh tries again.</div>';
     else if (m && num(m.n_reminders) > (m.reminders || []).length) h += '<div class="quiet">Showing ' + (m.reminders || []).length + " of " + num(m.n_reminders) + " reminders.</div>";
-    $("reminders").innerHTML = h || (m ? "" : '<div class="quiet">Your reminders show after the next refresh.</div>');
-    // cr1#1707: an empty Reminders draws no heading; its "+ Reminder" stays, under the to-dos
-    var rb = $("remBlock"), rh = rb && rb.querySelector ? rb.querySelector(".hhead") : null; if (rh) rh.hidden = !!(m && !h);
+    $("reminders").innerHTML = (h || (m ? '<div class="quiet" data-hh-remnone>' + REM_NONE + "</div>" : '<div class="quiet">Your reminders show after the next refresh.</div>')) + remLaterHtml(remLater);
+    // cr1#1784 part B (128e): Reminders keeps its heading; with nothing for today it says so in one line
+    var rb = $("remBlock"), rh = rb && rb.querySelector ? rb.querySelector(".hhead") : null; if (rh && rh.hidden) rh.hidden = false;
   }
   // cr1#1591 Part A 6: a to-do is one line, its title and Done, with "High"
   // only when it is high. Its priority, its date and its last action
@@ -3663,15 +3811,27 @@
     // cr1#1658: its More is the one menu: Later... (day buttons), then Delete
     var more = w || cleared ? "" : '<details class="rmore"><summary title="Move it to another day, or delete it">More</summary>' + (r.repeat ? '<div class="sub">Repeats.</div>' : "")
       + moveMenu({ n: r.id, push: true, extra: '<button class="act" data-ract="delete" data-rid="' + esc(r.id) + '" title="Delete for good; a repeating reminder stops too">Delete</button>' }) + "</details>";
-    return '<div class="row one' + riseClass("r" + r.id) + (r.status === "pinned" ? " pinned" : "") + (more ? "" : " nomore") + '" style="animation-delay:' + (i * 50) + 'ms"><div class="main"><div class="title" title="' + esc(r.summary + " · " + when) + '"><span class="tt">' + esc(r.summary) + "</span>"
+    return '<div class="row one xrow' + riseClass("r" + r.id) + (r.status === "pinned" ? " pinned" : "") + (more ? "" : " nomore") + '" style="animation-delay:' + (i * 50) + 'ms"><div class="main"><div class="title" title="' + esc(r.summary + " · " + when) + '"><span class="tt">' + esc(r.summary) + "</span>"
       + (cleared ? "" : '<span class="when"><i class="w0"></i><wbr><span class="w1"> · ' + esc(when) + "</span></span>") + tag + '</div><div class="slot">' + (PUSH.rid === r.id && !w ? pushSlot(r.id) : "") + '</div></div><div class="acts">' + acts + "</div>" + more + "</div>";
   }
   // cr1#1636 item 6: the day an Undo puts a cleared reminder back on: the day
   // it showed, or today when that is past. Today is the workspace's own (the
   // reminders feed's `today`, the day the apply run checks against), and
   // this browser's only when the feed names none.
+  // cr1#1784 part B (128e): a reminder is for today unless it is dated for a
+  // later day; an undated one stays on the list until cleared, as on main.
+  var REM_NONE = "Nothing set for today.";
+  // a slice of the page with no day to go by (a suite under node) puts nothing under "later": every reminder is listed
+  function remIsLater(r, today) { return !!(today && r && !r.undated && r.status !== "pinned" && String(r.remind_from || "").slice(0, 10) > today); }
+  function remLaterHtml(rows) {
+    if (!rows.length) return "";
+    return '<details class="remlater"' + (S.remLaterOpen ? " open" : "") + '><summary>' + rows.length + (rows.length === 1 ? " set for a later day" : " set for later days") + "</summary>"
+      + rows.map(function (r, i) { return reminderRow(r, i); }).join("") + "</details>";
+  }
+  // the page always has a document; a slice of it run under node (PRIOLAST1, the commitment remind suite) has none
+  if (typeof document !== "undefined") document.addEventListener("toggle", function (ev) { var d = ev.target; if (d && d.classList && d.classList.contains("remlater")) S.remLaterOpen = d.hasAttribute("open"); }, true);
   function reminderBackDay(from) {
-    var ws = String((S.mine || {}).today || "").slice(0, 10), today = /^\d{4}-\d{2}-\d{2}$/.test(ws) ? ws : todayIso(), f = String(from || "").slice(0, 10);
+    var ws = String((S.mine || {}).today || "").slice(0, 10), today = /^\d{4}-\d{2}-\d{2}$/.test(ws) ? ws : (typeof todayIso === "function" ? todayIso() : ""), f = String(from || "").slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(f) && f > today ? f : today;
   }
   // cr1#946: an add is the owner's own list, so it need not wait for an
@@ -3711,7 +3871,7 @@
     if (b.id === "remAdd") {
       var s = $("remText").value.trim(), d = $("remDate").value || todayIso(); if (!s) { $("remText").focus(); return; }
       saveChoice({ kind: "reminder", src: "hub", n: "new", action: "add", input: { summary: s, when: d }, title: s }).then(saveNow);
-      $("remText").value = ""; return;
+      $("remText").value = ""; if (typeof heldDrop === "function") heldDrop("remadd:draft"); return;
     }
     var ra = b.getAttribute("data-ract"), rid = b.getAttribute("data-rid");
     // The day the page showed travels with Done, so a repeating reminder
@@ -3735,6 +3895,500 @@
   });
   $("tab-today").addEventListener("input", function (ev) { if (ev.target.hasAttribute("data-pushday")) PUSH.day = ev.target.value; });
   ["todoText", "remText"].forEach(function (k) { $(k).addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); $(k === "todoText" ? "todoAdd" : "remAdd").click(); } }); });
+  // ---- To do: Focus and All open (cr1#1785, ruling 125d) --------------------
+  // Two views inside #todoBody (the frame's, #1784-A). Focus, the default, is
+  // what the owner is working on: what is due today (and, ruling 130a, what
+  // Focus showed on its day and is still not done, tagged Late), then what the
+  // owner put there, in the owner's order, then To confirm rows last. All open
+  // lists every open item (feed/allopen, so a search covers the whole book,
+  // ruling 128l), grouped, with search. Every press here is a press document
+  // written at the next Update (run kind 1): the Focus store's `focus` presses
+  // and the commitment's own Done. Nothing here changes an item's due date.
+  var FX_EMPTY_FOCUS = "Nothing in Focus. Add something, or star an item in All open.";
+  var FX_EMPTY_ALL = "Nothing open.";
+  var FX_NO_MATCH = "Nothing matches.";
+  var FX_ALL_NOTE = "Add to Focus puts an item on your list for today. It does not change its due date.";
+  var FX_NO_SOURCE = "No source line was kept for this one.";
+  // audit of #1823 (F1): All open carries no source lines (they would not fit
+  // its one document), so an item no other list holds says where to see it
+  var FX_SRC_IN_FOCUS = "Where this came from shows once it is in Focus.";
+  // audit of #1823 (F3): a list that could not be read says so, never "Nothing"
+  var FX_UNREAD = "This list could not be read just now. The next update tries again.";
+  var FX_UNREAD_SUM = "could not be read just now";
+  // review round 1 of #1823 (must-fix 1): a list whose document does not exist
+  // yet (before the first run that builds it, or one not published) says when
+  // it shows, in main's own words for the to-dos, and never "Nothing"
+  var FX_NONE_FOCUS = "Your Focus list shows after the next update.";
+  var FX_NONE_ALL = "Your open items show after the next update.";
+  var FX_NONE_SUM = "Shows after the next update";
+  // review round 1 of #1823 (should-fix 1): a list built on another day says
+  // so, and its Due today and Late are read from today's date
+  var FX_OLD_DAY = "Built {day}. Due today and Late are read from today's date.";
+  // fix check of c6285421f: what "Add to my list" came to, said on its row
+  var FX_NOT_IN_FOCUS = "It is on your list, but it could not be put in Focus; star it in All open.";
+  var FX_NOT_SAVED = "That was not saved.";
+  var FX_NO_UNDO = "It is already being saved, so it can no longer be undone here.";
+  // To do's own "as of" time, beside the frame's (the heading is the view's own)
+  if (typeof AS_OF !== "undefined" && Array.isArray(AS_OF)) {
+    AS_OF.push(["#fxview .fxasof-focus", "focus", "update"]);
+    AS_OF.push(["#fxview .fxasof-all", "allopen", "update"]);
+  }
+  var FX_CAP_LINE = "Showing the first {n} open items. Narrow the search.";
+  var FX_PAGE = 50;
+  var FX_GROUPS = { due: "Due date", who: "Who it's for", none: "Nothing" };
+  var FX_DUE_ORDER = ["late", "today", "later", "none"];
+  var FX_DUE_WORDS = { late: "Late", today: "Due today", later: "Due later", none: "No date" };
+  function fxState() {
+    if (!S.fx) {
+      var v = ""; try { v = localStorage.getItem("hub.todo.view") || ""; } catch (e) {}
+      S.fx = { view: v === "all" ? "all" : "focus", q: "", group: "due", page: 1, done: "", note: "", src: "", add: "", prio: 2, restored: false };
+      // review round 1 of #1823 (should-fix 3): what was typed comes back after a restart
+      if (typeof heldGet === "function") {
+        var hq = heldGet("fxsearch:draft"); if (hq && typeof hq.q === "string") S.fx.q = hq.q;
+        var ha = heldGet("fxadd:draft"); if (ha && typeof ha.text === "string") S.fx.add = ha.text;
+      }
+    }
+    return S.fx;
+  }
+  // The Focus presses the feed does not show yet: waiting ones, and ones that
+  // landed after the feed was built. Oldest first, as the store applies them.
+  function fxPresses() {
+    var at = S.focus && S.focus.generated_at ? String(S.focus.generated_at) : "";
+    return (S.choices || []).filter(function (c) {
+      if (c.kind !== "focus") return false;
+      if (!c.applied) return true;
+      var ok = c.result && (c.result.outcome === "applied" || c.result.outcome === "already");
+      return ok && at && String(c.applied_at || "") > at;
+    }).sort(function (a, b) { return String(a.created_at || "") < String(b.created_at || "") ? -1 : 1; });
+  }
+  function fxPressById(id) { return (S.choices || []).filter(function (c) { return c.id === id; })[0] || null; }
+  // {id: true | false}: in or out of Focus by a press the feed has not caught up with.
+  function fxOverlay() {
+    var o = {};
+    fxPresses().forEach(function (c) {
+      if (c.from_choice) return;  // a typed to-do's pick: drawn from its add (fxTypedRows), never by "new"
+      var id = String(c.commitment_id || c.n || "");
+      if (c.action === "add" && id) o[id] = true;
+      else if (c.action === "remove" && id) o[id] = false;
+      else if (c.action === "undo") {
+        var b = fxPressById(c.back_of); if (!b) return;
+        var bid = String(b.commitment_id || b.n || "");
+        if (b.action === "add" && bid) o[bid] = false; else if (b.action === "remove" && bid) o[bid] = true;
+      }
+    });
+    return o;
+  }
+  // Today's date as the To do feeds give it (audit of #1823, F5: a plate row
+  // carries no due_today, so a row found there is read by its date).
+  // The workspace's day, on its own clock (the frame's as-of zone), else the browser's.
+  function fxWsDay() { try { return typeof asOfDay === "function" ? asOfDay(new Date(), typeof asOfZone === "function" ? asOfZone() : "") : todayIso(); } catch (e) { return todayIso(); } }
+  function fxToday() { return fxWsDay(); }
+  // A list built on another day (should-fix 1): its tags are read from the dates.
+  function fxOldDay(doc) { return !!(doc && doc.today && String(doc.today) < fxWsDay()); }
+  function fxDated(r) { var t = fxWsDay(), d = String(r.due || ""); return Object.assign({}, r, { due_today: !!d && d === t, late: !!d && d < t }); }
+  // The to-do record feed/mine holds for an item, for its High tag and last action.
+  function fxMineTodo(id) { var ts = S.mine && Array.isArray(S.mine.todos) ? S.mine.todos : []; for (var i = 0; i < ts.length; i++) if (ts[i] && String(ts[i].id) === String(id)) return ts[i]; return null; }
+  // should-fix 2: the newest press on the item that failed or was refused, on its row (128q, pressOf)
+  function fxFailTag(id) {
+    if (typeof pressOf !== "function") return "";
+    var a = pressOf("commitment", id), b = pressOf("focus", id), at = function (p) { return p && p.choice ? String(p.choice.applied_at || p.choice.created_at || "") : ""; };
+    var p = a && b ? (at(a) >= at(b) ? a : b) : a || b;
+    return p && p.state === "failed" ? '<span class="tag err">' + esc(p.line || "That did not save.") + "</span>" : "";
+  }
+  function fxDueToday(r) { return !!(r && (r.due_today === true || (r.due_today == null && r.due && fxToday() && String(r.due) === fxToday()))); }
+  // A row's facts from whatever feed holds it (Focus, then All open, then the plate).
+  function fxFind(id) {
+    var key = String(id), hit = null;
+    [S.focus && S.focus.rows, S.allopen && S.allopen.rows, S.plate && S.plate.rows].forEach(function (rows) {
+      if (hit || !Array.isArray(rows)) return;
+      for (var i = 0; i < rows.length; i++) if (rows[i] && String(rows[i].id) === key) { hit = rows[i]; return; }
+    });
+    return hit;
+  }
+  // A Done or Drop on the item, waiting: the row leaves the list at once (the toast has its Undo).
+  function fxClosing(id) {
+    var w = null;
+    (S.choices || []).forEach(function (c) { if (c.kind === "commitment" && String(c.n) === String(id) && !c.applied && (!w || String(c.created_at || "") >= String(w.created_at || ""))) w = c; });
+    return !!(w && (w.action === "done" || w.action === "drop" || w.action === "confirm"));
+  }
+  // A press can be taken back by deleting it only while no run holds it; once
+  // one does (or it landed), its Undo is a press of its own that the next
+  // Update applies after it.
+  function fxCanDelete(c) {
+    var live = c ? fxPressById(c.id) || c : null;  // the press as the store holds it now, claim and all
+    return !!(live && !live.applied && !(typeof claimed === "function" && claimed(live)));
+  }
+  // "Add to my list": a typed to-do waiting to be written, with its Focus pick.
+  function fxTypedRows() {
+    var picks = {};
+    fxPresses().forEach(function (c) { if (c.action === "add" && c.from_choice) picks[c.from_choice] = c; });
+    // one press (input.focus, should-fix 4), or the older pair (a pick naming its add)
+    // fix check of c6285421f (must-fix): one that failed stays with its line; one
+    // that landed out of Focus stays, saying so, until the item is in Focus
+    return (S.choices || []).filter(function (c) {
+      if (!(c.kind === "todo" && c.action === "add" && ((c.input && c.input.focus === true) || picks[c.id]))) return false;
+      if (!c.applied || !c.result) return true;
+      if (c.result.outcome !== "applied" && c.result.outcome !== "already") return true;
+      if (c.result.in_focus === false) return !(c.result.commitment_id && fxInFocus(c.result.commitment_id));
+      return !(c.result.commitment_id && fxFind(c.result.commitment_id));
+    })
+      .map(function (c) { return { id: "", typed: c, title: (c.input && c.input.title) || c.title || "", due: "", picked: true }; });
+  }
+  function fxFocusRows() {
+    var f = S.focus, rows = f && f.ok !== false && Array.isArray(f.rows) ? f.rows.slice() : [], ov = fxOverlay(), seen = {};
+    if (fxOldDay(f)) rows = rows.map(fxDated);
+    rows = rows.filter(function (r) { seen[String(r.id)] = true; return ov[String(r.id)] !== false && !fxClosing(r.id); });
+    Object.keys(ov).forEach(function (id) {
+      if (ov[id] !== true || seen[id] || fxClosing(id)) return;
+      var r = fxFind(id); rows.push({ id: id, title: r ? r.title : (titleOf(id) || ""), due: r ? r.due || "" : "", late: !!(r && r.late), due_today: fxDueToday(r), picked: true, who: r ? r.who || "" : "", origin: r && r.origin, waiting: true });
+    });
+    // Due today first (and Late first among them, 130a), then what the owner added;
+    // the feed's own order (the owner's drag order) inside each group.
+    var first = rows.filter(function (r) { return r.late || r.due_today; }), added = rows.filter(function (r) { return !(r.late || r.due_today); });
+    first = first.filter(function (r) { return r.late; }).concat(first.filter(function (r) { return !r.late; }));
+    return first.concat(added).concat(fxTypedRows());
+  }
+  function fxInFocus(id) {
+    var ov = fxOverlay(), k = String(id);
+    if (ov[k] === true) return true; if (ov[k] === false) return false;
+    return !!(S.focus && Array.isArray(S.focus.rows) && S.focus.rows.some(function (r) { return String(r.id) === k; }));
+  }
+  function fxDueKey(r) { return r.late ? "late" : r.due_today ? "today" : r.due ? "later" : "none"; }
+  function fxAllRows() {
+    var a = S.allopen, rows = a && a.ok !== false && Array.isArray(a.rows) ? a.rows : [], q = String(fxState().q || "").trim().toLowerCase();
+    if (fxOldDay(a)) rows = rows.map(fxDated);
+    rows = rows.filter(function (r) { return !fxClosing(r.id); });
+    if (q) rows = rows.filter(function (r) { return [r.title, r.who, r.where].join(" ").toLowerCase().indexOf(q) >= 0; });
+    return rows;
+  }
+  // The one star for an item (ruling 128i): in Focus it reads "In Focus"; on
+  // a Focus row it takes the item out, elsewhere it is shown pressed and
+  // does nothing. Other slices call it behind a guard (#1787, #1789).
+  function fxStarBtn(kind, id, where) {
+    var on = fxInFocus(id), k = String(kind || "commitment");
+    if (on && where !== "focus") return '<button type="button" class="chip" aria-pressed="true" disabled title="Already in Focus">In Focus</button>';
+    return '<button type="button" class="chip" data-fx-star="' + esc(k + ":" + id) + '" aria-pressed="' + (on ? "true" : "false") + '" title="' + (on ? "Take this out of Focus. Its due date does not change." : "Add to Focus. Its due date does not change.") + '">' + (on ? "In Focus" : "Add to Focus") + "</button>";
+  }
+  function fxTags(r) {
+    return (r.late ? '<span class="tag err late">Late</span>' : r.due_today ? '<span class="tag due">Due today</span>' : r.due ? '<span class="tag">' + esc("due " + fmtDate(r.due)) + "</span>" : "")
+      + (r.who ? '<span class="sub">' + esc(r.who) + "</span>" : "") + (r.where ? '<span class="sub">' + esc(r.where) + "</span>" : "");
+  }
+  // A row's source line: its own, else the one Focus or the plate holds for the
+  // same item; `undefined` when no list on the page carries one for it.
+  function fxOriginOf(r) {
+    if (r && r.origin !== undefined) return r.origin;
+    var key = String(r && r.id || ""), hit;
+    [S.focus && S.focus.rows, S.plate && S.plate.rows, S.plate && S.plate.late_rows].forEach(function (rows) {
+      if (hit !== undefined || !Array.isArray(rows)) return;
+      for (var i = 0; i < rows.length; i++) if (rows[i] && String(rows[i].id) === key && rows[i].origin !== undefined) { hit = rows[i].origin; return; }
+    });
+    return hit;
+  }
+  function fxSourceBox(r) {
+    var o = fxOriginOf(r);
+    if (o === undefined) return '<div class="sub fxsrc">' + esc(FX_SRC_IN_FOCUS) + "</div>";
+    if (!o) return '<div class="sub fxsrc">' + esc(FX_NO_SOURCE) + "</div>";
+    var head = [o.source, o.date ? (o.captured ? "captured " : "") + fmtDate(o.date) : "", o.who].filter(Boolean).join(" · ");
+    var line = o.line ? (o.paraphrase ? "In other words: " : "") + o.line : FX_NO_SOURCE;
+    return '<div class="sub fxsrc"><b>Where this came from</b> · ' + esc(head) + "<br>" + esc(line) + "</div>";
+  }
+  function fxDoneBox(id) {
+    var st = fxState();
+    return '<div class="fxdone" data-fx-donebox="' + esc(id) + '"><input class="when" data-fx-note="' + esc(id) + '" maxlength="500" aria-label="A note on why it is done (optional)" placeholder="A note, if you want one" value="' + esc(st.note || "") + '">'
+      + '<div class="parts"><button type="button" class="act solid" data-fx-markdone="' + esc(id) + '">Mark done</button><button type="button" class="act" data-fx-cancel="' + esc(id) + '">Cancel</button></div></div>';
+  }
+  function fxRow(r, where, i) {
+    var st = fxState(), id = String(r.id || "");
+    if (r.typed) {
+      var c = r.typed, res = c.applied && c.result ? c.result : null;
+      var bad = res && res.outcome !== "applied" && res.outcome !== "already", out = res && !bad && res.in_focus === false;
+      var tag = bad ? '<span class="tag err">' + esc(res.line || FX_NOT_SAVED) + "</span>"
+        : out ? '<span class="tag err">' + esc(FX_NOT_IN_FOCUS) + "</span>" : waitTag(c, "added · in Focus after the next update");
+      // fix check of bab9c50f4: a failed add's row can be dismissed (its kept press is dropped)
+      var dismiss = bad ? '<button type="button" class="act" data-fx-dismiss="' + esc(c.id) + '" title="Take this line away; nothing was saved">Dismiss</button>' : "";
+      return '<div class="row one fxrow"' + (bad || out ? ' data-fx-typed="' + esc(c.id) + '"' : "") + '><div class="main"><div class="title"><span class="tt">' + esc(showTitle(r.title)) + "</span>" + tag + '</div></div><div class="acts">' + (res ? dismiss : undoBtn(c, "Take this back before it reaches your book")) + "</div></div>";
+    }
+    // a Later, a reminder or a move waiting to be saved folds the row to one
+    // line with its Undo, as a to-do row did (the to-dos live here now)
+    var w = choiceFor("commitment", id), verb = w && typeof pressVerb === "function" && typeof chosenLine === "function" ? pressVerb(w) : "";
+    if (verb) return '<div class="row one chosenrow fxrow" data-row="' + esc(id) + '" data-fx-row="' + esc(id) + '"><div class="cfold">'
+      + chosenLine(verb, showTitle(r.title), pressTail(w), undoBtn(w, "Take this back before it reaches your book"))
+      + (typeof foldUnder === "function" ? foldUnder(id, r) : "") + "</div></div>";
+    // should-fix 5: an All open row keeps Done and Later too (nothing v6.11's row could do is lost)
+    var check = '<button type="button" class="xcheck" data-fx-check="' + esc(id) + '" aria-checked="false" aria-label="Done: ' + esc(showTitle(r.title)) + '" title="Done"></button>';
+    var mt = fxMineTodo(id), last = mt && typeof lastActionLine === "function" ? lastActionLine(mt.last_action) : "";
+    // audit of #1823 (F4): what the retired to-do row offered stays: Move (when
+    // the item's project and lanes were read) and Drop, and the hover text
+    // names only what the menu holds
+    var mv = r.project_id && S.focus && S.focus.lanes_known === true ? { here: r.project || "", id: r.project_id, personal: !!r.personal_lane } : null;
+    var canMove = !!(mv && typeof mmPlaces === "function" && mmPlaces(mv.here, mv.id, mv.personal).length);
+    var names = ["Later", "Remind me"].concat(canMove ? ["Move"] : []).concat(["Drop"]).concat(where === "focus" ? ["Remove from Focus"] : []);
+    var more = typeof moveMenu === "function" ? '<details class="rmore"><summary title="' + esc(names.slice(0, -1).join(", ") + ", and " + names[names.length - 1]) + '">More</summary>'
+      + (last ? '<div class="sub lastact">' + esc(last) + "</div>" : "")
+      + moveMenu({ n: id, later: true, remind: true, move: canMove ? mv : null, extra: '<button class="act" type="button" data-fx-dropit="' + esc(id) + '" title="Take this off your list without marking it done">Drop</button>'
+        + (where === "focus" ? '<button class="act" type="button" data-fx-out="' + esc(id) + '" title="Take this out of Focus. Its due date does not change.">Remove from Focus</button>' : "") }) + "</details>" : "";
+    var h = '<div class="row one fxrow" data-row="' + esc(id) + '" data-fx-row="' + esc(id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms">'
+      + '<div class="main"><div class="title">' + check + '<button type="button" class="tt linkish" data-fx-src="' + esc(id) + '" aria-expanded="' + (st.src === id ? "true" : "false") + '" title="Show where this came from">' + esc(showTitle(r.title)) + "</button>" + (mt && Number(mt.priority) === 1 ? '<span class="tag">High</span>' : "") + fxTags(r) + (r.waiting ? '<span class="tag wait">waiting to be saved</span>' : "") + (typeof remindTag === "function" ? remindTag(id) : "") + fxFailTag(id) + "</div>"
+      + (st.src === id ? fxSourceBox(r) : "") + (st.done === id ? fxDoneBox(id) : "")
+      // More's Later and Remind me open their box here (onPlateAct, slotHtml)
+      + '<div class="slot">' + (typeof slotHtml === "function" ? slotHtml(id) : "") + "</div>"
+      + '</div><div class="acts">' + (typeof looksDoneBtn === "function" ? looksDoneBtn(id) : "") + fxStarBtn("commitment", id, where) + "</div>" + more + "</div>";
+    return h;
+  }
+  // A list that could not be read has no count (audit of #1823, F3), and nor
+  // has one whose document does not exist yet (review round 1, must-fix 1).
+  function fxMissing(doc) { return !doc || typeof doc !== "object"; }
+  function fxUnread(doc) { return !!(doc && doc.ok === false); }
+  function fxNoCount(doc) { return fxMissing(doc) || fxUnread(doc); }
+  function fxTabs(nf, na) {
+    var v = fxState().view, cf = fxNoCount(S.focus) ? "" : '<span class="count">' + nf + "</span>", ca = fxNoCount(S.allopen) ? "" : '<span class="count">' + na + "</span>";
+    return '<div class="vtabs" role="tablist" aria-label="Which list"><button type="button" role="tab" data-fx-view="focus" aria-selected="' + (v === "focus") + '">Focus ' + cf + "</button>"
+      + '<button type="button" role="tab" data-fx-view="all" aria-selected="' + (v === "all") + '">All open ' + ca + "</button></div>";
+  }
+  function fxAddBox() {
+    var st = fxState();
+    // should-fix 5: Importance when adding, as the retired to-do box had it
+    // no data-keep: an open add box must not hold the whole view's redraw (its
+    // open state is the page's own, `st.addOpen`; typing in it still holds a draw)
+    return '<details class="addfold" id="fxAdd"' + (st.add || st.addOpen ? " open" : "") + '><summary title="A to-do of yours, undated, in Focus">Add to my list</summary><div class="addrow"><input class="when" id="fxAddText" placeholder="Add to my list" aria-label="Add to my list" maxlength="200" value="' + esc(st.add || "") + '">'
+      + '<label class="prio-label" for="fxAddPrio">Importance</label><select class="prio" id="fxAddPrio" title="How much this matters; it sets no date">'
+      // should-fix 1 (fix check): the choice is the view's own state, so a draw never resets it
+      + [[1, "High"], [2, "Medium"], [3, "Low"]].map(function (o) { return '<option value="' + o[0] + '"' + (Number(st.prio) === o[0] ? " selected" : "") + ">" + o[1] + "</option>"; }).join("") + "</select>"
+      + '<button type="button" class="act primary" data-fx-add="1">Add</button></div></details>';
+  }
+  function fxAsOfHtml(doc, which) {
+    // the frame's as-of time lands beside this (hidden) heading, each list its own document's; another day says so
+    return '<div class="sub fxasof"><span class="fxasofh fxasof-' + (which || "focus") + '" hidden>To do</span>' + (fxOldDay(doc) ? esc(FX_OLD_DAY.replace("{day}", typeof fmtDate === "function" ? fmtDate(doc.today) : doc.today)) : "") + "</div>";
+  }
+  function fxFocusHtml(rows) {
+    // must-fix 1, fix check: with no document the line shows even beside a waiting or To confirm row
+    var h = fxAsOfHtml(S.focus) + (fxMissing(S.focus) ? '<div class="quiet">' + esc(FX_NONE_FOCUS) + "</div>" : "") + fxAddBox();
+    rows.forEach(function (r, i) { h += fxRow(r, "focus", i); });
+    var conf = typeof confirmRows === "function" ? confirmRows() : null, ch = "";
+    if (conf && conf.length && typeof plateRow === "function") conf.forEach(function (r, i) { ch += plateRow(r, true, rows.length + i); });
+    if (!rows.length && !ch && !fxMissing(S.focus)) h += '<div class="quiet">' + esc(S.focus.ok === false ? S.focus.line || FX_UNREAD : FX_EMPTY_FOCUS) + "</div>";
+    return h + (ch ? '<div class="fxconfirm"><h3 class="cap">To confirm</h3>' + ch + "</div>" : "");
+  }
+  function fxAllHtml(rows) {
+    var st = fxState(), a = S.allopen, total = a && typeof a.n === "number" ? a.n : rows.length;
+    var h = fxAsOfHtml(a, "all") + '<input class="search" type="search" id="fxSearch" placeholder="Search by a name, a company or a word" aria-label="Search all open items" value="' + esc(st.q) + '">'
+      + '<div class="sub">' + esc(FX_ALL_NOTE) + "</div>"
+      + '<div class="parts" role="group" aria-label="Group by">' + Object.keys(FX_GROUPS).map(function (g) { return '<button type="button" class="chip" data-fx-group="' + g + '" aria-pressed="' + (st.group === g) + '">' + esc(FX_GROUPS[g]) + "</button>"; }).join("") + "</div>";
+    if (fxMissing(a)) return h + '<div class="quiet">' + esc(FX_NONE_ALL) + "</div>";
+    if (a && a.ok === false) return h + '<div class="quiet">' + esc(a.line || FX_UNREAD) + "</div>";
+    if (!rows.length) return h + '<div class="quiet">' + esc(st.q ? FX_NO_MATCH : FX_EMPTY_ALL) + "</div>";
+    // a search shows every match (ruling 128l); without one the list is paged
+    var shown = st.q ? rows : rows.slice(0, FX_PAGE * st.page);
+    var groups = [], by = {};
+    shown.forEach(function (r) {
+      var k = st.group === "due" ? fxDueKey(r) : st.group === "who" ? (r.who || "") : "all";
+      if (!by[k]) { by[k] = []; groups.push(k); } by[k].push(r);
+    });
+    if (st.group === "due") groups.sort(function (x, y) { return FX_DUE_ORDER.indexOf(x) - FX_DUE_ORDER.indexOf(y); });
+    if (st.group === "who") groups.sort(function (x, y) { return !x ? 1 : !y ? -1 : x < y ? -1 : 1; });
+    var i = 0;
+    groups.forEach(function (k) {
+      if (st.group !== "none") h += '<h3 class="cap">' + esc(st.group === "due" ? FX_DUE_WORDS[k] : (k || "No one named")) + " (" + by[k].length + ")</h3>";
+      by[k].forEach(function (r) { h += fxRow(r, "all", i); i += 1; });
+    });
+    var more = rows.length - shown.length;
+    h += '<div class="sub">' + esc("Showing " + shown.length + " of " + (st.q ? rows.length + " matches" : total + " open")) + "</div>";
+    if (more > 0) h += '<button type="button" class="act xmore" data-fx-more="1">Show ' + Math.min(FX_PAGE, more) + " more</button>";
+    // the document holds the first ALL_OPEN_CAP open items (ruling 128l, as
+    // accepted for v6.12): past it the page says so plainly, never looks complete
+    if (a && a.complete === false) h += '<div class="sub">' + esc(FX_CAP_LINE.replace("{n}", String((a.rows || []).length))) + "</div>";
+    return h;
+  }
+  // The view's boxes keep what is typed in the page's state (the Later and
+  // Remind boxes in S.open, the note and the search in S.fx), so a redraw
+  // loses nothing; it is held back (drawKeep) only while a menu is open or
+  // the keyboard is in a box of the view's own.
+  // a block the stylesheet gives its own display, which the hidden attribute does not beat
+  function fxHideBlock(el) {
+    if (!el) return;
+    if (!el.hidden) el.hidden = true;
+    if (el.style && el.style.display !== "none") el.style.display = "none";
+  }
+  function fxPut(view, html, force) {
+    if (force) { putHtml(view, html); return true; }
+    var a = document.activeElement, typing = false;
+    for (var n = a; n && !typing; n = n.parentNode) if (n === view) typing = /^(INPUT|TEXTAREA)$/.test(a.tagName || "") && !a.hasAttribute("data-slot");
+    if (typing || view.querySelector("details[open]")) return drawKeep(view, html);
+    putHtml(view, html); return true;
+  }
+  function renderTodo() {
+    var force = arguments[0] === true;  // the owner's own press on the view draws at once
+    var body = $("todoBody"); if (!body) return;
+    var view = $("fxview");
+    // .tside: the one-line row's rules the to-dos had (the right column's), until the Look styles To do
+    if (!view) { view = document.createElement("div"); view.setAttribute("id", "fxview"); view.setAttribute("class", "tside"); view.setAttribute("data-fx-drop", "todo"); body.insertBefore(view, body.firstChild); }
+    var st = fxState(), frows = fxFocusRows(), arows = fxAllRows();
+    if (!st.restored && typeof heldGet === "function" && !fxMissing(S.focus)) {
+      // should-fix 3: a Done note being typed comes back after a restart, in its box
+      st.restored = true;
+      for (var hi = 0; hi < frows.length && !st.done; hi++) {
+        var hid = String(frows[hi].id || ""); if (!hid) continue;
+        var hn = heldGet(hid + ":done"); if (hn && typeof hn.note === "string") { st.done = hid; st.note = hn.note; }
+      }
+    }
+    var na = S.allopen && typeof S.allopen.n === "number" ? S.allopen.n : arows.length;
+    var nToday = frows.filter(function (r) { return r.due_today || r.late; }).length;
+    fxPut(view, fxTabs(frows.length, na) + (st.view === "all" ? fxAllHtml(arows) : fxFocusHtml(frows)), force === true);
+    if (typeof setBarSummary === "function") {
+      var sum = fxMissing(S.focus) ? FX_NONE_SUM : fxUnread(S.focus) ? "Focus " + FX_UNREAD_SUM
+        : frows.length + " in Focus · " + nToday + " due today" + (fxNoCount(S.allopen) ? "" : " · " + na + " open");
+      if (sum !== fxState().sum) { fxState().sum = sum; setBarSummary("todo", sum); }
+    }
+    if (typeof renderAsOf === "function") renderAsOf();
+  }
+  // ---- the presses
+  function fxPick(id, title, extra) {
+    return saveChoice(Object.assign({ kind: "focus", src: "hub", n: String(id), commitment_id: String(id), action: "add", title: title || "" }, extra || {}));
+  }
+  function fxUndoPress(c) {
+    if (!c) return;
+    if (fxCanDelete(c)) { undoChoice(c.id); return; }
+    saveChoice({ kind: "focus", src: "hub", n: String(c.n || ""), commitment_id: String(c.commitment_id || c.n || ""), action: "undo", back_of: c.id, title: c.title || "" });
+  }
+  function fxAdd(id, title) {
+    fxPick(id, title).then(function (c) { if (c) toast("Added to Focus", function () { fxUndoPress(c); }); });
+  }
+  function fxOut(id, title) {
+    saveChoice({ kind: "focus", src: "hub", n: String(id), commitment_id: String(id), action: "remove", title: title || "" })
+      .then(function (c) { if (c) toast("Taken out of Focus", function () { fxUndoPress(c); }); });
+  }
+  // review round 1 of #1823 (should-fix 4): ONE to-do press, `input.focus`, so no
+  // reload can leave a to-do with no pick; the save puts it in Focus in the same run
+  function fxTyped(text, prio) {
+    var t = String(text || "").trim(); if (!t) return;
+    var pr = [1, 2, 3].indexOf(Number(prio)) >= 0 ? Number(prio) : 2;
+    saveChoice({ kind: "todo", src: "hub", n: "new", action: "add", input: { title: t, priority: pr, focus: true }, title: t }).then(function (todo) {
+      if (!todo) return;
+      toast("Added to your list", function () { if (fxCanDelete(todo)) undoChoice(todo.id); else toast(FX_NO_UNDO); });
+    });
+  }
+  function fxDropIt(id) {
+    saveChoice({ kind: "commitment", src: "commitment-triage", n: id, action: "drop", title: titleOf(id) || (fxFind(id) || {}).title || "" })
+      .then(function (c) { if (c) toast("Dropped", function () { if (fxCanDelete(c)) undoChoice(c.id); else saveChoice({ kind: "commitment", src: "commitment-triage", n: id, action: "reopen", title: c.title || "" }); }); });
+  }
+  // A box whose words are kept in the view's state is not "text not yet saved"
+  // to the frame's draw guard (should-fix 2 of the fix check): its value is its saved value.
+  function fxSaved(el) { try { el.defaultValue = el.value; } catch (e) {} if (el.setAttribute) el.setAttribute("value", el.value); }
+  function fxAddPrio() { var p = Number(fxState().prio); return p === 1 || p === 3 ? p : 2; }
+  function fxAddDone() {
+    fxState().add = ""; if (typeof heldDrop === "function") heldDrop("fxadd:draft");
+    // cr1#1852: the box is emptied by the press, so its saved value is empty too (fxSaved): a box left "unsaved" held
+    // To do's redraw, and the new row never showed; and after Add the fold closes (the owner's ask), drawn at once
+    var inp = $("fxAddText"); if (inp) fxSaved(inp);
+    fxState().addOpen = false; var f = $("fxAdd"); if (f && f.removeAttribute) f.removeAttribute("open");
+  }
+  function fxMarkDone(id) {
+    var st = fxState(), note = String(st.note || "").trim();
+    st.done = ""; st.note = ""; if (typeof heldDrop === "function") heldDrop(id + ":done");
+    // the box goes with the press, so the redraw that takes the row away is not held for it
+    var box = document.querySelector('[data-fx-donebox="' + id + '"]'); if (box && box.parentNode) box.parentNode.removeChild(box);
+    saveChoice({ kind: "commitment", src: "commitment-triage", n: id, action: "done", title: titleOf(id) || (fxFind(id) || {}).title || "", input: note ? { note: note } : null })
+      .then(function (c) { if (c) toast("Marked done", function () { if (fxCanDelete(c)) undoChoice(c.id); else saveChoice({ kind: "commitment", src: "commitment-triage", n: id, action: "reopen", title: c.title || "" }); }); });
+  }
+  function fxOnClick(ev) {
+    var t = ev.target, b = t && t.closest ? t.closest("[data-fx-view],[data-fx-star],[data-fx-check],[data-fx-markdone],[data-fx-cancel],[data-fx-src],[data-fx-group],[data-fx-more],[data-fx-add],[data-fx-out],[data-fx-dropit],[data-fx-dismiss]") : null;
+    if (!b) return;
+    var st = fxState(), v;
+    // the owner's own press on the view draws at once (review round 1 of #1823: an open add box held it)
+    if ((v = b.getAttribute("data-fx-view"))) { st.view = v; st.page = 1; try { localStorage.setItem("hub.todo.view", v); } catch (e) {} renderTodo(true); return; }
+    if ((v = b.getAttribute("data-fx-star"))) {
+      var id = v.split(":").slice(1).join(":"), r = fxFind(id) || {};
+      if (fxInFocus(id)) fxOut(id, r.title); else fxAdd(id, r.title); return;
+    }
+    if ((v = b.getAttribute("data-fx-out"))) { fxOut(v, (fxFind(v) || {}).title); return; }
+    if ((v = b.getAttribute("data-fx-dropit"))) { fxDropIt(v); return; }
+    if ((v = b.getAttribute("data-fx-dismiss"))) { if (typeof undoChoice === "function") undoChoice(v); return; }
+    if ((v = b.getAttribute("data-fx-check"))) { if (st.done === v && typeof heldDrop === "function") heldDrop(v + ":done"); st.done = st.done === v ? "" : v; st.note = ""; renderTodo(true); var n = document.querySelector('[data-fx-note="' + v + '"]'); if (n) n.focus(); return; }
+    if ((v = b.getAttribute("data-fx-markdone"))) { var box = document.querySelector('[data-fx-note="' + v + '"]'); if (box) st.note = box.value; fxMarkDone(v); return; }
+    if ((v = b.getAttribute("data-fx-cancel"))) { st.done = ""; st.note = ""; if (typeof heldDrop === "function") heldDrop(v + ":done"); renderTodo(true); return; }
+    if ((v = b.getAttribute("data-fx-src"))) { st.src = st.src === v ? "" : v; renderTodo(true); return; }
+    if ((v = b.getAttribute("data-fx-group"))) { st.group = v; renderTodo(true); return; }
+    if (b.getAttribute("data-fx-more")) { st.page += 1; renderTodo(true); return; }
+    if (b.getAttribute("data-fx-add")) { var inp = $("fxAddText"); var text = inp ? inp.value : ""; if (inp) inp.value = ""; fxAddDone(); fxTyped(text, fxAddPrio()); return; }
+  }
+  document.addEventListener("click", fxOnClick);
+  document.addEventListener("toggle", function (ev) { var t = ev.target; if (t && t.id === "fxAdd") fxState().addOpen = t.hasAttribute("open"); }, true);
+  document.addEventListener("change", function (ev) { var t = ev.target; if (t && t.id === "fxAddPrio") fxState().prio = Number(t.value) || 2; });
+  document.addEventListener("input", function (ev) {
+    var t = ev.target; if (!t) return;
+    if (t.id === "fxAddText") { fxState().add = t.value; fxSaved(t); if (typeof heldPut === "function") { if (t.value) heldPut("fxadd:draft", { text: t.value }); else heldDrop("fxadd:draft"); } return; }
+    if (t.id === "fxSearch" && typeof heldPut === "function") { if (t.value) heldPut("fxsearch:draft", { q: t.value }); else heldDrop("fxsearch:draft"); }
+    if (t.id === "fxSearch") { fxState().q = t.value; fxState().page = 1; var at = t.selectionStart; fxDrawSearch(); var s2 = $("fxSearch"); if (s2) { s2.focus(); try { s2.setSelectionRange(at, at); } catch (e) {} } return; }
+    var n = t.getAttribute && t.getAttribute("data-fx-note"); if (n) { fxState().note = t.value; fxSaved(t); if (typeof heldPut === "function") heldPut(n + ":done", { note: t.value }); }
+  });
+  document.addEventListener("keydown", function (ev) {
+    var t = ev.target; if (!t || ev.key !== "Enter") return;
+    if (t.id === "fxAddText") { ev.preventDefault(); var text = t.value; t.value = ""; fxAddDone(); fxTyped(text, fxAddPrio()); }
+    var n = t.getAttribute && t.getAttribute("data-fx-note"); if (n) { ev.preventDefault(); fxState().note = t.value; fxMarkDone(n); }
+  });
+  // The search redraws its own list at once: drawKeep would hold the draw
+  // while the box has the caret, so the list is set directly here.
+  function fxDrawSearch() {
+    var view = $("fxview"); if (!view) return;
+    var st = fxState(), arows = fxAllRows(), na = S.allopen && typeof S.allopen.n === "number" ? S.allopen.n : arows.length;
+    putHtml(view, fxTabs(fxFocusRows().length, na) + (st.view === "all" ? fxAllHtml(arows) : fxFocusHtml(fxFocusRows())));
+  }
+  // ---- drag: only into To do (ruling 130d) ----------------------------------
+  // A row in Urgent or People follow-ups carries data-fx-drag="<kind>:<id>";
+  // To do (this view, or its closed bar) is the only drop zone, and a drop
+  // there adds the item to Focus as one press with Undo. A drop anywhere else
+  // does nothing. The pointer pattern is the Week plan's.
+  var FX_DRAG_PX = 6;
+  var fxDrag = null;
+  document.addEventListener("pointerdown", function (ev) {
+    var src = ev.target && ev.target.closest ? ev.target.closest("[data-fx-drag]") : null;
+    if (!src || ev.button !== 0 || (ev.target.closest && ev.target.closest("button, a, input, textarea, select, summary"))) return;
+    fxDrag = { src: src, x: ev.clientX, y: ev.clientY, on: false, what: src.getAttribute("data-fx-drag") };
+  });
+  document.addEventListener("pointermove", function (ev) {
+    if (!fxDrag) return;
+    if (!fxDrag.on && Math.abs(ev.clientX - fxDrag.x) + Math.abs(ev.clientY - fxDrag.y) < FX_DRAG_PX) return;
+    if (!fxDrag.on) { fxDrag.on = true; hhDragOn = true; fxDrag.src.setAttribute("aria-grabbed", "true"); }
+  });
+  // where the pointer was let go: the element under it (a touch keeps the
+  // pointer on the row it started on, so the point is read, not the target)
+  function fxDropZone(ev) {
+    var el = document.elementFromPoint && typeof ev.clientX === "number" ? document.elementFromPoint(ev.clientX, ev.clientY) : ev.target;
+    return el && el.closest ? el.closest('[data-fx-drop="todo"], #todoBar, #todoBody') : null;
+  }
+  document.addEventListener("pointerup", function (ev) {
+    var d = fxDrag; fxDrag = null; if (!d) return;
+    d.src.removeAttribute("aria-grabbed");
+    if (!d.on) return;
+    hhDragOn = false; if (typeof hhLater === "function") hhLater();
+    if (!fxDropZone(ev)) return;
+    // "commitment:<id>" (an open item, e.g. Urgent's Waiting on others) goes
+    // into Focus as it is; "urgent:<row id>" (a mail or an invite) and
+    // "pfollow:<id>" (a People follow-up, ruling 130d) become a new to-do of
+    // yours, in Focus, worded as the row's data-fx-title says. The one
+    // contract (review round 1 of #1823, must-fix 2): a row that drags into
+    // To do carries data-fx-drag and data-fx-title and is not natively draggable.
+    var parts = String(d.what || "").split(":"), kind = parts[0], id = parts.slice(1).join(":");
+    var title = String(d.src.getAttribute("data-fx-title") || "").trim();
+    if ((kind === "urgent" || kind === "pfollow") && id && title) { fxTyped(title); return; }
+    if (kind !== "commitment" || !id) return;
+    if (fxInFocus(id)) { toast("Already in Focus"); return; }
+    fxAdd(id, (fxFind(id) || {}).title || title);
+  });
+  document.addEventListener("pointercancel", function () { if (fxDrag) { fxDrag.src.removeAttribute("aria-grabbed"); if (fxDrag.on) hhDragOn = false; } fxDrag = null; });
+  // A native drag would cancel the pointer drag above (review round 1 of #1823,
+  // must-fix 2), so it never starts on a row that drags into To do.
+  // Fix check of 34b1f8e7d: a drag that starts on a link, a button or an image
+  // inside such a row is the browser's own (a quiet person's Draft link) and is
+  // left alone; and a drag this cancels clears the frame's drag flag at once,
+  // because a cancelled dragstart is never followed by dragend.
+  document.addEventListener("dragstart", function (ev) {
+    var t = ev.target && ev.target.closest ? ev.target.closest("[data-fx-drag]") : null;
+    if (!t || (ev.target.closest && ev.target.closest("a, button, img"))) return;
+    ev.preventDefault();
+    hhDragOn = false; if (typeof hhLater === "function") hhLater();
+  });
+
   // ---- commitments ---------------------------------------------------------
   // cr1#1020: a reminder made from this commitment, waiting or just set.
   function remindChoice(cid) {
@@ -5069,7 +5723,7 @@
   // calendar read shows the RSVP). A seat whose admin has not switched
   // writing on sees one plain line naming the admin step, never a failure.
   var CAL = CFG.calendar;
-  function canAnswer(m) { return !!(CAL && mcp && db && m && m.meeting_id && !m.all_day && m.calendar !== "personal"); }
+  function canAnswer(m) { return !!(CAL && mcp && db && m && m.meeting_id && !m.all_day && m.calendar !== "personal" && !m.title_off); }   // cr1#1833
   function calKey(m) { return "cal|" + (m.meeting_id || "") + "|" + (m.start || ""); }
   function calResult(m) {
     var best = null;
@@ -5917,6 +6571,108 @@
     var box = $("settingsguide"); if (box) box.innerHTML = '<details class="secfold guidefold" data-wrfold="set:buttons"' + (typeof wrFoldOpen === "function" && wrFoldOpen("set:buttons") ? " open" : "") + '><summary><h2 role="heading" aria-level="2">What the buttons do</h2></summary>' + guide + "</details>";
   }
   // ---- end of the seat's words ------------------------------------------
+  // ---- title_off (cr1#1833, decision 141n) --------------------------------
+  // A meeting whose title names someone off limits (or whose title could not be
+  // checked) carries `title_off` from the builder, on Today's rows, the past
+  // ones and the week's. It offers nothing anywhere: the page keeps its time
+  // and a tag, and no title, no people, no address, no link, no prep and no
+  // press that leads to it. The scrub runs once where the Today feed is read
+  // (calRefresh), so no read of a row's title can show it; the surfaces that
+  // would lead to it say "A meeting" and have no press.
+  var TO_WORDS = "A meeting", TO_TAG = "details held";
+  var TO_HELD_LINE = "This meeting is held: its title names someone off limits, so nothing of it is shown here.";
+  function toOff(m) { return !!(m && m.title_off); }
+  function toCopy(o) { var c = {}; for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) c[k] = o[k]; return c; }
+  function toScrubRow(m) {
+    if (!toOff(m)) return m;
+    var o = toCopy(m);
+    // cr1#1784 part B: "A meeting" wherever a title is read, never "Meeting"
+    o.title = TO_WORDS; o.title_whole = false; o.people = []; o.prep = null; o.prep_text = null; o.prep_parts = null; o.place = null;
+    ["note_to", "live_who", "link", "attendees"].forEach(function (k) { delete o[k]; });
+    return o;
+  }
+  function toAnyOff(t) {
+    var any = function (a) { return Array.isArray(a) && a.some(toOff); };
+    return any(t.meetings) || any(t.past) || !!(t.week && Array.isArray(t.week.days) && t.week.days.some(function (d) { return any(d && d.meetings); }));
+  }
+  function toScrub(t) {
+    // nothing walled: the feed itself, untouched (the live layer and its checks compare Today with the built feed)
+    if (!t || typeof t !== "object" || !toAnyOff(t)) return t;
+    var o = toCopy(t);
+    if (Array.isArray(t.meetings)) o.meetings = t.meetings.map(toScrubRow);
+    if (Array.isArray(t.past)) o.past = t.past.map(toScrubRow);
+    if (t.week && Array.isArray(t.week.days)) {
+      o.week = toCopy(t.week);
+      o.week.days = t.week.days.map(function (d) { var c = toCopy(d); if (Array.isArray(d.meetings)) c.meetings = d.meetings.map(toScrubRow); return c; });
+    }
+    return o;
+  }
+  // a key (start|title, or meeting id|start) that names a walled meeting on Today's lists
+  function toHeldKey(key) {
+    var k = String(key || ""), t = S.today || {}, all = (Array.isArray(t.meetings) ? t.meetings : []).concat(Array.isArray(t.past) ? t.past : []);
+    var st = k.split("|")[0], st2 = k.split("|").slice(1).join("|");
+    return all.some(function (m) { return toOff(m) && (String(m.start || "") === st || String(m.start || "") === st2); });
+  }
+  // cr1#1845: the page's own check of a title against the off-limits list, for a title the builder never saw
+  // (a meeting only the page's live calendar read found; a Record item whose meeting has left Today). The
+  // list reaches the page only hashed (feed/wall: each full name and address, normalised as normOf does),
+  // so every run of one to TO_WIN words of the title is hashed and looked up, in two cuttings: at spaces
+  // (marks at a word's ends and a possessive dropped) and at every mark (so "First.Last" is two words).
+  // An address in the title is looked up as an address. It catches a full name or an address as the list
+  // holds it, whatever the case, accents, spacing or marks around it. It cannot catch a first name alone,
+  // a nickname, a misspelling, a name run together with no mark, or a name of more than TO_WIN words.
+  // When it cannot tell (no readable wall, the wall stale, this view unable to hash, or a hash not
+  // worked out yet) the title counts as walled: hidden, never shown.
+  var TO_WIN = 4;
+  function toWords(title) {
+    var t = normOf(title), cut1 = [], cut2 = [];
+    t.split(" ").forEach(function (w) {
+      w = w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/['\u2019]s$/u, "");
+      if (w) cut1.push(w);
+    });
+    t.split(/[^\p{L}\p{N}]+/u).forEach(function (w) { if (w) cut2.push(w); });
+    var out = [];
+    [cut1, cut2].forEach(function (ws) {
+      for (var i = 0; i < ws.length; i++) for (var n = 1; n <= TO_WIN && i + n <= ws.length; n++) {
+        var v = ws.slice(i, i + n).join(" "); if (out.indexOf(v) < 0) out.push(v);
+      }
+    });
+    return out;
+  }
+  // every word not hashed yet waits in one queue; one batch at a time works them out, then the page draws again
+  var toQueue = [], toHashing = false;
+  function toHashThen(vals) {
+    (vals || []).forEach(function (v) { if (toQueue.indexOf(v) < 0) toQueue.push(v); });
+    if (toHashing || typeof hasher !== "function" || !hasher()) return;
+    var batch = toQueue; toQueue = []; toHashing = true;
+    hashAll(batch).then(function () {
+      toHashing = false;
+      if (toQueue.length) { toHashThen([]); return; }
+      // only what a title can sit on: Today (its parts, the Week grid among them) and the Record tab
+      if (typeof calRefresh === "function") calRefresh();
+      if (typeof renderToday === "function") renderToday();
+      if (typeof renderWeek === "function") renderWeek();
+    }, function () { toHashing = false; });
+  }
+  function toTitleWalled(title) {
+    var t = String(title == null ? "" : title); if (!t.trim()) return false;
+    var w = typeof liveWall === "function" ? liveWall() : null; if (!w || !w.ok) return true;
+    var names = toWords(t), addrs = (t.match(/[^\s<>()"',;:]+@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g) || []).map(function (a) { return a.replace(/[.]+$/, "").toLowerCase(); });
+    var all = names.concat(addrs);
+    if (all.some(function (v) { return !HASHES[normOf(v)]; })) { toHashThen(all); return true; }
+    // a name with marks on file (an initial, "Jr.", brackets, a curly apostrophe, a long dash) is found by its word form (cr1#1845)
+    var words = Array.isArray(w.off_limits_words) ? w.off_limits_words : [];
+    return names.some(function (v) { var h = HASHES[normOf(v)]; return inList(w.off_limits_names, h) || inList(words, h); })
+      || addrs.some(function (a) { return inList(w.off_limits, HASHES[normOf(a)]); });
+  }
+  // cr1#1845: a wall that arrives (or moves) after the Record tab was drawn redraws it, so a title held
+  // because the page could not tell yet is shown once it can (and one now walled is hidden)
+  function toWallMoved() { if (typeof renderWeek === "function") renderWeek(); }
+  // cr1#1784 part B (the coordinator's required item 1): a personal item is shown and marked personal, held or not,
+  // and with the off-limits list unreadable too: its line reads its time, "personal" and the held tag
+  function toLine(when, personal) { return '<span class="tm">' + esc(when) + "</span>" + (personal ? '<span class="tag">personal</span>' : '<span class="tt">' + TO_WORDS + "</span>") + '<span class="tag">' + TO_TAG + "</span>"; }
+  // ---- end title_off
+
   // ---- People and Priorities on Today (cr1#1789) ----------------------------
   // The right column's People (key relationships and follow-ups) and
   // Priorities, each under its closed bar. People reads feed/pfollow, built
@@ -6037,10 +6793,13 @@
   }
   // the words a follow-up becomes as a to-do when it is dragged into To do
   function sxTodoWords(r) {
-    var who = r.name || r.title || "";
-    if (r.kind === "draft") return "Send the follow-up to " + who;
+    // the planner's check of 2b3b0549c: a dropped row's to-do never takes a meeting's raw title, which can
+    // name someone; with no name it takes the plain words for its kind
+    var who = String(r.name || "").trim();
+    // a nameless draft takes #1789's plain words (v6.12.1)
+    if (r.kind === "draft") return who ? "Send the follow-up to " + who : "Send the follow-up";
     if (r.kind === "process") return "Write up " + sxTitle(r.title, "meeting");
-    return "Follow up with " + who;
+    return who ? "Follow up with " + who : "Follow up";
   }
   function sxFollowRow(r) {
     var who = r.kind === "draft" ? (r.name || r.title) + (r.n_others > 0 ? " +" + r.n_others : "") : r.kind === "quiet" ? r.name || r.title : sxTitle(r.title, "meeting");
@@ -6802,9 +7561,13 @@
       if (day !== lastDay) { h += '<h3 class="recday">' + esc(recDayWord(it.ts, tz) || "Undated") + "</h3>"; lastDay = day; }
       var who = (it.people || []).map(function (p) { return p.name; }).filter(Boolean).join(", ");
       var sub = [src.word ? fromWords(src.word) : "", it.thread ? esc(it.thread) : "", who ? "with " + esc(who) : ""].filter(Boolean).join(" · ");
+      if (typeof recWalled === "function" && recWalled(it)) sub = "";   // cr1#1845 (141n): a held meeting shows no people and no project
       var type = REC_TYPES[it.kind] || cap(k.one || it.kind || "");
-      var rt = recTitle(it);
-      h += recRow("m:" + it.kind + ":" + it.ts + ":" + it.title, '<span class="rtype">' + esc(type) + "</span>" + (rt ? " " + esc(rt) : ""), "", [sub], "");
+      var rt = recTitle(it), held = recWalled(it);
+      // a held meeting reads "A meeting" once, with the held tag, as Today's rows do (never "Meeting A meeting")
+      var line = held ? '<span class="rtype">' + esc(TO_WORDS) + '</span> <span class="tag">' + esc(TO_TAG) + "</span>"
+        : '<span class="rtype">' + esc(type) + "</span>" + (rt ? " " + esc(rt) : "");
+      h += recRow("m:" + it.kind + ":" + it.ts + ":" + (held ? "" : it.title), line, "", [sub], "");
     });
     el.innerHTML = h;
   }
@@ -6826,7 +7589,18 @@
     return null;
   }
   // A meeting with no title says only what it is ("Meeting"), never twice.
+  // cr1#1845: a prep item whose meeting is walled shows "A meeting" only. While its meeting is on Today's
+  // lists the row shows the calendar's title, which the builder checked against the off-limits list: its
+  // title_off decides. Once the meeting has left Today the row shows the item's own title, which nothing
+  // checked: the page's own check decides, and holds it when it cannot tell.
+  function recWalled(it) {
+    if (it.kind !== "prep") return false;
+    var m = it.meeting_id ? recCalMeeting(it.meeting_id, it.start) : null;
+    if (m) return typeof toOff === "function" ? toOff(m) : false;
+    return typeof toTitleWalled === "function" && toTitleWalled(it.title);
+  }
   function recTitle(it) {
+    if (recWalled(it)) return TO_WORDS;
     if (it.kind === "prep") {
       var m = it.meeting_id ? recCalMeeting(it.meeting_id, it.start) : null;
       if (m && m.title) return showTitle(m.title, { kind: "meeting", empty: "" });
@@ -7256,8 +8030,21 @@
   // The press is the link's own click: its address is set from the words in
   // the box and what the Hub shows at that moment, and the app opens the
   // chat. Nothing is saved as a choice, nothing is fired, nothing is sent.
+  // The coordinator's H1: the top bar's link reaches it from every tab. With words in the chat box it
+  // carries them; otherwise the chat opens with a line to say what is wrong there. Counted the same.
+  var PROBLEM_TOP_TEXT = "I'll say what is wrong in this chat.";
+  function problemTop(e) {
+    var box = $("hubask"), a = $("missTop");
+    var said = clip(wellFormed((box && box.value) || ""), PROBLEM_CAP) || PROBLEM_TOP_TEXT;
+    var href = problemHref(said);
+    if (!href) { if (e && e.preventDefault) e.preventDefault(); banner("That could not be opened as a chat; shorten it and try again.", true); return; }
+    if (a) a.setAttribute("href", href);
+    if (typeof recordMiss === "function") recordMiss("problem_" + rid(), nowIso());
+    setTimeout(function () { if (a) a.setAttribute("href", "#"); }, 0);
+  }
   function problemChat(e) {
-    var t = $("missText"), a = $("missSave");
+    // cr1#1784 part B (127d): the words come from the chat box; Something is wrong is the small link under it
+    var t = $("hubask"), a = $("missSave");
     var said = clip(wellFormed((t && t.value) || ""), PROBLEM_CAP);
     var href = said ? problemHref(said) : "";
     if (!href) {
@@ -7268,71 +8055,19 @@
     }
     if (a) a.href = href;
     // the box is shared with Ask for a change: a note it left is cleared once a chat opens
-    var note = $("askNote"); if (note) note.textContent = "";
+    var note = $("hhasknote"); if (note) note.textContent = "";
     // the report counts in the week's measure, under its own id
     if (typeof recordMiss === "function") recordMiss("problem_" + rid(), nowIso());
+    // the words stay in the box and stay kept (as v6.11 kept them); emptying the box drops them
     // The words stay in the box: where the app does not take the link (a
     // browser with no Claude app), nothing is lost (review).
     setTimeout(function () { if (a) a.href = "#"; }, 0);
   }
   // ---- end missed something ---------------------------------------------------
   // ---- ask for a change (cr1#1383) ------------------------------------------
-  // The owner types the change they want and Ask for a change opens a new
-  // chat with those words typed in and not sent, through the same
-  // claude://claude.ai/new link as Something is wrong (PROBLEM_HREF). It saves
-  // no choice, counts nothing and writes nothing; the chat it opens does the
-  // work and asks first. cr1#1591 (B3): one box for both, in the top bar's Ask
-  // panel; the owner's press says which it is, never a guess from the words.
-  var ASK_LEAD = "A change I'd like on my Command Room Hub: ";
-  var ASK_CLOSE = "Tell me what you would change, and ask me before you change, file or send anything.";
-  // The tab the owner was on, so the chat knows where they were looking.
-  function askTab() {
-    var d = typeof document !== "undefined" ? document : null;
-    var tab = d && d.querySelector ? d.querySelector('nav.tabs button[data-tab][aria-selected="true"]') : null;
-    return tab && tab.firstChild && tab.firstChild.nodeValue ? clip(tab.firstChild.nodeValue, 40) : "";
-  }
-  function askMessage(said, bare) {
-    var lines = [ASK_LEAD + said], where = bare ? "" : askTab();
-    if (where) lines.push("I was on the " + where + " tab.");
-    lines.push(ASK_CLOSE);
-    return wellFormed(lines.join("\n"));
-  }
-  // The link for that text, or "" when none can be built. Past the ceiling
-  // the owner's words are shortened, never the encoding.
-  function askHref(said) {
-    try {
-      var n = said.length, href = "";
-      for (var k = 0; k < 7; k++) {
-        href = chatHref(askMessage(n < said.length ? said.slice(0, n).trim() + "\u2026" : said, k === 6));
-        if (href) return href;
-        if (k < 5) n = Math.floor(n / 2);
-      }
-    } catch (e) {}
-    return "";
-  }
-  // The press is the link's own click, as Something is wrong's is.
-  function askChat(e) {
-    var t = $("missText"), a = $("askGo"), note = $("askNote");
-    var said = clip(wellFormed((t && t.value) || ""), PROBLEM_CAP);
-    var href = said ? askHref(said) : "";
-    if (!href) {
-      if (e && e.preventDefault) e.preventDefault();
-      if (a) a.href = "#";
-      // Said in the box itself: a banner sits at the top of a long tab, out of sight (review).
-      if (note) note.textContent = said ? "That could not be opened as a chat; shorten it and try again." : "Type the change you want first.";
-      if (t && t.focus) t.focus();
-      return;
-    }
-    if (note) note.textContent = "";
-    if (a) a.href = href;
-    // The words stay in the box, so nothing is lost where the app does not take the link.
-    setTimeout(function () { if (a) a.href = "#"; }, 0);
-  }
-  if ($("askGo") && $("askGo").addEventListener) {
-    $("askGo").addEventListener("click", askChat);
-    $("askGo").addEventListener("auxclick", askChat);
-  }
-  // cr1#1591: the box is shared, so Enter is a new line in it, never a guess at which press was meant.
+  // cr1#1784 part B (rulings 125h, 127d): the header's chat box replaces Ask for
+  // a change. A question typed there opens a new chat with it typed in, as typed
+  // (hhAsk, in the header block); Something is wrong is the small link under it.
   // ---- end ask for a change ---------------------------------------------------
   // ---- the update bar (cr1#1389) --------------------------------------------
   // The installed plugin (the Settings feed's installed_version) against the
@@ -7841,7 +8576,7 @@
   // places in, and the least the week grid, its drags and the Book and Move
   // pickers span (WK_H0, WK_H1); railSpan() widens those to the week's
   // earliest and latest meeting.
-  var FOCUS_SHOW = 3, PAST_SHOW = 6;
+  var FOCUS_SHOW = 3;
   S.meetOpen = null; S.focusOpen = {}; S.todayMid = "focus"; S.workView = "triage"; S.drawer = ""; S.drawerOpener = null;
 
   // ---- Work: triage, lanes, threads, updates and ordered priorities (cr1#1540) ----
@@ -9063,7 +9798,7 @@
   // scale, and a meeting dragged on it, live on Week (renderWeekGrid); this
   // supersedes cr1#1589's empty grid. Times are read the way every meeting
   // row reads them (`new Date(m.start)`, this viewer's clock).
-  var NEXT_SHOW = 5, NEXT_JOIN_MS = 15 * 60000, NEXT_NOEND_MS = 60 * 60000;
+  var NEXT_JOIN_MS = 15 * 60000, NEXT_NOEND_MS = 60 * 60000;
   // cr1#1707: all-day events are left out of Next (true would list them again)
   var railKeepsAllDay = false;
   function meetKey(m) { return (m.start || "") + "|" + (m.title || ""); }
@@ -9114,142 +9849,262 @@
     // later day's all-day items before its timed ones
     out.ahead.sort(function (x, y) { return x.at === y.at ? (x.allDay === y.allDay ? x.i - y.i : (x.allDay ? -1 : 1)) : (x.at < y.at ? -1 : 1); });
     out.all = out.ahead;
-    out.rows = out.all.slice(0, NEXT_SHOW);
-    out.rest = out.all.slice(NEXT_SHOW);
     out.anyToday = out.all.some(function (it) { return it.today; });
     return out;
   }
-  // One status word, from fields the feed already has. "Prep ready" is not
-  // said beside its own Prep button.
-  function railWord(it, act) {
-    // cr1#1758: what the live calendar says comes first; a meeting it no longer holds is not "Now"
-    if (it.m.live === "gone") return "Not on your calendar now";
-    if (it.m.live === "cancelled") return "Cancelled";
-    if (it.m.live === "declined") return "You declined";
-    if (it.ended) return "Ended";
-    if (isBlock(it.m)) return "Time blocked";
-    if (it.now) return "Now";
-    if (it.m.hub_moved === true || it.m.live === "moved") return "Moved";   // cr1#1539, cr1#1758
-    if (it.m.live === "new" && !meetReady(it.m)) return "New";
-    return meetReady(it.m) && act !== "prep" ? "Prep ready" : "";
+  // ---- the Calendar's rows (cr1#1784 part B; rulings 128f, 131a, 127c) ----
+  // Today's meetings in time order, the ones over first, then a Now line with
+  // the free time to the next meeting, then the rest. Each row has one status
+  // line and at most one button, the higher state winning:
+  //   1 an invite not answered: "Invite not accepted" (late colour), Accept
+  //     (Maybe and Decline stay in the opened meeting); no button on a seat
+  //     whose calendar cannot answer. The same reading as Urgent's invite row
+  //     (#1786): an answer waiting or one that did not fail clears both.
+  //   then a meeting ahead that overlaps another today: "Overlaps <time>"
+  //     (late colour), no button (128f as amended 2026-11-25)
+  //   2 work under way (the job list, #1801's mxWork): "Processing...", no
+  //     button; a job that failed shows its own line and "Try again".
+  //   3 over, not processed: "Summary ready" with Process when the notes are
+  //     known ready (a notes reader, mxNotes, when one is defined); without
+  //     one, "Not processed" with Process. "Notes pending" and "No notes yet"
+  //     when the reader says so. Process is #1787's mxProcess, or the
+  //     meeting page.
+  //   4 ahead, prep ready: "Prep ready", Open prep.
+  //   5 ahead, no prep: "No prep yet", Prep (Prep this one, #1801's
+  //     prepOnePress) where Prep this one may run, else no button.
+  //   6 processed: "Processed", Open (the meeting page); one whose promises
+  //     could not be checked (held, ruling 66): "Could not check", Open.
+  //   and with no button: time blocked, a row the live calendar struck
+  //   (#1771's words), an over meeting with nothing to open.
+  // There is no Reply state (131a) and no Join (the next-meeting card and the
+  // Prep page keep it). A meeting's name opens its Prep page when ahead and
+  // its meeting page when over (127c).
+  // review round 1, should a: the live layer is showing (#1771's read answered, its calendar layer joined), not merely planned
+  function cal1Live() { var T = S.tlive; return !!(T && T.state === "ok" && T.layers && T.layers.calendar); }
+  function cal1Struck(m) { return m.live === "gone" || m.live === "cancelled" || m.live === "declined"; }
+  function cal1Answered(m) {
+    if (S.answering && S.answering[calKey(m)]) return true;
+    return (S.choices || []).some(function (c) { return c.kind === "calendar" && c.n === m.meeting_id && /^(accept|decline|tentative)/.test(String(c.action || "")) && !(c.result && c.result.outcome === "error"); });
   }
-  // Join when it has a link and starts within the quarter hour or is under
-  // way; else Prep when its brief is ready to open; else nothing.
-  function railAct(it, nowMs) {
-    var m = it.m; if (m.all_day || isBlock(m) || it.ended) return "";
-    var link = typeof calLink === "function" ? calLink(m) : "";
-    if (link && (it.now || it.at - nowMs <= NEXT_JOIN_MS)) return "join";
-    return meetReady(m) && m.prep_text ? "prep" : "";
+  function cal1Unanswered(m) { return m.answer === "none" && !m.mine && m.calendar !== "personal" && !cal1Answered(m); }
+  function cal1Job(it) {
+    if (typeof mxWork !== "function" || !it.m.jk) return null;
+    var r = null; try { r = mxWork(it.m.jk, it.ended ? "writeup" : "prep"); } catch (e) { r = null; }
+    var st = typeof r === "string" ? r : (r && r.state) || "";
+    return st === "working" || st === "asked" || st === "running" ? { st: "working" } : st === "failed" ? { st: "failed", line: String((r && r.line) || "That did not finish.") } : null;
   }
-  function railLine(it, when, act) {
-    var w = railWord(it, act);
-    // cr1#1591 review: a row whose word is Now or Moved still shows a ready
-    // brief, in a small mark beside the word; the row keeps its one action
-    var ready = (w === "Now" || w === "Moved") && meetReady(it.m) ? '<span class="st prep">prep ready</span>' : "";
-    return '<button class="pm" type="button" data-meet="' + esc(meetKey(it.m)) + '" title="' + esc(showTitle(it.m.title, { kind: "meeting" })) + '"><span class="tm">' + esc(when) + '</span><span class="tt">' + esc(showTitle(it.m.title, { kind: "meeting" })) + "</span>"
-      + (it.m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + (w ? '<span class="st">' + esc(w) + "</span>" : "") + ready + "</button>";
+  function cal1Notes(m) { if (typeof mxNotes !== "function") return null; try { return mxNotes(wrapKey(m)); } catch (e) { return null; } }
+  // review round 1, should b: "Overlaps <time>" ranks under the invite state, above the rest, and keeps the
+  // button of the state under it (ruling 140f sets the line and its rank, not the button)
+  function cal1State(it, nowMs) {
+    var m = it.m, b = cal1Base(it, nowMs);
+    if (!b.top && !it.ended && !cal1Struck(m) && !m.all_day && !isBlock(m)) {
+      var ov = cal1Overlap(m, nowMs);
+      if (ov) return { word: "Overlaps " + fmtTime(ov.start), late: true, btn: b.btn };
+    }
+    return b;
   }
+  function cal1Base(it, nowMs) {
+    var m = it.m, k = esc(meetKey(m)), wk = m.meeting_id ? esc(wrapKey(m)) : "";
+    var btn = function (act, label, key) { return '<button class="act sm nxgo" type="button" data-cal1-act="' + act + '" data-cal1-key="' + (key || k) + '">' + label + "</button>"; };
+    // #1771's live words stand: a struck row says its own word; Moved and New are the row's status line, its button kept
+    if (cal1Struck(m)) return { word: (typeof tlWord === "function" && tlWord(m)) || railStruckWord(m), btn: "" };
+    if (m.all_day) return { word: it.today ? "All day" : "", btn: "" };
+    if (isBlock(m)) return { word: "Time blocked", btn: "" };
+    if (!it.ended && m.meeting_id && cal1Unanswered(m)) return { word: "Invite not accepted", late: true, top: true, btn: canAnswer(m) ? btn("accept", "Accept") : "" };
+    var job = cal1Job(it);
+    if (job && job.st === "working") return { word: "Processing...", btn: "" };
+    if (job && job.st === "failed") return { word: job.line, late: true, btn: it.ended ? (wk ? btn("process", "Try again", wk) : "") : btn("prep", "Try again", esc(m.jk)) };
+    // Until the job list (mxWork) lands, main's own Prep this one state for this meeting (review round 1, must 3):
+    // a press waiting or under way reads "Preparing…" with no button; a refusal or a failed start says its line
+    if (!it.ended && m.jk && !job) {
+      var T = S.tlive || {}, rq = typeof prepOneReq === "function" ? prepOneReq(m.jk) : null;
+      var again = typeof prepOneCan === "function" && prepOneCan(m) && typeof prepOnePress === "function" ? btn("prep", "Prep", esc(m.jk)) : "";
+      if (T.prepLine && T.prepLine[m.jk]) return { word: String(T.prepLine[m.jk]), late: true, btn: again };
+      if ((T.prepBusy && T.prepBusy[m.jk]) || (typeof prepOneWaiting === "function" && prepOneWaiting(rq))) return { word: "Preparing…", btn: "" };
+      if (rq && rq.state === "refused" && rq.line) return { word: String(rq.line), late: true, btn: again };
+    }
+    if (it.ended && m.calendar === "personal") return { word: "", btn: "" };   // review round 1, should d: time and tag only
+    if (it.ended) {
+      // where it stands, with this page's own presses on top (pastState, #1787's): a held one could
+      // not have its promises checked (ruling 66) and says so; one written up is Processed
+      var W = m.wrap, ps = W && typeof pastState === "function" ? pastState(m) : (W && W.processed ? "done" : "unwritten");
+      if (W && ps === "held") return { word: "Could not check", late: true, btn: wk ? btn("open", "Open", wk) : "" };
+      if (W && ps !== "unwritten") return { word: "Processed", btn: wk ? btn("open", "Open", wk) : "" };
+      var notes = cal1Notes(m);
+      if (notes === "pending") return { word: "Notes pending", btn: "" };
+      if (notes === "none") return { word: "No notes yet", btn: "" };
+      if (W && wk) return { word: notes === "ready" ? "Summary ready" : "Not processed", btn: btn("process", "Process", wk) };
+      return { word: "No notes yet", btn: "" };
+    }
+    var moved = m.hub_moved === true || m.live === "moved";
+    if (meetReady(m)) return { word: it.now ? "Now" : moved ? "Moved" : "Prep ready", btn: btn("openprep", "Open prep") };
+    var can = typeof prepOneCan === "function" && prepOneCan(m) && typeof prepOnePress === "function";
+    return { word: it.now ? "Now" : moved ? "Moved" : m.live === "new" ? "New" : "No prep yet", btn: can ? btn("prep", "Prep", esc(m.jk)) : "" };
+  }
+  // The other meeting today this one overlaps, by the rule the day's clash
+  // line always used (dayClash): real meetings with a start and an end, not
+  // over, not the same event on two calendars.
+  function cal1Overlap(m, nowMs) {
+    var t = S.today, day = (t && wsDayNow(t)) || hubDay();
+    if (!realMeeting(m) || !m.start || !m.end || wsDayOf(t, m.start) !== day) return null;
+    var s0 = new Date(m.start).getTime(), e0 = new Date(m.end).getTime(), hit = null;
+    ((t && t.meetings) || []).forEach(function (o) {
+      if (hit || o === m || !realMeeting(o) || !o.start || !o.end || wsDayOf(t, o.start) !== day || sameMeeting(o, m) || cal1Struck(o)) return;
+      var s1 = new Date(o.start).getTime(), e1 = new Date(o.end).getTime();
+      if (e1 > nowMs && s1 < e0 && s0 < e1) hit = o;
+    });
+    return hit;
+  }
+  // A row the live calendar struck says so in #1771's words.
+  function railStruckWord(m) { return m.live === "gone" ? "Not on your calendar now" : m.live === "cancelled" ? "Cancelled" : "You declined"; }
   function railWhen(it) {
     var m = it.m;
     if (m.all_day) return it.today ? "All day" : (fmtDate(railDay(m.start)).split(",")[0] || "") + " all day";
     if (!m.start || isNaN(new Date(m.start))) return "";
-    return it.today ? fmtTime(m.start) : fmtWhen(m.start);
+    return it.today || it.ended ? fmtTime(m.start) : fmtWhen(m.start);
   }
   function nextRow(it, nowMs) {
-    var act = railAct(it, nowMs), key = esc(meetKey(it.m)), go = "";
-    if (act === "join") go = '<a class="join" href="' + esc(calLink(it.m)) + '" target="_blank" rel="noopener">Join</a>';
-    else if (act === "prep") go = '<button class="act nxgo" type="button" data-meet="' + key + '" title="Open its prep">Prep</button>';
-    var off = it.m.live === "gone" || it.m.live === "cancelled" || it.m.live === "declined";   // cr1#1758: struck through, never dropped
-    return '<div class="nx' + (off ? " off" : "") + '">' + railLine(it, railWhen(it), off ? "" : act) + (off ? "" : go) + "</div>";
+    // the wall (#1771): a personal row shows its time and the personal tag only, never its title
+    var m = it.m;
+    // decision 141n (cr1#1833): an off-limits title is the title_off block's own row: its time, "A meeting" and its tag, nothing to press
+    if (m.title_off === true) return '<div class="nx xrow' + (it.ended ? " over" : "") + '"><div class="pm pmheld">'
+      + (typeof toLine === "function" ? toLine(railWhen(it), m.calendar === "personal") : '<span class="tm">' + esc(railWhen(it)) + "</span>") + "</div></div>";
+    var s = cal1State(it, nowMs), off = cal1Struck(m), walled = m.calendar === "personal";
+    var title = walled ? "" : esc(showTitle(m.title, { kind: "meeting" }));
+    var name = '<span class="tm">' + esc(railWhen(it)) + '</span><span class="tt">' + title + "</span>" + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "")
+      + (s.word ? '<span class="st' + (s.late ? " late" : "") + '">' + esc(s.word) + "</span>" : "");
+    // the name opens the meeting: its Prep page ahead, its meeting page over (127c)
+    var open = it.ended ? (m.wrap && m.meeting_id ? '<button class="pm" type="button" data-wrap="' + esc(wrapKey(m)) + '" title="' + title + '">' + name + "</button>" : '<div class="pm">' + name + "</div>")
+      : '<button class="pm" type="button" data-meet="' + esc(meetKey(m)) + '" title="' + title + '">' + name + "</button>";
+    return '<div class="nx xrow' + (off ? " off" : "") + (it.ended ? " over" : "") + (s.late ? " late" : "") + '">' + open + (off ? "" : s.btn) + "</div>";
+  }
+  // The Now line: the free time to the next meeting, or that none is left.
+  function cal1Dur(ms) { var m = Math.max(0, Math.round(ms / 60000)), h = Math.floor(m / 60); return h ? h + " h" + (m % 60 ? " " + (m % 60) + " min" : "") : m + " min"; }
+  function cal1NowLine(t, nowMs) {
+    var n = nextMeeting(t, nowMs), at = n ? new Date(n.start).getTime() : NaN;
+    var line = !n ? "Now · no more meetings today" : at <= nowMs ? "Now" : "Now · " + cal1Dur(at - nowMs) + " free until " + fmtTime(n.start);
+    if (n && wsDayOf(t, n.start) !== (wsDayNow(t) || hubDay()) && at > nowMs) line = "Now · no more meetings today";
+    return '<div class="nxnow" data-cal1-now>' + esc(line) + "</div>";
+  }
+  // Today's meetings already over: those the feed still holds, then the
+  // day's others it keeps apart (`past`), each once.
+  function cal1PastToday(t, model) {
+    var day = wsDayNow(t) || hubDay(), seen = {}, out = [];
+    (model ? model.past : []).forEach(function (it) { if (wsDayOf(t, it.m.start) === day) { seen[(it.m.meeting_id || "") + "|" + it.m.start] = true; it.at = new Date(it.m.start).getTime(); out.push(it); } });
+    (t && Array.isArray(t.past) ? t.past : []).forEach(function (m, i) {
+      if (!m || !m.start || seen[(m.meeting_id || "") + "|" + m.start] || m.away === true || isAway(m) || wsDayOf(t, m.start) !== day) return;
+      seen[(m.meeting_id || "") + "|" + m.start] = true; out.push({ i: 1000 + i, m: m, ended: true, today: true, at: new Date(m.start).getTime() });
+    });
+    return out.sort(function (a, b) { return a.at - b.at; });
   }
   function renderRail() {
     var el = $("nextlist"); if (!el) return;
     var t = S.today, now = Date.now(), model = railModel(t, now), h = "";
-    if (!t) h = '<div class="nxnone">' + (isRunning("prep") ? "Reading your calendar." : "No calendar read yet.") + "</div>";
+    if (!t) h = '<div class="nxnone">No calendar read yet.</div>';   // the coordinator's H6: one plain line
     else {
-      // cr1#1707: one meeting block. The big card holds the next real meeting
-      // (its Prep or Jump in); this list is the rest of today, the card's
-      // meeting never twice and no later day's: an empty rest is one short
-      // line. The rest past NEXT_SHOW fold, each opening its meeting.
-      var card = nextMeeting(t, now), ck = card ? meetKey(card) : null;
-      var todays = model.all.filter(function (it) { return it.today && meetKey(it.m) !== ck; });
-      var shown = todays.slice(0, NEXT_SHOW), rest = todays.slice(NEXT_SHOW);
-      if (!todays.length) h = '<div class="nxnone">Nothing else today.</div>';
-      shown.forEach(function (it) { h += nextRow(it, now); });
-      // cr1#1591 review: the rest fold open in place, each opening its meeting
-      // (Join, Move, Cancel there), so a sixth meeting is never out of reach
-      if (rest.length) {
-        h += '<details class="nxmorefold" id="nxmore"' + (S.nxMoreOpen ? " open" : "") + "><summary>" + rest.length + " more</summary>";
-        rest.forEach(function (it) { h += nextRow(it, now); });
-        h += "</details>";
+      var past = cal1PastToday(t, model), todays = model.all.filter(function (it) { return it.today; });
+      if (!past.length && !todays.length) h = '<div class="nxnone">Nothing on your calendar today.</div>';
+      else {
+        past.forEach(function (it) { h += nextRow(it, now); });
+        h += cal1NowLine(t, now);
+        todays.forEach(function (it) { h += nextRow(it, now); });
       }
     }
+    // cr1#1830 (via the coordinator): when the off-limits list could not be read, the feed says nobody is named, once
+    if (t && t.people_line) h = '<div class="quiet nxpeople" data-cal1-people>' + esc(String(t.people_line)) + "</div>" + h;
     putHtml(el, h);
     renderPast(model);
+    if (typeof renderComing === "function") renderComing();
   }
-  // Past meetings, folded under the list with its count: what the feeds
-  // already carry as ended. The meetings feed/today still holds after their
-  // end (an hour, the just-ended row), each opening its meeting; then the
-  // meetings captured to the book (the done strip's own data), each opening
-  // its captured line.
+  document.addEventListener("click", function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest("button[data-cal1-act]") : null; if (!b) return;
+    var act = b.getAttribute("data-cal1-act"), key = b.getAttribute("data-cal1-key");
+    if (act === "openprep") { openMeeting(key); return; }
+    if (act === "open") { openWrap(key); return; }
+    if (act === "prep") { prepOnePress(key); return; }
+    if (act === "accept") { var t = S.today, m = null; (t && t.meetings || []).forEach(function (x) { if (meetKey(x) === key) m = x; }); if (m) answerDirect(m, "accept"); return; }
+    if (act === "process") {
+      if (typeof mxProcess === "function") { mxProcess(key); return; }
+      openWrap(key);
+    }
+  });
+  // Coming up (cr1#1784 part B): closed, it names the next meeting; opened,
+  // the coming days. The meetings are the Today feed's week (feed/today's
+  // week.days[].meetings), joined to the board's days by date as the board view
+  // joins them (boardDays); feed/board's own days carry no meetings (review
+  // round 1, must 1). A week row is personal when `personal` is true; a time
+  // block, time away or an all-day item is never "the next meeting".
+  var COMING_NONE = "Nothing coming up this week.";
+  function comingPersonal(m) { return !!(m && (m.personal === true || m.calendar === "personal")); }
+  // decision 141n: a week row whose title names an off-limits name (or an unreadable list) shows its time only
+  // a held title (cr1#1833) is the scrub's own: Coming up reads the scrubbed Today, where its title is "A meeting"
+  function comingWalled(m) { return comingPersonal(m); }
+  function comingDays() {
+    if (typeof boardDays === "function") { try { return boardDays(); } catch (e) {} }
+    var t = S.today; return t && t.week && Array.isArray(t.week.days) ? t.week.days : [];
+  }
+  function comingRows() {
+    var t = S.today, d0 = String((t && t.week && t.week.today) || (S.board && S.board.today) || (typeof wsDayNow === "function" && wsDayNow(t)) || hubDay()), out = [];
+    comingDays().forEach(function (d) {
+      if (!d || String(d.date || "") <= d0) return;
+      (d.meetings || []).forEach(function (m) { if (m && m.start && !m.all_day && m.solo !== true && !m.away) out.push({ day: d, m: m }); });
+    });
+    return out;
+  }
+  function renderComing() {
+    var el = $("cominglist"); if (!el || typeof setBarSummary !== "function") return;
+    var rows = comingRows(), h = "", last = "";
+    if (!rows.length) { putHtml(el, '<div class="quiet">' + COMING_NONE + "</div>"); setBarSummary("comingup", COMING_NONE); return; }
+    var keys = {}; ((S.today && S.today.meetings) || []).forEach(function (m) { keys[meetKey(m)] = true; });
+    rows.forEach(function (r) {
+      if (r.day.date !== last) { last = r.day.date; h += '<div class="cap cday">' + esc(r.day.name || fmtDate(r.day.date)) + "</div>"; }
+      var pers = comingPersonal(r.m), walled = comingWalled(r.m);
+      var name = '<span class="tm">' + esc(fmtTime(r.m.start)) + '</span><span class="tt">' + (walled ? "" : esc(showTitle(r.m.title, { kind: "meeting" }))) + "</span>" + (pers ? '<span class="tag">personal</span>' : "");
+      // a held row (cr1#1833) is never pressable, even when it is on today's list too (the planner's should-fix 1)
+      var held = typeof toOff === "function" && toOff(r.m);
+      h += !walled && !held && keys[meetKey(r.m)] ? '<div class="nx xrow"><button class="pm" type="button" data-meet="' + esc(meetKey(r.m)) + '">' + name + "</button></div>" : '<div class="nx xrow"><div class="pm">' + name + "</div></div>";
+    });
+    putHtml(el, h);
+    var f = rows[0];
+    setBarSummary("comingup", "Next: " + (comingPersonal(f.m) ? "personal" : showTitle(f.m.title, { kind: "meeting" })) + ", " + (f.day.name || fmtDate(f.day.date)) + " " + fmtTime(f.m.start));
+  }
+  // ---- end the Calendar's rows
+  // Earlier this week (cr1#1784 part B): the meetings of the days before
+  // today that still want something, not processed or with a follow-up not
+  // sent (pastState, #1787's, and the wrap mark). A meeting that is done does
+  // not show; today's are on the Calendar. Each row opens its meeting page.
+  var PAST_WAITING = { unwritten: true, follow_up: true, follow_ready: true, held: true };   // review round 1, should e: held too
+  var PAST_NONE = "Nothing waiting from earlier this week.";
   function renderPast(model) {
     var el = $("pastmeetings"); if (!el) return;
-    var h = "", n = 0;
-    // review of #1669, item 7: a meeting that ended within the hour is one
-    // press into its wrap-up too; a personal one is never counted (item 4)
-    (model ? model.past : []).forEach(function (it) {
-      var line = railLine(it, fmtTime(it.m.start));
-      // its row still opens the meeting; the wrap-up is one press beside it, as Prep is on the list
-      h += it.m.wrap && it.m.meeting_id ? '<div class="nx">' + line + '<button class="act nxgo" type="button" data-wrap="' + esc(wrapKey(it.m)) + '">' + (pastState(it.m) === "done" ? "Wrapped up" : "Wrap up") + "</button></div>" : line;
-      // only a pressable row not done counts: never a personal, solo, id-less or wrapped one (round 2, item 7)
-      if (it.m.wrap && it.m.meeting_id && pastState(it.m) !== "done") n += 1;
-    });
-    // cr1#1539: the rest of the day's ended meetings, which the feed keeps
-    // apart (`past`), newest first. A personal one shows its tag, as above.
-    var seenPast = {}; (model ? model.past : []).forEach(function (it) { seenPast[(it.m.meeting_id || "") + "|" + (it.m.start || "")] = true; });
-    var day = hubDay(), week = !!(S.today && S.today.past_days);
-    // cr1#1668: with the feed's last seven days (`past_days`), every ended
-    // meeting is a row: its day and time, its calendar title, who was there,
-    // where it stands, and one press into its wrap-up page. Not done first,
-    // newest first within; only the not-done ones count.
-    var ended = (S.today && Array.isArray(S.today.past) ? S.today.past : []).filter(function (m) {
-      return m && m.start && !seenPast[(m.meeting_id || "") + "|" + m.start] && !isBlock(m) && (week || sentDay(m.start) === day);
+    var t = S.today, day = (t && wsDayNow(t)) || hubDay(), h = "", n = 0;
+    // only a feed that carries the last seven days (`past_days`) has earlier days to list
+    var week = !!(t && t.past_days);
+    var rows = (week && Array.isArray(t.past) ? t.past : []).filter(function (m) {
+      return m && m.start && m.wrap && m.meeting_id && !isBlock(m) && !isAway(m) && m.away !== true && m.title_off !== true && m.calendar !== "personal" && wsDayOf(t, m.start) < day && PAST_WAITING[pastState(m)];
     }).map(function (m, i) { return { m: m, st: pastState(m), i: i }; });
-    // what needs him first: a pressable row not done; a done one, or one with no press (personal), after
-    var later = function (x) { return x.st === "done" || !x.m.wrap ? 1 : 0; };
-    ended.sort(function (a, b) { return later(a) - later(b) || b.i - a.i; });
-    ended.forEach(function (x) {
-      h += pastRow(x.m, x.st, day);
-      // only a row that can be pressed counts (a personal one, or one with no id, cannot)
-      if (x.m.wrap && x.m.meeting_id && x.st !== "done") n += 1;
+    rows.sort(function (a, b) { return String(b.m.start).localeCompare(String(a.m.start)); });
+    rows.forEach(function (x) { h += pastRow(x.m, x.st, day); n += 1; });
+    // the coordinator's H2: what v6.11 could open stays one press away until #1787's meeting page lands:
+    // the earlier days' meetings that are done, folded, uncounted
+    var done = (week && Array.isArray(t.past) ? t.past : []).filter(function (m) {
+      return m && m.start && m.wrap && m.meeting_id && !isBlock(m) && !isAway(m) && m.away !== true && m.title_off !== true && m.calendar !== "personal" && wsDayOf(t, m.start) < day && !PAST_WAITING[pastState(m)];
     });
-    if (week && num(S.today.past_more) > 0) h += '<div class="railnote">' + esc(num(S.today.past_more) + " older not shown.") + "</div>";
-    var c = S.plate && S.plate.done && S.plate.done.kinds ? S.plate.done.kinds.meetings : null;
-    var rows = c && c.rows ? c.rows : [];   // newest first, as the feed sorts them
-    if (week) {
-      // with the week listed, a captured record is its calendar meeting's row:
-      // only one with its own title that no listed meeting carries (a call
-      // with no calendar event) is listed apart, and it adds nothing to the count
-      var named = {}; ended.forEach(function (x) { named[titleNorm(x.m.title)] = true; });
-      rows = rows.filter(function (r) { return !r.untitled && r.title && !named[titleNorm(r.title)]; });
-      c = null;
-    }
-    rows.slice(0, PAST_SHOW).forEach(function (r) {
-      h += "<details><summary>" + esc(showTitle(r.title)) + "</summary>" + doneRowLine(r) + "</details>";
-    });
-    var total = c ? Math.max(rows.length, num(c.n)) : 0;
-    if (total > PAST_SHOW) h += '<div class="railnote">And ' + (total - PAST_SHOW) + " more captured this week.</div>";
-    n += total;
-    putHtml(el, h || '<div class="quiet">No meeting has ended yet.</div>');
+    done.sort(function (a, b) { return String(b.start).localeCompare(String(a.start)); });
+    if (done.length) h += '<details class="pastdone"><summary>' + done.length + " done this week</summary>"
+      + done.map(function (m) { return pastRow(m, pastState(m), day); }).join("") + "</details>";
+    if (week && num(t.past_more) > 0) h += '<div class="railnote">' + esc(num(t.past_more) + " older not shown.") + "</div>";
+    putHtml(el, (rows.length ? "" : '<div class="quiet">' + PAST_NONE + "</div>") + h);
     var pn = $("pastN"), pt = n ? " " + n : "";
     if (pn && pn.textContent !== pt) pn.textContent = pt;
-    // cr1#1707: no past meeting at all draws no Past meetings fold
-    var pg = $("pastgrp"); if (pg) pg.hidden = !n;
+    var pg = $("pastgrp"); if (pg && pg.hidden) pg.hidden = false;
   }
   // A pressed meeting opens in the middle column, in place of Focus: its
   // time and place, then its own row as renderToday draws it (the prep state,
   // the prep in place, the calendar answers where the seat has them).
   function openMeeting(key) {
+    if (typeof toHeldKey === "function" && toHeldKey(key)) { S.meetOpen = null; if (typeof toast === "function") toast(TO_HELD_LINE); return; }   // cr1#1833
     S.meetOpen = key; S.prepOpen[key] = true;
     renderToday();
     var b = $("meetBack"); if (b) b.focus();
@@ -9263,6 +10118,8 @@
   function renderMeetView() {
     var box = $("meetview"), mid = $("todaymid"), list = $("meetings"); if (!box || !mid || !list) return;
     var at = meetIndex();
+    // cr1#1833: a stored key that names a walled meeting opens nothing, and says so
+    if (S.meetOpen && typeof toHeldKey === "function" && toHeldKey(S.meetOpen)) { S.meetOpen = null; at = -1; if (typeof toast === "function") toast(TO_HELD_LINE); }
     if (at < 0) S.meetOpen = null;
     box.hidden = at < 0; mid.hidden = at >= 0;
     if (at < 0) { if (typeof renderMeetAttach === "function") renderMeetAttach(); return; }   // cr1#1632
@@ -10004,6 +10861,8 @@
   function renderWrapView() {
     var box = $("wrapview"), mid = $("todaymid"), meet = $("meetview"), body = $("wraplive"); if (!box || !body) return;
     var m = S.wrapOpen ? wrapMeeting(S.wrapOpen) : null;
+    // cr1#1833: reached by a stored key, a walled meeting's wrap-up shows nothing of it
+    if (m && typeof toOff === "function" && toOff(m)) { S.wrapOpen = null; m = null; if (typeof toast === "function") toast(TO_HELD_LINE); }
     if (!m) { if (S.wrapOpen) S.wrapOpen = null; box.hidden = true; return; }
     box.hidden = false; if (mid) mid.hidden = true; if (meet) meet.hidden = true;
     var W = m.wrap || {}, st = wrapState(m), when = fmtWhen(m.start) + (m.end ? " to " + fmtTime(m.end) : "");
@@ -10044,7 +10903,7 @@
     putHtml(body, h);
     if (typeof renderMeetAttach === "function") renderMeetAttach();   // round 5, item 3: the block fills its place
   }
-  function openWrap(id) { S.wrapOpen = id; renderTodayParts(); var b = $("wrapBack"); if (b) b.focus(); }
+  function openWrap(id) { if (typeof wrapMeeting === "function" && typeof toOff === "function" && toOff(wrapMeeting(id))) { if (typeof toast === "function") toast(TO_HELD_LINE); return; } S.wrapOpen = id; renderTodayParts(); var b = $("wrapBack"); if (b) b.focus(); }
   function closeWrap() { S.wrapOpen = null; var mid = $("todaymid"); if (mid) mid.hidden = false; renderTodayParts(); }
   function onWrap(ev) {
     var t = ev.target;
@@ -10091,6 +10950,8 @@
   // review round 1 of #1819: an Urgent the server held never says "Nothing urgent"
   var UX_HELD_LINE = "Urgent names nobody just now: the off-limits list could not be loaded. The next Update tries again.";
   var UX_WAIT_SHOW = 3;
+  // v6.12.1: the free time when the meeting under way runs into the next one
+  var UX_OVERLAP_LINE = "Nothing urgent. Your next meeting starts before this one ends.";
   // A first call that waits on the viewer's leave rejects with "upstream_error"
   // (seen on a real page: after 31 s, not retried); a decline is "not_granted"
   // (the contract's word, not yet seen). Either asks again at the next open or press.
@@ -10179,14 +11040,17 @@
       || (typeof liveOffLimits === "function" && liveOffLimits(r.sender || "", r.who || ""));
   }
   function uxRows() {
-    var f = uxFeed(), out = [], seen = {};
+    // v6.12.1 (accepted by the coordinator): what the page found since the build, the live
+    // lines its triage judged urgent and the invites still waiting, comes first, then the
+    // feed's rows; each thread once (uxLive already leaves out a thread the feed ranks)
+    var f = uxFeed(), out = [], first = [], seen = {};
     if (f && f.held) return out;
-    function add(r) { var ks = uxIds(r).concat([r.id]); if (ks.some(function (k) { return seen[k]; })) return; ks.forEach(function (k) { seen[k] = true; }); out.push(r); }
+    function add(r, to) { var ks = uxIds(r).concat([r.id]); if (ks.some(function (k) { return seen[k]; })) return; ks.forEach(function (k) { seen[k] = true; }); (to || out).push(r); }
     ((f && f.rows) || []).forEach(function (r) { if (uxHandled(r) || uxOffLimits(r)) return; add({ id: String(r.id || ""), thread_id: r.thread_id || "", message_id: r.message_id || "", kind: r.kind, source: r.source || "mail", who: r.who || "", what: r.what || "", waited: r.waited || "", why: r.why || "", action: r.action || "reply", sender: r.sender || "" }); });
     uxLive().forEach(function (l) {
       var j = S.ux.judged[l.key], it = l.it || {};
       if (!j || j.state !== "ok" || !(j.request || j.deadline)) return;
-      add({ id: "live:" + l.key, thread_id: it.thread_id || "", message_id: it.message_id || "", kind: "email_reply", source: "mail", who: l.who || "", what: l.subject || "", waited: uxWaited(l.ts), why: j.why || "", action: "reply", live: true, key: l.key });
+      add({ id: "live:" + l.key, thread_id: it.thread_id || "", message_id: it.message_id || "", kind: "email_reply", source: "mail", who: l.who || "", what: l.subject || "", waited: uxWaited(l.ts), why: j.why || "", action: "reply", live: true, key: l.key }, first);
     });
     var now = Date.now();
     ((S.today && S.today.meetings) || []).forEach(function (m) {
@@ -10200,9 +11064,9 @@
       // agreed with #1784-B: Accept here is the Calendar row's own call; once an
       // answer to this meeting is on its way or saved, in either place, neither offers it
       if (uxAnswered(m) || (typeof canAnswer === "function" && !canAnswer(m))) return;
-      add({ id: "invite:" + (m.meeting_id || meetKey(m)), kind: "calendar_invite", source: "calendar", who: ((m.people || [])[0]) || "", what: m.title || "", waited: "", why: "An invite waiting on your answer.", action: "accept", meeting: m });
+      add({ id: "invite:" + (m.meeting_id || meetKey(m)), kind: "calendar_invite", source: "calendar", who: ((m.people || [])[0]) || "", what: m.title || "", waited: "", why: "An invite waiting on your answer.", action: "accept", meeting: m }, first);
     });
-    return out;
+    return first.concat(out);
   }
   function uxAnswered(m) {
     if (typeof calKey === "function" && S.answering && S.answering[calKey(m)]) return true;
@@ -10217,8 +11081,12 @@
     if (f && f.held) return [];
     var fx = S.focus && typeof S.focus === "object" ? (S.focus.rows || S.focus.items || []) : [];
     fx.forEach(function (x) { if (x && x.id != null) focus[String(x.id)] = true; });
+    // delta check of #1823: Focus as the page holds it, the owner's presses not yet
+    // in the book included (fxInFocus reads them as To do does), so a row just
+    // added to Focus leaves Waiting on others at once and one just taken out comes back
+    var inFocus = typeof fxInFocus === "function" ? function (id) { return fxInFocus(id); } : function (id) { return !!focus[id]; };
     // review round 1 of #1819: what Focus holds comes out before the three are counted
-    return ((f && f.chase) || []).filter(function (c) { return c && !focus[String(c.id)]; }).slice(0, UX_WAIT_SHOW);
+    return ((f && f.chase) || []).filter(function (c) { return c && !inFocus(String(c.id)); }).slice(0, UX_WAIT_SHOW);
   }
   function uxPlateRow(id) { return typeof plateRowOf === "function" ? plateRowOf(id) : null; }
   // feed-shape audit (U4): the one rule for the free time, here where it runs, against the
@@ -10235,6 +11103,8 @@
       if (typeof realMeeting === "function" ? !realMeeting(m) : (m.all_day || m.solo === true || m.live === "gone" || m.live === "cancelled" || m.live === "declined")) return;
       var st = Date.parse(m.start || ""), en = Date.parse(m.end || "");
       if (isNaN(st)) return;
+      // a meeting under way counts the free time from its end (a Today row always has one: the
+      // builder gives a meeting with no end time an hour, cr1#1707); a row with none counts from now
       if (st <= now) { if (!isNaN(en) && en > from) from = en; return; }
       if (typeof wsDayOf === "function" ? wsDayOf(t, m.start) !== day : new Date(st).toDateString() !== new Date(now).toDateString()) return;
       if (isNaN(best) || st < best) best = st;
@@ -10244,6 +11114,8 @@
   function uxFree(f) {
     var lines = (f && f.lines) || {}, now = Date.now(), nx = uxNextStart(now), s = nx.next;
     if (isNaN(s)) return lines.clear || "Nothing urgent, and no more meetings today.";
+    // the meeting under way runs past the next one's start: there is no free time to name
+    if (s <= nx.from) return UX_OVERLAP_LINE;
     var mins = Math.max(0, Math.round((s - nx.from) / 60000)), h = Math.floor(mins / 60), mm = mins % 60, w = [];
     if (h) w.push(h + (h === 1 ? " hour" : " hours"));
     if (mm || !h) w.push(mm + (mm === 1 ? " minute" : " minutes"));
@@ -10375,6 +11247,9 @@
     else if (mins < 90) { big = String(mins); small = "min until " + fmtTime(m.start); }
     else if (wsDayOf(S.today, m.start) !== (wsDayNow(S.today) || hubDay())) { big = new Date(m.start).toLocaleDateString([], { weekday: "short" }); small = fmtTime(m.start); }
     else { big = (mins / 60).toFixed(1); small = "hours until " + fmtTime(m.start); }
+    // cr1#1833: a walled title offers nothing: its time and a tag, no title, no people, no press, no chat
+    // cr1#1784 part B: a personal held meeting is marked personal on the card too (the owner's standing rule)
+    if (typeof toOff === "function" && toOff(m)) { putHtml(el, '<div class="nextcard"><div class="cnt"><b>' + esc(big) + "</b><span>" + esc(small) + '</span></div><div class="nmain"><div class="nk">Next</div>' + (m.calendar === "personal" ? '<span class="tag">personal</span>' : '<div class="nt">' + TO_WORDS + "</div>") + '<span class="tag">' + TO_TAG + "</span></div></div>"); return; }
     var ready = meetReady(m), key = esc(meetKey(m)), personal = m.calendar === "personal";
     // cr1#1707: the one meeting block. The card is the next real meeting with
     // Join when it is about to start, Prep when its brief is here, else Jump
@@ -10513,6 +11388,15 @@
   }
   function renderFocus() {
     var el = $("focusrows"), q = $("focusquiet"); if (!el || !q) return;
+    // cr1#1785, ruling 125d: To do's Focus (renderTodo) replaces the ranked
+    // Needs you list on Today; `todayOrder` stays for the Brief's first action.
+    if (typeof renderTodo === "function") {
+      var nh = document.querySelector(".needhead"), tf = $("todayFocus");
+      // the stylesheet sets these blocks' display, which the hidden attribute does not beat
+      fxHideBlock(nh); fxHideBlock(tf);
+      putHtml(el, ""); putHtml(q, "");
+      return;
+    }
     var p = S.plate, o = todayOrder(p, hubDay(), FOCUS_SHOW), items = o.need, h = "";
     items.forEach(function (r, i) { h += focusRow(r, i); });
     putHtml(el, h || needQuiet(p));
@@ -10651,7 +11535,6 @@
   // cr1#1584: a Tidy fold stays as the owner left it, and the work stream he picked stays picked.
   $("tab-work").addEventListener("toggle", function (ev) { var k = ev.target.getAttribute && ev.target.getAttribute("data-tdfold"); if (k) tdState().open[k] = !!ev.target.open; }, true);
   $("tab-work").addEventListener("change", function (ev) { var sel = ev.target.closest && ev.target.closest("select[data-tdstream]"); if (sel) { tdState().stream = String(sel.value || ""); renderTidy(); } });
-  $("tab-today").addEventListener("toggle", function (ev) { if (ev.target && ev.target.id === "nxmore") S.nxMoreOpen = !!ev.target.open; }, true);
   // cr1#1632 slice 1: the live prep page's picks, ticks, answers, folds and save
   $("tab-today").addEventListener("change", function (ev) { if (ev.target.closest && ev.target.closest("#meetlive")) onMeetLive(ev); else if (ev.target.closest && ev.target.closest("#wrapview")) onWrap(ev); });
   $("tab-today").addEventListener("input", function (ev) { if (ev.target.closest && ev.target.closest("#meetlive")) onMeetLive(ev); });
@@ -10700,8 +11583,8 @@
     if ((S.cal && S.cal.drag) || (S.pl && S.pl.drag)) return;
     var t = ev.target, nowhere = !t || t === document || t === document.body || t === document.documentElement;
     var at = function (id, btn) { return nowhere || t === $(btn) || !!(t.closest && t.closest("#" + id)); };
-    var ask = $("missbox"), rd = $("rundetails");
-    if (ask && !ask.hidden && at("missbox", "missBtn")) { ev.preventDefault(); setAsk(false); if ($("missBtn")) $("missBtn").focus(); return; }
+    // cr1#1784 part B: the Ask panel is gone (the chat box replaces it), so Run details is the one thing here Escape closes
+    var rd = $("rundetails");
     if (rd && rd.hasAttribute("open") && at("rundetails", "beatBtn")) { ev.preventDefault(); setRunDetails(false); if ($("beatBtn")) $("beatBtn").focus(); }
   });
   // review of #1651: Escape closes an open meeting page, last: a drawer, a
@@ -10946,7 +11829,7 @@
   }
   // cr1#1758: the built feed, then what was read live while the page is open
   // (`todayLive`), then what the owner changed from here.
-  function calRefresh() { if (S.todayFeed !== undefined) S.today = calView(typeof todayLive === "function" ? todayLive(S.todayFeed) : S.todayFeed); }
+  function calRefresh() { if (S.todayFeed !== undefined) { var v = calView(typeof todayLive === "function" ? todayLive(S.todayFeed) : S.todayFeed); S.today = typeof toScrub === "function" ? toScrub(v) : v; } }   // cr1#1833: a walled title is scrubbed once, here
   function calMeetingByEvent(id) {
     var t = S.today, i, j;
     if (!id || !t) return null;
@@ -10957,7 +11840,7 @@
   }
   // ---- who may be moved or cancelled ----
   function calOwn(m) {
-    return !!(m && typeof m.event_id === "string" && m.event_id && m.mine === true && m.recurring === false && m.held === false && m.calendar !== "personal" && m.personal !== true
+    return !!(m && !m.title_off && typeof m.event_id === "string" && m.event_id && m.mine === true && m.recurring === false && m.held === false && m.calendar !== "personal" && m.personal !== true
       && m.all_day !== true && calMs(m.start) != null && calMs(m.end) != null && calMs(m.end) > calMs(m.start)
       && !(m.live === "gone" || m.live === "cancelled" || m.live === "declined"));   // cr1#1771: never moved or cancelled once the live calendar struck it
   }
@@ -11281,6 +12164,8 @@
     // who it goes to is the feed's own answer for this meeting, never a row's;
     // for a meeting booked here, the people picked, checked against the wall again now
     var m = calFeedRow(id);
+    // cr1#1784 part B (required item 2): the blanked row, never the feed's own: a held meeting has no one to write to
+    if (m && typeof toOff === "function" && toOff(m)) return null;
     if (!m && st.booked) m = calBookedRow(st.booked, st);
     var to = m && m.mine === true && m.held === false && Array.isArray(m.note_to) ? m.note_to.filter(function (a) { return typeof a === "string" && /^[^@\s<>"',;]+@[^@\s<>"',;]+$/.test(a); }) : [];
     if (!to.length) return null;
@@ -11369,6 +12254,12 @@
     if (!was || was.said !== text) t[key] = was = { said: text, html: infoTip("this change", esc(text)) };
     return was.html;
   }
+  // cr1#1784 part B (required item 2): held now, by the feed's own row or the page's blanked one
+  function calHeldNow(id) {
+    if (typeof toOff !== "function") return false;
+    var a = calFeedRow(id), b = calMeetingByEvent(id);
+    return !!((a && toOff(a)) || (b && toOff(b)));
+  }
   function renderCalChanges() {
     var el = $("calchanges"); if (!el) return;
     calChangesPlace(el);
@@ -11382,7 +12273,8 @@
       // cr1#1636 item 1: one short line, never a provider's name in it; the
       // rest (`more`) behind the icon beside it. A warning before a second
       // press (`warn`) stays in sight, under the line.
-      var title = esc(showTitle(c.title, { kind: "meeting" })), line = "", more = "", warn = "", acts = "", busy = S.cal.busy[id];
+      // cr1#1784 part B (required item 2): a meeting held now says "A meeting", whatever title was stored with the change
+      var title = calHeldNow(id) ? TO_WORDS : esc(showTitle(c.title, { kind: "meeting" })), line = "", more = "", warn = "", acts = "", busy = S.cal.busy[id];
       if (st.unsure) { line = title + ": check your calendar."; more = st.unsure.result.line || ""; if (st.unsure.action === "move" && calCanBackRow(st.unsure)) acts = '<button class="act undo" type="button" data-calact="backrow" data-ev="' + esc(id) + '">Undo</button>'; }
       else if (st.cancelled) { line = "<s>" + title + "</s> Cancelled."; more = CALACT ? CALACT.no_restore_line : ""; }
       else if (st.removed) line = "<s>" + title + "</s> Booking taken back.";
@@ -11417,7 +12309,7 @@
     Object.keys(S.cal.lines).forEach(function (id) {
       if (listed.indexOf(id) >= 0 || !S.cal.lines[id]) return;
       var fm = calMeetingByEvent(id);
-      h += '<div class="calch" data-calev="' + esc(id) + '"><div class="calnote err">' + esc(fm ? showTitle(fm.title, { kind: "meeting" }) + ": " : "") + esc(S.cal.lines[id]) + "</div></div>";
+      h += '<div class="calch" data-calev="' + esc(id) + '"><div class="calnote err">' + esc(fm ? (calHeldNow(id) ? TO_WORDS : showTitle(fm.title, { kind: "meeting" })) + ": " : "") + esc(S.cal.lines[id]) + "</div></div>";
     });
     // cr1#1541: a plan proposed, saved, applied or put back is said in this same list
     if (typeof plChangesHtml === "function") h += plChangesHtml();
@@ -11548,6 +12440,11 @@
       });
       placed.forEach(function (p) {
         var m = p.m, a = p.a, b = Math.min(p.b, WK_H1), drag = calCanDrag(m), key = m.event_id || meetKey(m);
+        if (typeof toOff === "function" && toOff(m)) {   // cr1#1833: its time and "A meeting", nothing to press or drag
+          h += '<div class="wev held-title' + (calMs(m.end) <= now ? " past" : "") + '" style="top:' + (34 + Math.round((a - WK_H0) * WK_PX) + 1) + "px;height:" + Math.max(Math.round((b - a) * WK_PX) - 3, 14) + "px"
+            + (p.cols > 1 ? ";left:calc(3px + (100% - 6px) * " + p.col + " / " + p.cols + ");right:auto;width:calc((100% - 6px) / " + p.cols + " - 2px)" : "") + '"><span class="tt">' + esc(fmtTime(m.start)) + " " + (m.calendar === "personal" || m.personal === true ? "personal" : TO_WORDS) + "</span></div>";   // cr1#1784 part B: marked personal (a week row says personal: true)
+          return;
+        }
         var side = p.cols > 1 ? ";left:calc(3px + (100% - 6px) * " + p.col + " / " + p.cols + ");right:auto;width:calc((100% - 6px) / " + p.cols + " - 2px)" : "";
         h += '<button class="wev' + (calMs(m.end) <= now ? " past" : "") + (isBlock(m) ? " block" : "") + (m.hub_moved ? " moved" : "") + '" type="button" data-wmeet="' + esc(key) + '"' + (drag ? ' data-drag="' + esc(m.event_id) + '" data-dragday="' + esc(d.date) + '"' : "")
           + ' style="top:' + (34 + Math.round((a - WK_H0) * WK_PX) + 1) + "px;height:" + Math.max(Math.round((b - a) * WK_PX) - 3, 14) + "px" + side + '" title="' + esc(fmtTime(m.start) + " to " + fmtTime(m.end) + " · " + (m.personal ? "Personal" : showTitle(m.title, { kind: "meeting" }))) + '">'
@@ -12013,6 +12910,8 @@
     var acts = "";
     // The personal wall: a personal event is listed, and nothing about it is typed into a chat from here.
     if (personal) acts = '<span class="tag">personal</span>';
+    // cr1#1833: a walled title offers nothing: no Prep, no Wrap up, no chat
+    else if (typeof toOff === "function" && toOff(m)) acts = '<span class="tag">' + TO_TAG + "</span>";
     else {
       // cr1#1645 item 5: one press a row (Prep, Hide the brief or Wrap up);
       // Jump in is one press away, under the row's More.
@@ -12679,6 +13578,8 @@
   // the run does only those, never the brief or the whole update, and they
   // never count toward the morning being done. Go names none: the morning.
   var MORNING_BUSY_LINE = "The morning run is going; this starts when it ends.";
+  // cr1#1782: Go while only a press's part runs is not "already going": the morning waits for it
+  var MORNING_GO_QUEUED_LINE = "A press's part is running now; the morning starts when it ends.";
   var MORNING_PARTS = ["inbox", "prep", "update", "brief"];
   // A morning light a run holds now: claimed by a run that marked it within
   // the limit, or the page's own "Started." a task has not answered yet.
@@ -12712,6 +13613,9 @@
       // the meeting's key as its meeting id, in place of the retired Hub Prep's `one` mark
       if (meetingId && parts && parts.indexOf("prep") >= 0) { d.meeting_id = String(meetingId).slice(0, 200); d.press_fired = true; }
       var prev = live || S.status.morning; if (prev && prev.done) d.done = prev.done;
+      // review of cr1#1782: a press's light a scheduled run left the morning to (`due`)
+      // keeps it under the next press, or the morning waits for a fire that may not come
+      if (d.parts && prev && prev.due === true) d.due = true;
       MORNING_BEFORE = { run_id: d.run_id, light: prev && prev.state !== "running" ? prev : null };
       S.status.morning = d; renderLights();
       return ref.set(d);
@@ -12766,11 +13670,37 @@
   // here (this view only) and starts when that run ends, so a press and the
   // morning never run one part at once.
   var morningQueued = [], morningQueuedMeeting = "";
+  // cr1#1782: a Go pressed while a press's run holds the light (a prep or an
+  // inbox part, not the morning) waits here and starts the morning after it.
+  // Review of cr1#1782: kept in this tab's session storage too, so a reload or
+  // the frame's restart never drops a Go the banner promised; it lapses after
+  // MORNING_GO_KEEP_MS, so a Go from long ago never fires.
+  var MORNING_GO_KEY = "cr.hub.morning_go", MORNING_GO_KEEP_MS = 60 * 60 * 1000;
+  var morningGoQueued = (function () {
+    try { var at = Number(sessionStorage.getItem(MORNING_GO_KEY)); return at > 0 && Date.now() - at < MORNING_GO_KEEP_MS; } catch (e) { return false; }
+  })();
+  function setMorningGo(on) {
+    morningGoQueued = !!on;
+    try { if (on) sessionStorage.setItem(MORNING_GO_KEY, String(Date.now())); else sessionStorage.removeItem(MORNING_GO_KEY); } catch (e) { /* this view's memory still holds it */ }
+  }
+  function morningPress(d) { return !!d && (d.pressed === true || (!!d.by_page && Array.isArray(d.parts) && d.parts.length > 0)); }
   function queueMorning(leg, meetingId) {
     if (morningQueued.indexOf(leg) < 0) morningQueued.push(leg);
     if (meetingId && leg === "prep") morningQueuedMeeting = String(meetingId);
   }
   function maybeFireMorning() {
+    if (morningGoQueued && !SEQ.starting && !isRunning("morning") && wired) {
+      setMorningGo(false);
+      // as a queued press: read the task list again, and a Hub Morning paused meanwhile is not switched on
+      loadTriggers().then(function () {
+        var on = taskOn("morning");
+        if (!on) { banner(MORNING_PAUSED_LINE, true); return null; }
+        return fireMorning(trig(TASKS.morning), null);
+      }).then(null, function (e) {
+        if (e && e.code === "busy") { setMorningGo(true); return; }
+        banner(errLine(e, "Could not start the morning"), true, errText(e)); });
+      return;
+    }
     if (!morningQueued.length || SEQ.starting || isRunning("morning") || !wired) return;
     var parts = morningQueued.slice(), mid = morningQueuedMeeting; morningQueued = []; morningQueuedMeeting = "";
     // a queued press never switches a Hub Morning on that was paused while it waited: the task
@@ -12913,12 +13843,13 @@
       // back on, and says so.
       return fireLeg("morning", stamp).then(function () { started += 1; }, function (e) {
         // a live morning holds the light: nothing is started beside it, and its light is left as it is
-        if (e && e.code === "busy") { morningBusy = true; return; }
+        if (e && e.code === "busy") { morningBusy = true; if (morningPress(S.status.morning)) setMorningGo(true); return; }
         failLeg("morning", e); });
     }).then(function () {
       finish(); topline();
       if (wereOff.length) banner(onAgainLine(wereOff));
-      if (morningBusy) banner("The morning run is already going. Run details shows each part as it finishes.");
+      if (morningBusy && morningGoQueued) banner(MORNING_GO_QUEUED_LINE);
+      else if (morningBusy) banner("The morning run is already going. Run details shows each part as it finishes.");
       else if (started && morningWasOff) banner("Hub Morning was paused. It is switched back on, and the morning has started.");
       else if (started) { banner("Started. Run details shows each part as it finishes."); }
       else banner("Nothing started. Run details says why; press Go to try again.", true);
@@ -12995,6 +13926,8 @@
     var m = { meeting_id: "", jk: r.jk || "", title: r.title || "", start: r.start, end: r.end, calendar: r.personal ? "personal" : "business", personal: !!r.personal,
       place: null, prep: null, prep_text: null, prep_on_pc: null, prep_at: null, prep_shown_until: null, all_day: !!r.all_day, solo: !r.all_day && r.solo === true, clash: false, live: "new" };
     if (r.sk) m.sk = r.sk;
+    // cr1#1845: the builder never saw this title; the page checks it (hidden when it cannot tell)
+    if (typeof toTitleWalled === "function" && toTitleWalled(m.title)) m.title_off = true;
     // The personal wall: a personal event is its time, its title and its tag.
     if (r.personal || r.all_day) return m;
     var who = tlWho(r);
@@ -13287,7 +14220,9 @@
     }
     return page("").then(function () {
       var ids = [], vals = [];
-      got.forEach(function (e) { ids.push(e.id); if (e.series) ids.push(e.series); e.att.forEach(function (a) { vals.push(a.addr, a.name); }); });
+      got.forEach(function (e) { ids.push(e.id); if (e.series) ids.push(e.series); e.att.forEach(function (a) { vals.push(a.addr, a.name); });
+        if (typeof toWords === "function") vals = vals.concat(toWords(e.title));   // cr1#1845: no held flash before a clean title shows
+      });
       // Hash first: the keys the join reads, and everyone the wall is asked about.
       return evKeyAll(ids).then(function () { return hashAll(vals); }).then(function () {
         got.forEach(function (e) { e.jk = EVKEYS[e.id] || ""; e.sk = e.series ? EVKEYS[e.series] || "" : ""; });
@@ -13456,6 +14391,7 @@
   function wallSound(w) {
     if (!w || typeof w !== "object" || typeof w.ok !== "boolean") return false;
     for (var i = 0; i < WALL_LISTS.length; i++) if (!Array.isArray(w[WALL_LISTS[i]])) return false;
+    if (w.off_limits_words !== undefined && !Array.isArray(w.off_limits_words)) return false;   // cr1#1845: optional, but a list when there
     return w.known_names == null || Array.isArray(w.known_names);
   }
   function liveWallPick() {
@@ -14724,16 +15660,16 @@
       db.doc("feed/brief").onSnapshot(function (snap) { S.brief = snap.exists ? snap.data() : null; renderBriefTab(); }, onErr);
       db.doc("feed/week").onSnapshot(function (snap) { S.week = snap.exists ? snap.data() : null; renderWeek(); }, onErr);
       db.doc("feed/review").onSnapshot(function (snap) { S.review = snap.exists ? snap.data() : null; renderReview(); renderBrief(); }, onErr);
-      db.doc("feed/settings").onSnapshot(function (snap) { S.settings = snap.exists ? snap.data() : null; renderSettings(); renderUpdate(); }, onErr);
+      db.doc("feed/settings").onSnapshot(function (snap) { S.settings = snap.exists ? snap.data() : null; renderSettings(); renderUpdate(); if (typeof renderHubHead === "function") renderHubHead(); }, onErr);
       db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? snap.data() : null; S.mineErr = false; renderToday(); }, function (e) { S.mineErr = true; renderToday(); onErr(e); });
-      db.doc("feed/mail_rules").onSnapshot(function (snap) { S.mailrules = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); }, onErr);
+      db.doc("feed/mail_rules").onSnapshot(function (snap) { S.mailrules = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); if (typeof toWallMoved === "function") toWallMoved(); }, onErr);
       // cr1#1765: the off-limits wall on its own, and what set-up asked of each live source
-      db.doc("feed/wall").onSnapshot(function (snap) { S.wall = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); }, onErr);
+      db.doc("feed/wall").onSnapshot(function (snap) { S.wall = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); if (typeof toWallMoved === "function") toWallMoved(); }, onErr);
       db.doc("config/live_sources").onSnapshot(function (snap) { S.livesrc = snap.exists ? snap.data() : null; S.livesrcReady = true; renderLiveSetup(); }, function (e) { S.livesrcReady = false; renderLiveSetup(); onErr(e); });
       db.doc("feed/people").onSnapshot(function (snap) { S.people = snap.exists ? snap.data() : null; renderPeople(); renderInboxLive(); if (S.tlive.layers.calendar) tlShow(); }, onErr);
       // cr1#1758: the "Prep this one" presses and what the Prep run said of each
       db.doc("config/prep_one").onSnapshot(function (snap) { S.prepOne = snap.exists ? snap.data() : null; renderToday(); }, onErr);
-      db.doc("feed/board").onSnapshot(function (snap) { S.board = snap.exists ? snap.data() : null; renderBoard(); if (typeof renderCalParts === "function") renderCalParts(); }, onErr);
+      db.doc("feed/board").onSnapshot(function (snap) { S.board = snap.exists ? snap.data() : null; renderBoard(); if (typeof renderCalParts === "function") renderCalParts(); if (typeof renderComing === "function") renderComing(); }, onErr);
       // cr1#1745: the follow-ups waiting on the wrap-up page, their words in this doc only
       db.doc("feed/followups").onSnapshot(function (snap) { S.followups = snap.exists ? snap.data() : null; if (typeof renderWrapView === "function") renderWrapView(); if (typeof renderPast === "function" && S.today) renderTodayParts(); }, onErr);
       // cr1#1706: the Still yours? review's own small doc
@@ -14779,7 +15715,7 @@
   }
   // The tick also checks the refresh waiting on Apply, so a light that times
   // out with no new data still drops or fires it (cr1#679).
-  function tickClock() { $("clock").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+  function tickClock() { $("clock").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); if (typeof hhTick === "function") hhTick(); }
   tickClock();
   setInterval(function () { renderLights(); maybeFireQueued(); }, 1000);
   // cr1#1758: a Prep this one pressed while Hub Prep ran is taken up when that run ends

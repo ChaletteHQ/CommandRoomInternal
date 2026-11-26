@@ -12,7 +12,7 @@
 - **A press's run** (step 1 answers `pressed: true`) runs only the prep or inbox part it was asked for: never the brief, never the whole update. What it does never counts toward the morning being done, so the scheduled run still does every part.
 - **No time is typed.** Each command below reads its own clock.
 - **One part stopping is not the run stopping.** A part that ends on its own STOP, or whose call says no, is marked `error` with its line, and the run goes on to the next part.
-- **Another run holding the light IS the run stopping.** A mark that answers `held: false` means a later morning run took this one over (it had gone 35 minutes with no mark at all). The whole turn is that answer's `line`; STOP at once: no further part, no brief, no finish, no receipt. The run that holds the light does what is left.
+- **Another run holding the light IS the run stopping.** A mark that answers `held: false` means another morning run holds the light now: a later one took this one over (it had gone 35 minutes with no mark at all), or a press's light was written over this run's claim. When that answer has `batches`, send its `batches[0]` as ONE `batch` (cr1#1782: it leaves the press's run the morning, which it does when its press is done; a refusal of that write is left alone). The whole turn is that answer's `line`; STOP at once: no further part, no brief, no finish, no receipt. The run that holds the light does what is left.
 - **One meeting's prep.** When step 1 answers a `meeting_id`, the press is "Prep this one" (ruling 120): the `prep` part preps the meeting that press asked for and never the usual next four.
 
 ## 0. The page

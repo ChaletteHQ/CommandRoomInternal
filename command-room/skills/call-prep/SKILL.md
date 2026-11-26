@@ -15,7 +15,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"d
 The answer is `c`: `draft_constraints.load_draft_constraints(workspace_root, "call-prep", recipient_id=..., domain=...)`, read beside the data (MIGRATE3-MB). `c["lines"]` are CONSTRAINTS, not suggestions: obey each one. `c["override_block"]` is this skill's learned voice block and supersedes the `## Voice Block` below section by section. Anything the person has STATED in this request outranks all of it. When you have a draft, send the same line again with `"draft": "<the draft>"` added to its args before you show it: the answer's `draft` is the draft through `apply_draft_constraints`, and that is what actually holds the learned paragraph ceiling and drops the phrases they keep taking out. Do not skip this because the corrections log looks short: a recipient who cut two drafts down is the whole reason it exists.
 
 
-**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here (when the run that started this prep already asked it, Hub Morning's prep part or Hub Work, use that answer and do not ask again, cr1#1808), and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
 
 ## Deliverable Render Gate (GATE1 — MUST, v3.20.x; ONE GENERATOR v4.5.2 S1)
 
@@ -57,13 +57,13 @@ This skill reads from the declared mail backend, Calendar, the declared chat bac
 
 ## Coaching handoff (SPEC COACH1 §4.6) — check this BEFORE building
 
-Some workspaces run the Business Coach Pack. On those, a meeting whose counterpart is a coaching client or a coaching cohort gets a prep built by the pack's own skill, off the client's arc — not this brief. Run the check first; on every other workspace it costs one function call and returns `defer: false`.
+Some workspaces run the Business Coach Pack. On those, a meeting whose counterpart is a coaching client or a coaching cohort gets a prep built by the pack's own skill, off the client's arc — not this brief. The check is the `coaching` part of the one read call for the meeting's context (cr1#1808, below): judge it first, before building anything else and before any connector read for the meeting. The context call is asked, and its `coaching` part judged, BEFORE the batch of connector reads under Connected Tools, so on a coaching workspace no mail, chat or transcript read goes out for a meeting the pack prepares before the hand-over answer. Do not run it again on its own. Only when that one call itself answers `ok: false` is it asked alone, this line, as the first of the nine:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"attendee_person_ids": [<the resolved attendee ids>], "title": "<the calendar title>", "workspace_root": "<WS>"}, "name": "morning_brief_helpers:coaching_handoff"}'
 ```
 
-The answer is `handoff`: `coach_state.coaching_handoff_for_meeting`, asked beside the data (MIGRATE3-MB).
+The answer is `handoff`: `coach_state.coaching_handoff_for_meeting`, asked beside the data (MIGRATE3-MB); on every other workspace it is `defer: false`.
 
 - **`handoff["defer"] is True`** → say one line naming the engagement (`handoff["name"]`), hand off to `coach-session-prep`, and **stop**. Do not also build a call-prep brief; two prep documents for one meeting is the failure this handoff exists to prevent.
 - **`handoff["defer"] is False`** → proceed with this skill exactly as before. That is the answer on every non-coach workspace (the pack absent or `workspace.coach.enabled` false), and it is also the answer when the substrate is genuinely ambiguous — two cohorts that fit the same attendee set, or two coaching engagements on one meeting. In the ambiguous case `handoff["reason"]` says so; surface it as a one-line note in the brief so the coach can name the engagement, and keep building.
@@ -80,6 +80,16 @@ The meeting's project is its `primary_thread_id` (schema field — the identifie
 3. If multiple projects match, include the top match in the brief header and list the runners-up as "Related projects" so the CEO can cross-reference.
 
 The brief header displays the project's canonical org (primary focus first, holding/child if relevant) per `morning-briefing` Step 4 layout rules.
+
+## One read call for the meeting's context (cr1#1808)
+
+Once the attendees are resolved and the project is known (above), ask every read this prep needs about the meeting in ONE call through the read door, never one by one, and BEFORE any connector read (the coaching handoff above says why):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"attendee_names": [<each attendee name, alias spellings included>], "attendee_person_ids": [<the attendees resolved person_ids>], "craft_context": "<the meeting title and purpose>", "date_iso": "<the occurrence date, YYYY-MM-DD>", "domain": <the draft domain as a string, or null>, "meeting_id": "<the calendar event id>", "primary_thread_id": "<primary_thread_id, or null>", "recipient_id": <the person id as a string, or null>, "title": "<the meeting title>", "user_person_id": "<the primary user id>", "workspace_root": "<WS>"}, "name": "morning_brief_helpers:call_prep_context"}'
+```
+
+Its answer holds nine parts, each EXACTLY what that question's own line below answers when asked alone: `constraints` (the learned constraints), `coaching` (the coaching handoff), `threads` (the canonical thread payload), `craft` (how the attendees work; it leaves out the people the payload's `people_craft` already carries, as the craft section says), `brief_path` (step 1 of the call sequence), `fact_closes` (step 2), `carried` (the last meeting page's points), `attached` (what the owner attached) and `owed` (the Owed rows). Take each answer from its part and do not ask that line again: the lines in the sections below are the shapes of the same answers. A part that reads `{"error": ...}` is that line's `ok: false`, and is treated exactly as that section says; it changes no other part. **If this call itself answers `ok: false`** (a timeout, a refusal, or the door's own `helper_failed`), it gave no part at all: ask each of the nine lines below on its own, as before, and build the prep from those answers. A refused context call never means a prep with no context. The writers (`brief_writer:make_brief_from_json`, `receipts:log_prep_receipt`), the correction turn, `craft_recall:cite_rules` after composing, `morning_brief_helpers:prep_opener` after the landing and the draft check of the constraints line stay their own calls.
 
 ## MANDATORY context load (READER1 ADOPT1) — the canonical thread payload
 
@@ -135,7 +145,7 @@ Each file in `result.files` carries its scope, its status and its numbered rules
 
 This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). Both
 decisions are **show-then-tune (STT)** — the brief is produced first, then one-tap changes are
-offered. Read config through `get_config` — never the raw file.
+offered. Read config through `get_config` — never the raw file. When the run that started this prep already holds this answer (Hub Morning's prep part asks it once for every meeting, cr1#1808), use it and do not ask again.
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "morning_brief_helpers:call_prep_config"}'
@@ -467,6 +477,8 @@ The internal variant exists because orchestrator v2.14.36+ surfaces internal mee
 - **Prior briefs + prep receipts** — `prep_pipeline.find_existing_prep_brief` (by meeting id) for refresh-in-place; `prep_brief` receipts in events.jsonl are the existence signal other surfaces read (never glob filenames to answer "was this meeting prepped?")
 - **Session Notes** — Project narrative and history, consumed through the thread payload's `recent_activity` session-notes blocks (never read directly — MANDATORY context load above)
 - **PROJECT_CONTEXT** — Extract relevant background
+
+**The connector reads for one meeting go in ONE turn (cr1#1808).** Once the tools are resolved, the reads above do not depend on each other: the meeting's own calendar details, the mail search for each attendee (both directions), the chat search, and the transcript of the last meeting with these people. Make them together, as parallel tool calls in one turn, never one after another; only a read that needs another's answer (a full thread fetch after its search) waits for the next turn. The personal-sources check is asked BEFORE this batch, on its own, and no read for anyone goes out until it has answered; it is never one of the batch's calls. Its answer then governs every read in the batch exactly as it governs each read alone, and nothing else about any read changes: the same tools, the same scopes, the same answers. The batch also goes out only after the context call has answered and its `coaching` part has been judged (the coaching handoff above): a meeting the pack prepares stops there, and no read for it is sent.
 
 ## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
 

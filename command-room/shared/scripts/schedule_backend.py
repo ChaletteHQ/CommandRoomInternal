@@ -1079,6 +1079,12 @@ def reinstall_line(created_names, removed_names, kept_names=(), updated_names=()
                            removed=_join_names(removed)) + refreshed
 
 
+#: cr1#1782: the row keys a merge keeps by union, never by overwrite: every
+#: copy of a retired chat that set-up switched off itself
+#: (`cockpit_helpers.SETUP_OFF_IDS_KEY`).
+MERGE_UNION_KEYS = frozenset({"switched_off_by_setup_ids"})
+
+
 def record_trigger_map(workspace_root, task_id: str, row: dict,
                        *, merge: bool = False) -> dict:
     """Write one `triggers` row into `_hq/workspace_config.json`.
@@ -1111,7 +1117,13 @@ def record_trigger_map(workspace_root, task_id: str, row: dict,
         # cr1#1381: a merge moves the values it is given; an empty
         # `registered_at` is "not known here", never "erase the stamp".
         merged.update({k: v for k, v in row.items()
-                       if not (k == "registered_at" and v in (None, ""))})
+                       if not (k == "registered_at" and v in (None, "")) and k not in MERGE_UNION_KEYS})
+        # cr1#1782: a list kept by union, so a second copy never drops the first
+        for k in MERGE_UNION_KEYS:
+            if k in row:
+                had = merged.get(k) if isinstance(merged.get(k), list) else []
+                add = row[k] if isinstance(row[k], list) else [row[k]]
+                merged[k] = had + [v for v in add if v not in had]
         triggers[task_id] = merged
     else:
         triggers[task_id] = dict(row)

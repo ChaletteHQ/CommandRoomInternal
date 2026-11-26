@@ -67,6 +67,7 @@ import json
 import os
 import re
 import secrets
+import unicodedata
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -206,6 +207,8 @@ MAIL_SURFACE = "cockpit-mail"
 #: cr1#1020 slice 3: the People tab's presses (`people_view`).
 PERSON_VERBS = frozenset({"star", "unstar"})
 PEOPLE_SURFACE = "cockpit-people"
+#: cr1#1785: Focus, the list the owner picks, writes its audit rows under this.
+FOCUS_SURFACE = "cockpit-focus"
 #: What each page verb becomes on the apply-choices wire (inbox only; the
 #: commitment verbs are applied here, in this module).
 INBOX_WIRE_ACTION = {"send": "send", "draft": "draft", "snooze": "snooze 3d"}
@@ -2538,14 +2541,20 @@ def _title_names_off(title: Any, wall: Optional[Dict[str, Any]]) -> bool:
     cannot be read."""
     if wall is None:
         return True
+    def fold(t: Any) -> str:
+        # cr1#1845: accents folded off their letters and characters that print nothing taken out,
+        # as hub_live._norm and the page's normOf read a name
+        t = unicodedata.normalize("NFKD", str(t or ""))
+        return "".join(c for c in t if unicodedata.category(c)[0] != "M" and unicodedata.category(c) != "Cf").lower()
+
     def words(t: Any) -> str:
         # for a name: every mark, a full stop and "@" included, separates words
-        return " ".join(re.sub(r"[^\w]+", " ", str(t or "").lower()).split())
+        return " ".join(re.sub(r"[^\w]+", " ", fold(t)).split())
 
     named = " " + words(title) + " "
-    addressed = " ".join(re.sub(r"[^\w@.]+", " ", str(title or "").lower()).split())
+    addressed = " ".join(re.sub(r"[^\w@.]+", " ", fold(title)).split())
     return any((" " + words(n) + " ") in named for n in (wall.get("names") or ()) if words(n)) \
-        or any(a and str(a).lower() in addressed for a in (wall.get("addrs") or ()))
+        or any(a and fold(a) in addressed for a in (wall.get("addrs") or ()))
 
 
 def _work_hours(workspace_root) -> tuple:
@@ -3544,7 +3553,8 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
             # review of #1669 round 7: the wrap-up meetings the cap leaves off the
             # list, bare, so a press still claims over its hidden siblings (one list,
             # not one per row: a per-row list grows with the square of a title's count)
-            "past_hidden": [{"meeting_id": r.get("meeting_id") or "", "title": r.get("title") or "", "start": r["start"]}
+            # cr1#1833: a walled title is never carried here either
+            "past_hidden": [{"meeting_id": r.get("meeting_id") or "", "title": "" if r.get("title_off") else r.get("title") or "", "start": r["start"]}
                             for r in past[:-PAST_MEETINGS_CAP] if r.get("wrap")][-PAST_HIDDEN_CAP:]})
 
 
@@ -6957,7 +6967,23 @@ def feed_settings(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             "learning": learning, "persona": persona, "voice": voice, "prep": prep, "errors": errors,
             # cr1#1389: the installed plugin version, which the page compares
             # with the version it was built from to show its Finish update bar.
-            "installed_version": plugin_version_here()})
+            "installed_version": plugin_version_here(),
+            # cr1#1784 part B: the workspace AI's name, for the Hub's greeting and
+            # chat box only (ruling 130i); "" when none is set (the page says "Command Room").
+            "ai_name": _settings_ai_name(workspace_root)})
+
+
+def _settings_ai_name(workspace_root) -> str:
+    """READ. `workspace.brain_name` from entities.json as the owner set it, or
+    "" when unset or unreadable (never personification's default name)."""
+    from entities_io import read_entities_json
+    try:
+        ent = read_entities_json(Path(str(workspace_root)) / "_hq" / "data" / "entities.json")
+    except Exception:  # noqa: BLE001
+        return ""
+    w = ent.get("workspace") if isinstance(ent, dict) else None
+    name = w.get("brain_name") if isinstance(w, dict) else None
+    return name.strip()[:40] if isinstance(name, str) else ""
 
 
 def _rule_live(workspace_root, rid: str, now_iso: str) -> Optional[Dict[str, Any]]:
@@ -8742,6 +8768,7 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
     mail: List[Dict[str, Any]] = []
     people: List[Dict[str, Any]] = []
     stillyours: List[Dict[str, Any]] = []
+    focus: List[Dict[str, Any]] = []
     refused: List[Dict[str, Any]] = []
     seen = set()
     tokens_seen = set(str(t) for t in (used_tokens or []) if isinstance(t, str) and t)
@@ -8908,6 +8935,35 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             if verb == "undo" and isinstance(raw.get("undo"), list):
                 row["undo"] = [t for t in raw["undo"][:still_yours.UNDO_TOKEN_CAP] if isinstance(t, dict)]
             stillyours.append(row)
+        elif kind == "focus":
+            # cr1#1785: Focus, the list the owner picks: an item put in, taken
+            # out, or the list's order, for `hub_focus.apply_choices`, which
+            # writes its own store and never the item.
+            import hub_focus
+
+            if verb not in hub_focus.VERBS:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            typed = raw.get("input") if isinstance(raw.get("input"), dict) else {}
+            row = {"id": cid, "action": verb, "title": str(raw.get("title") or "")[:200],
+                   "commitment_id": str(raw.get("commitment_id") or raw.get("n") or "")[:80],
+                   # when it was pressed: one Update's Focus presses apply in that order
+                   "created_at": str(raw.get("created_at") or "")[:40]}
+            if verb == "order":
+                ids = typed.get("order") if isinstance(typed.get("order"), list) else raw.get("order")
+                row["order"] = [str(x)[:80] for x in (ids if isinstance(ids, list) else [])[:hub_focus.ORDER_CAP]
+                                if isinstance(x, (str, int)) and not isinstance(x, bool)]
+            if verb == "undo":
+                # the press this Undo takes back, by its id (review round 1 of #1797)
+                row["back_of"] = str(raw.get("back_of") or typed.get("back_of") or "")[:160]
+            fc = str(raw.get("from_choice") or typed.get("from_choice") or "")[:160]
+            if verb == "add" and fc:
+                # cr1#1785 page part: "Add to my list" puts a typed item in Focus
+                # before it has an id; the pick names the to-do add's own press,
+                # resolved when the same Update has written it (`apply_run`)
+                row["from_choice"], row["commitment_id"] = fc, ""
+            focus.append(row)
         elif kind == "settings":
             # cr1#781: the Settings tab's edit, for `apply_settings_choices`.
             if verb not in SETTINGS_VERBS:
@@ -8953,9 +9009,9 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
                             "reason": "unknown_kind"})
     return {"commitment": commitment, "inbox": inbox, "hub": hub, "review": review, "week": week,
             "settings": settings, "mail": mail, "people": people, "stillyours": stillyours,
-            "refused": refused, "skipped": skipped,
+            "focus": focus, "refused": refused, "skipped": skipped,
             "n_waiting": (len(commitment) + len(inbox) + len(hub) + len(review) + len(week)
-                          + len(settings) + len(mail) + len(people) + len(stillyours)),
+                          + len(settings) + len(mail) + len(people) + len(stillyours) + len(focus)),
             "n_refused": len(refused)}
 
 
@@ -9017,6 +9073,154 @@ def apply_people_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
         except Exception as exc:  # noqa: BLE001 - the stars landed; the answer says the audit did not
             out["audit_error"] = f"{type(exc).__name__}: {exc}"
     return out
+
+
+#: The longest note the owner may leave on a Done (cr1#1785, the To do box).
+CLOSE_NOTE_CAP = 500
+
+
+def _close_note(c: Dict[str, Any]) -> Dict[str, Any]:
+    """cr1#1785 page part: the owner's note typed in the Done box, kept on
+    the closed record as the reason it closed (`close_note`). One press, so
+    its Undo is the Done's own. `{}` with no note. Pure."""
+    typed = c.get("input") if isinstance(c.get("input"), dict) else {}
+    note = " ".join(str(typed.get("note") or "").split())[:CLOSE_NOTE_CAP]
+    return {"close_note": note} if note and str(c.get("action") or "") == "done" else {}
+
+
+def _apply_focus(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
+                 now_iso=None, resolved_by: str = "") -> Dict[str, Any]:
+    """WRITE. Focus, the list the owner picks (cr1#1785): an item put in,
+    taken out, or the list reordered, in `_hq/data/hub-focus.json` through
+    `hub_focus.apply_choices`, then one `apply_choices_applied` audit row.
+    `choices` are `plan_apply`'s `focus` list. No item's record changes (its
+    due date least of all); nothing is sent. `resolved_by` is taken for the
+    save's one call shape and not used."""
+    import hub_focus
+    from apply_audit import build_apply_choices_applied_event
+    from event_gate import append_event
+
+    out = hub_focus.apply_choices(workspace_root, choices, now_iso=_iso(_now(now_iso)))
+    status = {"applied": "updated", "already": "already_resolved", "refused": "refused"}
+    by_id = {c.get("id"): c for c in choices or [] if isinstance(c, dict)}
+    audit = [{"n": (by_id.get(r.get("id")) or {}).get("commitment_id") or r.get("id"),
+              "action": "focus " + str((by_id.get(r.get("id")) or {}).get("action") or ""),
+              "handler_result": {"status": status.get(r.get("outcome"), "error")}, "said": r.get("outcome")}
+             for r in out.get("results") or []]
+    if audit:
+        try:
+            ev = build_apply_choices_applied_event(source=COMMITMENT_SRC, actions=audit)
+            ev["data"]["surface"] = FOCUS_SURFACE
+            append_event(Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl", ev, holder="cockpit_helpers")
+        except Exception as exc:  # noqa: BLE001 - the store landed; the answer says the audit did not
+            out["audit_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def feed_focus(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. Focus, the list the owner picks (cr1#1785): what is in it, in
+    the owner's order (`hub_focus.feed`), its own document so the plate and
+    the people rows carry no new field (ruling 111, #1768, #1751). Nobody
+    hidden is named (`_hide_people_in_rows`, the plate's own rule)."""
+    import hub_focus
+
+    hp = _hidden_people(workspace_root)
+    feed = hub_focus.feed(workspace_root, now_iso=_iso(_now(now_iso)), names=_person_names(workspace_root))
+    rows = feed.get("rows") or []
+    # cr1#1785 page part, ruling 128c: each row's source line, as the plate
+    # gives one, so pressing a To do row can show where it came from
+    origins = _origins_by_id(workspace_root, hp)
+    for r in rows:
+        if isinstance(r, dict):
+            r["origin"] = origins.get(str(r.get("id")))
+    # audit of #1823 (F4): a Focus row offers Move and Drop as the retired
+    # to-do row did; Move needs the item's project and its side of the
+    # personal line, read as feed_mine reads them for a to-do
+    places, pnames, personal, known = _focus_projects(workspace_root, _now(now_iso))
+    for r in rows:
+        if isinstance(r, dict):
+            pid = places.get(str(r.get("id")))
+            r["personal_lane"] = str(r.get("id")) in personal
+            if pid:
+                r["project_id"] = pid
+                r["project"] = pnames.get(pid, "")[:120]
+    feed["lanes_known"] = known
+    _hide_people_in_rows(rows, hp)
+    for r in rows:
+        if isinstance(r, dict):
+            r.pop("who_id", None)
+    return feed
+
+
+def _focus_projects(workspace_root, now) -> Tuple[Dict[str, str], Dict[str, str], set, bool]:
+    """(project id by item, project name by id, the items on the personal
+    lane, whether the lanes could be read), as `feed_mine` reads them for a
+    to-do's Put in... (review round 1 of #1700). Nothing read: no project and
+    lanes unknown, so the page offers no Move (never a guessed one)."""
+    try:
+        import thread_cards as tc
+
+        places = _projects_of(workspace_root, now)
+        fence, personal = _lanes(workspace_root, places)
+        cards = tc.read_cards(Path(str(workspace_root)))[0]
+        names = {k: str((v or {}).get("name") or "")
+                 for k, v in {**(cards.get("threads") or {}), **(cards.get("work_streams") or {})}.items()}
+        return places, names, set(personal), fence is not None
+    except Exception:  # noqa: BLE001
+        return {}, {}, set(), False
+
+
+def _origins_by_id(workspace_root, hp: Dict[str, Any]) -> Dict[str, Any]:
+    """`{commitment id: its origin}` over the open items, exactly as
+    `feed_plate` reads them (`_row_origin`); `{}` when the book cannot be
+    read (no source line is shown then, never a wrong one)."""
+    try:
+        from cru_match import _commitment_id, load_open_commitments
+
+        ep = Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl"
+        names = _person_names(workspace_root)
+        owner = _owner_id(workspace_root)
+        tzinfo = _workspace_tz(workspace_root)
+        opens = load_open_commitments(ep) if ep.exists() else []
+        ties = None if hp["unread"] else hp["ids"]
+        return {str(_commitment_id(ev)): _row_origin(ev, names, owner, tzinfo, ties, hp) for ev in opens}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def feed_allopen(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. To do's All open (cr1#1785 page part, ruling 128l): every open
+    item, lean (`hub_focus.all_open`), so the page's search finds an item
+    wherever it sits, past the plate's row cap too. Its own document; the
+    plate and the people rows take no new field. Nobody hidden is named,
+    and an item tied to someone hidden is left out (the plate's own rule)."""
+    import hub_focus
+
+    hp = _hidden_people(workspace_root)
+    now_s = _iso(_now(now_iso))
+    if hp.get("unread"):
+        # audit of #1823 (F3): who is off limits could not be read, so nothing
+        # is listed, and the page says why instead of "Nothing open."
+        return {"generated_at": now_s, "ok": False, "line": ALLOPEN_FENCE_UNREAD_LINE, "rows": [], "n": 0,
+                "complete": False}
+    # audit of #1823 (F2): the wall is applied to the whole book before
+    # anything is counted, so `n` never counts an item the page may not list
+    doc = hub_focus.all_open(workspace_root, now_iso=now_s, names=_person_names(workspace_root),
+                             threads=_thread_names(workspace_root),
+                             hidden_ids=set(str(i) for i in hp.get("ids") or ()))
+    kept = [r for r in doc.get("rows") or [] if isinstance(r, dict)]
+    _hide_people_in_rows(kept, hp)
+    for r in kept:
+        r.pop("who_id", None)
+    doc["rows"] = kept
+    return doc
+
+
+#: Review round 1 of #1823 (should-fix 4): the to-do landed but its Focus pick did not.
+TODO_NOT_IN_FOCUS_LINE = "It is on your list, but it could not be put in Focus; star it in All open."
+#: Audit of #1823 (F3): All open with the off-limits list unread.
+ALLOPEN_FENCE_UNREAD_LINE = ("Your open items could not be listed just now: who is off limits could not be read. "
+                             "The next update tries again.")
 
 
 def feed_people(workspace_root, *, now_iso=None) -> Dict[str, Any]:
@@ -9246,6 +9450,9 @@ def wall_sound(doc: Any) -> bool:
     if any(not isinstance(doc.get(k), list) for k in WALL_LIST_FIELDS):
         return False
     if doc.get("known_names") is not None and not isinstance(doc.get("known_names"), list):
+        return False
+    # cr1#1845: the word-form list is optional, but one that is there and not a list is no wall
+    if "off_limits_words" in doc and not isinstance(doc.get("off_limits_words"), list):
         return False
     return _parse(doc.get("generated_at")) is not None
 
@@ -12835,14 +13042,14 @@ def _apply_commitment_choices_run(workspace_root, choices, *, resolved_by, now_i
                         "commitment_id": cid, "resolved_by": actor,
                         "evidence": CONFIRM_EVIDENCE if verb == "confirm" else DONE_EVIDENCE,
                         "resolution": "done", "user_confirmed": True, "resolved_by_match": "id",
-                        "extra_data": {"cockpit_batch": label}}}
+                        "extra_data": dict({"cockpit_batch": label}, **_close_note(c))}}
                 else:
                     handler = cs.close_commitment(
                         str(workspace_root), cid, resolved_by=actor,
                         evidence=CONFIRM_EVIDENCE if verb == "confirm" else DONE_EVIDENCE,
                         source_skill=COMMITMENT_SRC, resolution="done",
                         user_confirmed=True, resolved_by_match="id",
-                        extra_data={"cockpit_batch": label})
+                        extra_data=dict({"cockpit_batch": label}, **_close_note(c)))
                     st = (handler or {}).get("status")
                     if st in ("not_open", "already_resolved"):
                         r.update(outcome="already", line=ALREADY_CLOSED_LINE)
@@ -13195,7 +13402,9 @@ APPLY_FEEDS = {"hub": ("feed/mine",), "review": ("feed/review",),
                "settings": ("feed/settings", "feed/week"), "mail": ("feed/mail_rules",),
                "people": ("feed/people",),
                # review round 2 of #1742: a Still yours? press refreshes its own list
-               "stillyours": ("feed/stillyours",)}
+               "stillyours": ("feed/stillyours",),
+               # cr1#1785: a Focus press refreshes Focus
+               "focus": ("feed/focus",)}
 #: The Hub's add and edit presses that also refresh their own tab (cr1#1431).
 APPLY_EDIT_FEEDS = {"stream_edit": ("feed/projects", "feed/board"),
                     "priority_edit": ("feed/projects", "feed/board"),
@@ -13214,13 +13423,15 @@ APPLY_EDIT_FEEDS = {"stream_edit": ("feed/projects", "feed/board"),
 #: Every document that shows the owner's work items: a close, a reopen, a move
 #: or a new date on one item moves all of these. The Maintenance record rides
 #: with them (review round 1 of #1768), and Today's to-do lists (`feed/mine`)
-#: too: a to-do is a work item (fix check of round 1).
+#: too: a to-do is a work item (fix check of round 1). So does Focus
+#: (cr1#1785, review round 1 of #1797): a close, a new date or new words on an
+#: item in Focus change what Focus shows.
 _UPDATE_WORK = ("feed/plate", "feed/projects", "feed/board", "feed/people", "feed/review", "feed/week",
                 "status/maintenance", "feed/mine", "feed/pfollow",
                 # cr1#1786: Urgent's waiting-on-others rows are open items others owe
-                "feed/urgent")
+                "feed/urgent", "feed/focus", "feed/allopen")
 _UPDATE_TODO = ("feed/mine", "feed/plate", "feed/projects", "feed/people", "status/maintenance", "feed/pfollow",
-                "feed/urgent")
+                "feed/urgent", "feed/focus", "feed/allopen")
 #: Fix check of round 1 of #1768 (coordinator's decision): the narrow rebuild
 #: is safe by construction. A landed press rebuilds only the documents named
 #: here for its list and verb (`update_press_key`); any list, kind or verb not
@@ -13246,7 +13457,7 @@ UPDATE_NARROW: Dict[str, Tuple[str, ...]] = {
     # a to-do and a "waiting on them" are open items with no home yet: they are
     # on the plate, under No home yet on the work streams, and on that person
     "hub:todo:add": _UPDATE_TODO,
-    "hub:waiting:add": _UPDATE_TODO + ("feed/urgent",),  # cr1#1786: Urgent's waiting-on-others
+    "hub:waiting:add": _UPDATE_TODO,  # cr1#1786: _UPDATE_TODO already names feed/urgent (Urgent's waiting-on-others)
     # the Record tab's recap lists the open priorities
     **{"hub:priority_edit:" + v: ("feed/projects", "feed/board", "feed/plate", "feed/week")
        for v in ("add", "rename", "star", "order", "undo")},
@@ -13257,6 +13468,8 @@ UPDATE_NARROW: Dict[str, Tuple[str, ...]] = {
     **{"hub:commitment_edit:" + v: _UPDATE_WORK for v in ("rename", "context")},
     # what is attached to a meeting is carried on the Today lists' feed
     "hub:meeting_edit:attach": ("feed/mine",),
+    # cr1#1785: Focus is its own document; an item's record is never written
+    **{"focus:" + v: ("feed/focus",) for v in ("add", "remove", "order", "undo")},
 }
 
 
@@ -13281,10 +13494,12 @@ def update_press_space() -> List[str]:
     """READ/COMPUTE. Every list-and-verb key a press can land under, from the
     verb sets `plan_apply` itself reads, so a suite can hold every one of
     them to the table (fix check of round 1 of #1768)."""
+    import hub_focus
     import hub_tidy
     import still_yours
 
     keys = {"commitment:" + v for v in COMMITMENT_VERBS}
+    keys |= {"focus:" + v for v in hub_focus.VERBS}
     keys |= {"people:" + v for v in PERSON_VERBS}
     keys |= {"mail:" + v for v in MAILRULE_VERBS | INBOX_RULE_VERBS}
     keys |= {"review:" + v for v in REVIEW_VERBS} | {"review:learned_rule:" + v for v in REVIEW_VERBS}
@@ -13538,6 +13753,55 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
             except Exception as exc:  # noqa: BLE001
                 ans = {"ok": False, "line": ROW_ERROR_LINE, "error": f"{type(exc).__name__}: {exc}"[:240]}
             _take("hub", hub_rows, ans or {})
+        # cr1#1785 page part: Focus after the Hub's presses, so "Add to my list"
+        # lands the typed to-do first and its pick then names the new item
+        focus_rows = [dict(r) for r in plan.get("focus") or []]
+        for r in focus_rows:
+            fc = str(r.get("from_choice") or "")
+            if fc and not r.get("commitment_id"):
+                r["commitment_id"] = str((results.get(fc) or {}).get("commitment_id") or "")[:80]
+            if fc and not r.get("commitment_id"):
+                # audit of #1823: the to-do landed in an earlier run (its pick was
+                # written after that run claimed it); the book names it by its press
+                try:
+                    r["commitment_id"] = str(_todo_id(Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl",
+                                                      f"{TODO_REF_SCHEME}:{fc}") or "")[:80]
+                except Exception:  # noqa: BLE001 - unnamed: the store refuses the pick, as before
+                    pass
+        if focus_rows:
+            try:
+                ans = _apply_focus(workspace_root, focus_rows, resolved_by="", now_iso=now_s)
+            except Exception as exc:  # noqa: BLE001
+                ans = {"ok": False, "line": ROW_ERROR_LINE, "error": f"{type(exc).__name__}: {exc}"[:240]}
+            _take("focus", focus_rows, ans or {})
+        # review round 1 of #1823 (should-fix 4): "Add to my list" (and a row
+        # dropped into To do) is ONE to-do press with `input.focus`; the to-do
+        # it lands is put in Focus here, in the same run, under the press's own
+        # id, so a replay is applied once and a reload can never split the two
+        _picks = []
+        for r in hub_rows:
+            inp_ = r.get("input") if isinstance(r.get("input"), dict) else {}
+            got_ = results.get(str(r.get("id") or "")) or {}
+            if (r.get("kind") == "todo" and r.get("action") == "add" and inp_.get("focus") is True
+                    and got_.get("outcome") in ("applied", "already") and got_.get("commitment_id")):
+                _picks.append({"id": str(r["id"]) + ":focus", "action": "add", "title": str(r.get("title") or "")[:200],
+                               "commitment_id": str(got_["commitment_id"])[:80],
+                               "created_at": str((docs.get(str(r["id"])) or {}).get("created_at") or "")[:40],
+                               "_of": str(r["id"])})
+        if _picks:
+            try:
+                ans = _apply_focus(workspace_root, [{k: v for k, v in p_.items() if k != "_of"} for p_ in _picks],
+                                   resolved_by="", now_iso=now_s) or {}
+            except Exception as exc:  # noqa: BLE001
+                ans = {"ok": False, "line": ROW_ERROR_LINE, "error": f"{type(exc).__name__}: {exc}"[:240]}
+            got_f = {str(x.get("id")): x for x in ans.get("results") or [] if isinstance(x, dict)}
+            for p_ in _picks:
+                f_ = got_f.get(p_["id"]) or {}
+                ok_ = f_.get("outcome") in ("applied", "already")
+                results[p_["_of"]]["in_focus"] = ok_
+                if not ok_:
+                    # the to-do landed; say plainly it is not in Focus
+                    results[p_["_of"]]["line"] = (str(results[p_["_of"]].get("line") or "") + " " + TODO_NOT_IN_FOCUS_LINE).strip()
         for entries, fn in ((rec_entries, record_page_sends), (cal_entries, record_calendar_changes)):
             if not entries:
                 continue
@@ -14166,6 +14430,9 @@ def plan_cockpit_registration(workspace_root, *, tools=None, abs_path: Optional[
 #: Review round 1 of #1776: the mark set-up leaves on a task it could only
 #: switch off (its delete was refused), in the stored trigger map.
 SETUP_OFF_KEY = "switched_off_by_setup"
+#: cr1#1782: every trigger id set-up switched off for one task, a list the
+#: stored map keeps by union (`schedule_backend.MERGE_UNION_KEYS`).
+SETUP_OFF_IDS_KEY = "switched_off_by_setup_ids"
 
 
 def _row_folder_here(r: Any, abs_path: str) -> bool:
@@ -14192,8 +14459,11 @@ def _record_off_call(task_id: str, trigger_id: Any) -> Dict[str, Any]:
     """The writer call set-up runs after a `switch_off` that stood in for a
     refused delete: the stored map remembers that set-up switched this
     trigger off, so the next set-up never reads it as the owner's pause."""
+    # cr1#1782: the id goes in a list the merge keeps by union, so a second
+    # copy of the same retired chat never drops the first, and the row's own
+    # `trigger_id` (the stored identity of the task) is left as it was.
     return {"name": "schedule_backend:record_trigger_map",
-            "args": {"merge": True, "row": {"trigger_id": trigger_id, SETUP_OFF_KEY: True},
+            "args": {"merge": True, "row": {SETUP_OFF_IDS_KEY: [trigger_id]},
                      "task_id": task_id, "workspace_root": "<WS>"}}
 
 
@@ -14205,8 +14475,15 @@ def _setup_switched_off(workspace_root) -> set:
         rows = sb.read_trigger_map(workspace_root).values()
     except Exception:  # noqa: BLE001 - no map: every paused task is read as the owner's
         return set()
-    return {str(r.get("trigger_id")) for r in rows
-            if isinstance(r, dict) and r.get(SETUP_OFF_KEY) is True and r.get("trigger_id")}
+    out = {str(r.get("trigger_id")) for r in rows
+           if isinstance(r, dict) and r.get(SETUP_OFF_KEY) is True and r.get("trigger_id")}
+    # cr1#1782: every copy set-up switched off, kept as a list (older maps
+    # carry the one flag and id above)
+    for r in rows:
+        ids = r.get(SETUP_OFF_IDS_KEY) if isinstance(r, dict) else None
+        if isinstance(ids, list):
+            out |= {str(t) for t in ids if t}
+    return out
 
 
 def _morning_brief_rows(workspace_root, registered, basename: str, abs_path: str = "") -> List[Dict[str, Any]]:
@@ -14252,6 +14529,29 @@ def _morning_brief_rows(workspace_root, registered, basename: str, abs_path: str
 #: One pulled part stays under this many characters. The device answer is cut
 #: at 262,144 (seen on a seat, cr1#1530); the rest is room for the envelope.
 REFRESH_PART_BUDGET = 200_000
+#: cr1#1837: how a pulled part reaches the cloud step's batch file. Nothing in
+#: this code writes that file: the run's tool saves an answer to a file in the
+#: session when the answer is long, and the run hands that file on unchanged.
+#: An answer that comes back in the turn would have to be retyped. On the
+#: owner's seat on 2026-11-25 (sizes from the live page's listing after the
+#: natural runs) a 28 KB answer came back in the turn, and documents of 37.9 KB
+#: and more (the Inbox feed; the plate at 168.6 KB) crossed as files: the tool's
+#: cutoff sat between those, about 30,000 characters. That cutoff belongs to the
+#: tool, not to this code, and may change. The part that carries the off-limits
+#: list is therefore the list alone, padded so its answer is at least this long.
+WALL_CARRY_DOC = "feed/wall"
+WALL_CARRY_MIN_CHARS = 64_000
+#: cr1#1837: what the light, the receipt and the health check say when the list
+#: did not reach the page on a run.
+WALL_NOT_SENT_LINE = "The off-limits list was not sent to the page on this run; the page keeps the copy it has."
+WALL_IN_TURN_LINE = "Its part came back in the run's turn instead of as a file, and it is never retyped."
+#: Review round 1 of #1837 (must 1): an Update always carries the list; one
+#: that has no list part could not build it.
+WALL_NOT_BUILT_LINE = "The off-limits list could not be built on this run."
+#: Review round 1 of #1837 (must 2, the #1772 fence): without the page's own
+#: read of its feeds nothing is published, so no older copy replaces a newer one.
+WALL_NO_PAGE_READ_LINE = ("The page's own copy of the off-limits list could not be read on this run, "
+                          "so this one was not published.")
 #: One document larger than this cannot be pulled whole; it is named, not sent.
 REFRESH_DOC_LIMIT = 215_000
 #: One page batch stays under this many characters (the tool's limit is 1 MiB).
@@ -14272,6 +14572,10 @@ REFRESH_READS: Tuple[Tuple[str, str], ...] = (
     # cr1#1789: Today's People follow-ups and key relationships, read after the people, in
     # the same place as in the reads part (REFRESH_STAGES), so both orders agree
     ("feed/pfollow", "feed_pfollow"),
+    # cr1#1785: Focus, the list the owner picks, its own small document
+    ("feed/focus", "feed_focus"),
+    # cr1#1785 page part: every open item, lean, for All open's search
+    ("feed/allopen", "feed_allopen"),
     ("feed/review", "feed_review"),
     ("feed/settings", "feed_settings"),
     # cr1#1706: the "Still yours?" review's document, a READ of the small file
@@ -14298,10 +14602,12 @@ REFRESH_BATCH_MAX = 50
 #: cr1#1722: every document an Update may write: the refresh's, with its own
 #: light in place of the Refresh task's.
 UPDATE_DOCS: Tuple[str, ...] = tuple(d for d in REFRESH_DOCS if d != "status/refresh") + ("status/update",)
+#: cr1#1837: every Update also carries the off-limits list, in its own first part.
+UPDATE_PULL_DOCS: Tuple[str, ...] = UPDATE_DOCS + (WALL_CARRY_DOC,)
 ONE_CALL_DOCS: Dict[str, Tuple[str, ...]] = {
-    "refresh": REFRESH_DOCS, "update": UPDATE_DOCS, "prep": ("feed/today",), "inbox": ("feed/inbox",)}
+    "refresh": REFRESH_DOCS, "update": UPDATE_PULL_DOCS, "prep": ("feed/today",), "inbox": ("feed/inbox",)}
 #: Every document a pulled part may carry, whichever task built it.
-PULL_DOCS: Tuple[str, ...] = REFRESH_DOCS + ("status/update", "feed/today", "feed/inbox")
+PULL_DOCS: Tuple[str, ...] = REFRESH_DOCS + ("status/update", "feed/today", "feed/inbox", WALL_CARRY_DOC)
 ONE_CALL_SCRATCH_PREFIX = "cr-hub-"
 PREP_ALL_FAILED_LINE = "Meeting prep could not finish here, so the Today tab was not refreshed."
 INBOX_FEED_FAILED_LINE = "The inbox page is saved, but the Inbox tab could not be built from it."
@@ -14381,6 +14687,15 @@ def _refresh_manifest(scratch: Path) -> Dict[str, Any]:
     except (OSError, ValueError):
         return {}
     return val if isinstance(val, dict) else {}
+
+
+def _task_parts(task: str, sizes: List[Tuple[str, int]]) -> List[List[str]]:
+    """cr1#1837: a task's parts. An Update's off-limits list is its own first
+    part, so that part is padded alone and lands first; the rest are packed as
+    `_refresh_parts` packs them."""
+    if str(task or "") == "update" and any(d == WALL_CARRY_DOC for d, _n in sizes):
+        return [[WALL_CARRY_DOC]] + _refresh_parts([(d, n) for d, n in sizes if d != WALL_CARRY_DOC])
+    return _refresh_parts(sizes)
 
 
 def _refresh_parts(sizes: List[Tuple[str, int]]) -> List[List[str]]:
@@ -14466,7 +14781,7 @@ def _keep_built(workspace_root, task: str, report: List[Dict[str, Any]],
 REFRESH_STAGES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("plate", ("feed/plate",)),
     ("reads", ("feed/projects", "feed/board", "feed/mine", "feed/mail_rules",
-               "feed/people", "feed/brief", "feed/pfollow")),
+               "feed/people", "feed/brief", "feed/pfollow", "feed/focus", "feed/allopen")),
     ("review", ("feed/review",)),
     ("record", ("feed/settings", "feed/stillyours", "feed/followups", "feed/urgent", "feed/week", "status/maintenance")),
 )
@@ -14474,7 +14789,7 @@ REFRESH_STAGE_NAMES: Tuple[str, ...] = tuple(s for s, _d in REFRESH_STAGES)
 #: What a part that did not finish is called in the light's line.
 REFRESH_STAGE_WORDS: Dict[str, str] = {
     "plate": "the plate",
-    "reads": "the work streams, the Week board, your lists, the mail rules, the people, the brief and the follow-ups on Today",
+    "reads": "the work streams, the Week board, your lists, the mail rules, the people, the brief, the follow-ups on Today and Focus",
     "review": "To confirm",
     "record": "Settings and the Record tab",
 }
@@ -14488,6 +14803,9 @@ REFRESH_DOC_WORDS: Dict[str, str] = {
     "feed/stillyours": "the Still yours? review", "feed/followups": "the follow-ups",
     "feed/pfollow": "the follow-ups on Today",
     "feed/urgent": "Urgent",
+    "feed/focus": "Focus", "feed/allopen": "All open",
+    # Review round 1 of #1837 (must 1): a list that could not be built is named on the light
+    WALL_CARRY_DOC: "the off-limits list",
     "status/maintenance": "the Maintenance record",
 }
 REFRESH_DOCS_FAILED_LINE = "{plate} Not updated: {what}; the Hub keeps its last copy of those."
@@ -14734,6 +15052,13 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
                 raise box["exc"]
         if name == "record":
             _refresh_keep_page_maint(built, report, statuses)
+        if name == "plate" and tsk == "update":
+            # cr1#1837: every Update, a narrow one too, carries the off-limits
+            # list as built now (after the save, so a saved mail rule is in it),
+            # in its own first part. It reads no log, so it costs a narrow run little.
+            _one_call_build(built, report, WALL_CARRY_DOC,
+                            lambda: feed_wall(workspace_root, now_iso=now_s)["doc"])
+            docs = tuple(docs) + ((WALL_CARRY_DOC,) if WALL_CARRY_DOC in built else ())
         keep = {d: built[d] for d in docs if d in built}
         if name == "plate":
             plate = keep.get("feed/plate")
@@ -14847,7 +15172,8 @@ def _refresh_record_again(workspace_root, man: Dict[str, Any], task: str = "refr
         "stage": "record",
         "again": True,
         "pages": report,
-        "parts": _refresh_parts(sizes),
+        "parts": _task_parts(task, sizes),
+        "wall_part": 0 if _task_parts(task, sizes)[:1] == [[WALL_CARRY_DOC]] else None,
         "light": light,
         "counts": dict(man.get("counts") or {}),
         "missing": [s for s in REFRESH_STAGE_NAMES if s not in done and s not in (man.get("skipped") or [])],
@@ -14922,12 +15248,15 @@ def _refresh_finish(workspace_root, man: Dict[str, Any], *, now_s: str,
     man.update(_stage_keep(workspace_root, [row], {"status/" + task: light}, man, task))
     sizes = [(str(s[0]), int(s[1])) for s in man.get("sizes") or []]
     report = list(man.get("report") or [])
+    parts = _task_parts(task, sizes)
     return {
         "ok": state == "done",
         "token": man["token"],
         "stage": "record",
         "pages": report,
-        "parts": _refresh_parts(sizes),
+        "parts": parts,
+        # cr1#1837: the number of the part that is the off-limits list alone, or null
+        "wall_part": 0 if parts and parts[0] == [WALL_CARRY_DOC] else None,
         "light": light,
         "counts": dict(man.get("counts") or {}),
         "missing": missing,
@@ -15128,6 +15457,9 @@ MORNING_UPDATE_NARROW_LINE = ("Another update was saving your latest changes onl
 #: Early review of #1776 (should 6): a fire that found a press's run holding the
 #: light leaves `due` on it, and that run does the morning when its press is done.
 MORNING_DUE_LINE = "A press's run is going now; it does the morning when its press is done."
+#: cr1#1782: the prefix of the run id `morning_start` mints for a scheduled
+#: (whole-morning) run; a page's own run carries the page's id.
+MORNING_RUN_PREFIX = "morning-"
 #: Review round 1: a press that names no inbox or prep part runs nothing.
 MORNING_PRESS_NONE_LINE = "That press named no inbox or prep part, so nothing was run."
 #: A press's own last line, when its part left none: never "Morning ready."
@@ -15307,9 +15639,13 @@ def morning_start(reads_dir: str, out_dir: str, *, now_iso=None, tz: Any = None)
             if str(light.get("state") or "") == "running" and (light.get("by_page") or light.get("claimed_by")) else []
         return {"ok": True, "stop": True, "nothing": True, "run_id": "", "parts": [], "line": MORNING_DONE_LINE,
                 "batches": back}
-    run_id = run_id or "morning-" + secrets.token_hex(6)
+    run_id = run_id or MORNING_RUN_PREFIX + secrets.token_hex(6)
     claim = status_doc(None, "morning", "running", "", now_iso=now_s, run_id=run_id)
     claim.update(claimed_by=run_id, claimed_at=now_s, parts=parts, done=done, pressed=bool(asked))
+    if asked and light.get("due"):
+        # cr1#1782: a scheduled run this press's light was written over left
+        # it the morning; the claim keeps that, so the finish carries on
+        claim["due"] = True
     if meeting:
         claim["meeting_id"] = meeting
     answer = {"ok": True, "stop": False, "run_id": run_id, "parts": parts, "pressed": bool(asked), "line": "",
@@ -15325,6 +15661,28 @@ def _morning_held(reads_dir: str, run_id: str) -> Tuple[Optional[Dict[str, Any]]
     if not isinstance(light, dict) or not run_id or str(light.get("claimed_by") or "") != str(run_id):
         return None, version
     return light, version
+
+
+def _morning_lost(reads_dir: str, out_dir: str, run_id: str) -> Dict[str, Any]:
+    """A mark by a run that no longer holds the light: `held: false`, and the
+    caller stops. cr1#1782: when the run is a scheduled one (its own minted
+    id) and the light now held is a press's, the page wrote the press over
+    this run's claim (its read then set has no version). That press's run
+    does only its own part, so this run leaves it the morning: `batches[0]`
+    sets `due` on the press's light, pinned to the version read, and the
+    press's run does the rest of the morning when its press is done.
+
+    Takes effect only once the page's saved reads carry each document's
+    version (#1805, cr1#1763): until then the write carries no `if_version`,
+    the page's database refuses it (the light already exists), and the
+    morning waits for the next fire, as it did before."""
+    raw, raw_v = next(((f, v) for d, f, v in _saved_docs(reads_dir, "status") if d == "morning"), (None, None))
+    press = isinstance(raw, dict) and str(raw.get("state") or "") == "running" and (
+        raw.get("pressed") is True or (raw.get("by_page") and isinstance(raw.get("parts"), list) and bool(raw.get("parts"))))
+    if press and str(run_id or "").startswith(MORNING_RUN_PREFIX) and not raw.get("due"):
+        return {"ok": False, "held": False, "due": True, "line": MORNING_DUE_LINE,
+                "batches": [_morning_write(out_dir, dict(raw, due=True), raw_v)]}
+    return {"ok": False, "held": False, "batches": [], "line": MORNING_NOT_HELD_LINE}
 
 
 def morning_mark(reads_dir: str, out_dir: str, *, run_id: str, part: str, state: str, line: str = "",
@@ -15344,7 +15702,7 @@ def morning_mark(reads_dir: str, out_dir: str, *, run_id: str, part: str, state:
         return {"ok": False, "batches": [], "line": "That is not a part of the Morning run."}
     light, version = _morning_held(reads_dir, run_id)
     if light is None:
-        return {"ok": False, "held": False, "batches": [], "line": MORNING_NOT_HELD_LINE}
+        return _morning_lost(reads_dir, out_dir, run_id)
     if light.get("pressed") and part not in (light.get("parts") or []):
         return {"ok": False, "batches": [], "line": "That part was not asked for by this press."}
     if state == MORNING_STARTED:
@@ -15766,13 +16124,23 @@ def update_build(workspace_root, *, run_id: str = "", stage: str = "", token: st
         elif out in ("applied", "already"):
             saved["applied"] = int(saved.get("applied") or 0) + 1
     state = dict(state, saved=saved) if state else state
+    # cr1#1785, ruling 130a: the items in Focus on their own today are
+    # recorded, so each stays after its day and a late item that never came
+    # in stays out. A store that cannot be written leaves it for the next
+    # run; the rebuild goes on.
+    try:
+        import hub_focus
+
+        hub_focus.mark_entered(workspace_root, now_iso=_iso(_now(now_iso)))
+    except Exception:  # noqa: BLE001 - never stops the rebuild
+        pass
     return refresh_all(workspace_root, now_iso=now_iso, run_id=run_id or None, stage=want,
                        budget_s=budget_s, task="update", only=_update_only(state, workspace_root, _now(now_iso)),
                        saved=saved)
 
 
 def update_finish(workspace_root, *, run_id: str = "", token: str = "", error: str = "",
-                  fired_via: str = "scheduled", now_iso=None) -> Dict[str, Any]:
+                  fired_via: str = "scheduled", now_iso=None, wall_sent: Optional[bool] = None) -> Dict[str, Any]:
     """A WRITER (the run's ONE receipt). Every way an Update ends
     (cr1#1722): after the documents are sent, and after any call that said
     no. Counts in code from what the run kept: the save's counts (by
@@ -15792,7 +16160,9 @@ def update_finish(workspace_root, *, run_id: str = "", token: str = "", error: s
     counts["scope"] = "touched" if (mine and man.get("only") is not None) else "all"
     if mine:
         counts.update({k: v for k, v in (man.get("counts") or {}).items() if k in ("plate", "closed")})
-        counts["built"] = len([r for r in man.get("report") or [] if r.get("ok") and str(r.get("doc")) != "status/update"])
+        # cr1#1837: the off-limits list every Update carries is not one of the feeds it rebuilt
+        counts["built"] = len([r for r in man.get("report") or [] if r.get("ok")
+                               and str(r.get("doc")) not in ("status/update", WALL_CARRY_DOC)])
         counts["not_built"] = len([r for r in man.get("report") or [] if not r.get("ok")])
         # cr1#1764: the parts that did not finish or never ran, by name, and
         # the documents not built (a part skipped for holding nothing to build
@@ -15807,6 +16177,23 @@ def update_finish(workspace_root, *, run_id: str = "", token: str = "", error: s
             counts["failed_docs"] = failed_docs
     if state.get(UPDATE_CHECK_FAILED):
         counts[UPDATE_CHECK_FAILED] = 1
+    # cr1#1837: `wall_sent` as `unpack-refresh` answered it; a list not sent is
+    # on the receipt (and so in the health check's alarm), never silent.
+    # Review round 1 (must 1): every Update carries the list, so "sent" only
+    # when the sending step said so, and anything else (false, null, left
+    # out, a run that ended before it) is "not_sent".
+    sent = wall_sent is True
+    # Coordinator's ruling on round 1: a run whose claim of the light was
+    # refused (another run holds it and speaks for the list) never tried to
+    # send it, so it is "not_attempted", and that alone makes nothing partial
+    # and raises no alarm. Delta check of 5319fe083: that needs its own proof,
+    # the run's error being one of the two "another update is running" lines.
+    # Everything else is "not_sent" (a failed build, false, null, left out, an
+    # early end after the claim, a claim call the door refused): a wrong guess
+    # raises an alarm that was not needed, the safe direction.
+    held = sent or str(error or "").strip() not in (UPDATE_BUSY_LINE, UPDATE_BUSY_NARROW_LINE)
+    counts["wall"] = "sent" if sent else ("not_sent" if held else "not_attempted")
+    sent = sent or not held  # a list this run never held is not its to report
     err = str(error or "").strip()
     kept_light: Dict[str, Any] = {}
     # cr1#1764: the light in the task's scratch folder is this run's only when
@@ -15830,7 +16217,12 @@ def update_finish(workspace_root, *, run_id: str = "", token: str = "", error: s
     if not line and mine and not wrote:
         line = UPDATE_STAGE_MISSING_LINE.format(what="; ".join(
             REFRESH_STAGE_WORDS[s] for s in counts.get("not_finished") or ["record"]))
+    # cr1#1837: a list that was not sent makes the run partial, and says so
+    # (an ended run's line is its stop reason alone; its receipt still says not sent)
+    if not sent and not err and WALL_NOT_SENT_LINE not in line:
+        line = (line + " " + WALL_NOT_SENT_LINE).strip()
     bad = bool(err) or not kept_light or str(kept_light.get("state") or "") != "done"
+    bad = bad or not sent
     log_run_receipt(workspace_root, fired_via=fired_via, legs=["update"], counts={"update": counts},
                     task_id="cockpit-update", now_iso=now_s, status="partial" if bad else "complete")
     light = None
@@ -15866,7 +16258,7 @@ def refresh_part(workspace_root=None, token: str = "", part: int = 0,
         (str(row[0]), int(row[1])) for row in manifest.get("sizes") or []
         if isinstance(row, list) and len(row) == 2 and str(row[0]) in allowed
         and _refresh_file(scratch, str(row[0])).is_file()]
-    parts = _refresh_parts(sizes)
+    parts = _task_parts(str(task), sizes)
     try:
         idx = int(part)
     except (TypeError, ValueError):
@@ -15876,7 +16268,16 @@ def refresh_part(workspace_root=None, token: str = "", part: int = 0,
                 "line": f"This refresh has {len(parts)} parts, numbered from 0."}
     docs = {doc: json.loads(_refresh_file(scratch, doc).read_text(encoding="utf-8"))
             for doc in parts[idx]}
-    return {"ok": True, "token": tok, "part": idx, "parts": len(parts), "pages": docs}
+    out: Dict[str, Any] = {"ok": True, "token": tok, "part": idx, "parts": len(parts), "pages": docs}
+    if WALL_CARRY_DOC in docs:
+        # cr1#1837: the list's digest, made here beside it, so a list that was
+        # cut, mixed or retyped on the way is never published; then padding, so
+        # the answer is long enough for the run's tool to save it to a file
+        out["digests"] = {WALL_CARRY_DOC: wall_digest(docs[WALL_CARRY_DOC])}
+        short = WALL_CARRY_MIN_CHARS - len(json.dumps(out, separators=(",", ":")))
+        if short > 0:
+            out["pad"] = "." * (short + 16)
+    return out
 
 
 def _one_call_answer(workspace_root, task: str, leg: str, report, built, *, state: str, line: str,
@@ -16248,9 +16649,84 @@ def _saved_version(versions_dir: str, coll: str, doc_id: str) -> Optional[int]:
     return None
 
 
+#: Delta check of 5319fe083 (required 1): one document line of a `list`
+#: answer saved with `out_dir` (`- "<doc_id>"  <N> bytes  version <V>  "<path>"`).
+WALL_LISTING_DOC_RE = re.compile(r'^-\s+"([^"]+)"\s')
+
+
+def feed_listing_matches(listing_file: str, saved_dir: str) -> bool:
+    """Delta check of 5319fe083 (required 1): True only when `listing_file` is
+    the saved answer of the page's `list` on `feed` with `out_dir`, and it
+    names exactly the documents saved under `saved_dir/feed`: its head's
+    count, its document lines and the saved files all agree. A listing cut
+    short, of another collection, or one that cannot be read is False."""
+    try:
+        raw = Path(listing_file).read_text(encoding="utf-8-sig")
+    except (OSError, ValueError, TypeError):
+        return False
+    lines = [ln.strip() for ln in _listing_text(raw).lstrip("\ufeff").splitlines() if ln.strip()]
+    head = WALL_LISTING_RE.match(lines[0]) if lines else None
+    if not head or head.group(2) != "feed":
+        return False
+    named = [m.group(1) for m in (WALL_LISTING_DOC_RE.match(ln) for ln in lines[1:]) if m]
+    folder = Path(saved_dir) / "feed"
+    files = sorted(f.stem for f in folder.glob("*.json")) if folder.is_dir() else []
+    return int(head.group(1)) == len(named) == len(files) and sorted(named) == files
+
+
+def _wall_carried(answers: List[Dict[str, Any]], versions_dir: str, now_iso=None,
+                  feed_listing: str = "") -> Tuple[Optional[Dict[str, Any]], str]:
+    """cr1#1837: the off-limits list a pulled part carried, `(doc, why_not)`.
+    The list must match the digest its part was made with, be sound, not be
+    dated more than five minutes ahead of this computer's clock, and not be
+    older than the page's own copy in `versions_dir`; otherwise it is not
+    published, saying why. `(None, "")` when no part carried one."""
+    have = [a for a in answers if isinstance((a.get("pages") or {}).get(WALL_CARRY_DOC), dict)]
+    if not have:
+        return None, ""
+    ans = have[-1]
+    doc = ans["pages"][WALL_CARRY_DOC]
+    given = str((ans.get("digests") or {}).get(WALL_CARRY_DOC) or "")
+    if not wall_sound(doc) or not given or wall_digest(doc) != given:
+        return None, WALL_NOT_SAVED_LINE
+    made = _parse(doc.get("generated_at"))
+    now = _parse(now_iso) if now_iso else _dt.datetime.now(_dt.timezone.utc)
+    if made is None or now is None:
+        return None, WALL_NOT_SAVED_LINE
+    if (made - now).total_seconds() > WALL_AHEAD_MAX_S:
+        return None, WALL_AHEAD_LINE
+    # Review round 1 of #1837 (must 2): the #1772 fence. Without the page's own
+    # read of its feeds nothing is published: a read that failed or was not
+    # saved could hide a newer (or a held) list. A page with no list yet still
+    # has its other feeds in that read, which is the way through.
+    feed = Path(versions_dir) / "feed" if versions_dir else None
+    saved = _saved_docs(versions_dir, "feed") if feed is not None else []
+    if feed is None or not saved:
+        return None, WALL_NO_PAGE_READ_LINE
+    stored, stored_v = next(((f, v) for d, f, v in saved if d == "wall"), (None, None))
+    if stored is None and (feed / "wall.json").exists():
+        return None, WALL_NO_PAGE_READ_LINE  # the page's copy is there and could not be read
+    # Delta check of 5319fe083 (required 2): a copy whose version cannot be
+    # read cannot be pinned, so the list is not written over it
+    if stored is not None and stored_v is None:
+        return None, WALL_NO_PAGE_READ_LINE
+    # Delta check of 5319fe083 (required 1): "no list yet" only when the
+    # page's own listing of its feeds names exactly the documents saved, so a
+    # listing cut short never looks like a page with no list
+    if stored is None and not (feed_listing and feed_listing_matches(feed_listing, versions_dir)):
+        return None, WALL_NO_PAGE_READ_LINE
+    was = _parse(stored.get("generated_at")) if isinstance(stored, dict) else None
+    if isinstance(stored, dict) and was is None:
+        return None, WALL_NO_PAGE_READ_LINE  # a copy with no date cannot be shown older
+    if was is not None and was > made:
+        return None, WALL_OLDER_LINE
+    return doc, ""
+
+
 def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
                    token: str = "", parts: Optional[int] = None,
-                   pins: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+                   pins: Optional[Dict[str, int]] = None, wall_in_turn: Optional[int] = None,
+                   now_iso=None, feed_listing: str = "") -> Dict[str, Any]:
     """Run where the page's database tool runs. Reads the saved answers of
     `refresh_part`, writes one JSON file per document under `out_dir`, and
     returns the batches that set them: `{ok, batches: [[write, ...], ...],
@@ -16262,7 +16738,18 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
 
     With `token` only that refresh's parts count, and with `parts` every part
     from 0 to one less must be there: a part that is missing or was cut off
-    is `ok: false` with `missing`, and nothing is to be sent."""
+    is `ok: false` with `missing`, and nothing is to be sent.
+
+    cr1#1837: an Update's off-limits list (`feed/wall`) is checked by
+    `_wall_carried` and, when it passes, is the FIRST write of the first
+    batch, before any document that names people. `wall_in_turn` is the
+    number of the list's part when its answer came back in the run's turn
+    instead of as a file: that part was not saved (it is never retyped), it
+    is not missing, and the list is not published. Whenever an Update's list
+    is not published, the answer says so (`wall_sent: false`, `wall_line`)
+    and the run's light, `status/update`, carries it in its line and in
+    `wall`, so the page and the receipt say it the same day. The padding a
+    part carries is never read."""
     found: List[Dict[str, Any]] = []
     for name in files:
         try:
@@ -16275,7 +16762,11 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
         found = [a for a in found if str(a.get("token") or "") == str(token)]
     if parts is not None:
         have = {a.get("part") for a in found}
-        missing = [n for n in range(int(parts)) if n not in have]
+        # Review round 1 of #1837 (should 1): the list is always part 0, so
+        # only part 0 is excused, and only when no saved part carries the list
+        carried = any(isinstance((a.get("pages") or {}).get(WALL_CARRY_DOC), dict) for a in found)
+        excused = {0} if wall_in_turn == 0 and not isinstance(wall_in_turn, bool) and not carried else set()
+        missing = [n for n in range(int(parts)) if n not in have and n not in excused]
         if missing:
             return {"ok": False, "missing": missing,
                     "line": "Part(s) " + ", ".join(str(n) for n in missing)
@@ -16283,8 +16774,23 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
     docs: Dict[str, Any] = {}
     for ans in found:
         for doc, body in ans["pages"].items():
-            if isinstance(body, dict) and str(doc) in PULL_DOCS:
+            if isinstance(body, dict) and str(doc) in PULL_DOCS and str(doc) != WALL_CARRY_DOC:
                 docs[str(doc)] = body
+    wall, wall_why = _wall_carried(found, versions_dir, now_iso, feed_listing=feed_listing)
+    in_turn = wall_in_turn == 0 and not isinstance(wall_in_turn, bool)
+    # Review round 1 of #1837 (must 1): an Update (its light is in the parts)
+    # always expects the list, so one with no list part says so too
+    expected = "status/update" in docs or bool(wall_why) or wall is not None or in_turn
+    if wall is not None:
+        docs[WALL_CARRY_DOC] = wall
+    elif expected:
+        wall_why = wall_why or (WALL_IN_TURN_LINE if in_turn else WALL_NOT_BUILT_LINE)
+        light = docs.get("status/update")
+        if isinstance(light, dict):
+            light = dict(light)
+            light["line"] = (str(light.get("line") or "") + " " + WALL_NOT_SENT_LINE).strip()
+            light["wall"] = {"sent": False, "line": wall_why}
+            docs["status/update"] = light
     # cr1#666, moved here by cr1#1638 (the page's own read is here): an
     # `idle` Maintenance answer over a page that says `done` is a read that
     # failed; the page keeps what it has.
@@ -16305,7 +16811,8 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
     batches: List[List[Dict[str, Any]]] = [[]]
     room = REFRESH_BATCH_BUDGET
     no_version: List[str] = []
-    for doc in sorted(docs):
+    # cr1#1837: the off-limits list first, before any document that names people
+    for doc in sorted(docs, key=lambda d: (d != WALL_CARRY_DOC, d)):
         text = json.dumps(docs[doc], separators=(",", ":"))
         coll, doc_id = doc.split("/", 1)
         target = out / (coll + "__" + doc_id + ".json")
@@ -16324,8 +16831,13 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
             room = REFRESH_BATCH_BUDGET
         batches[-1].append(write)
         room -= len(text)
-    return {"ok": True, "batches": batches, "pages": sorted(docs), "no_version": no_version,
-            "line": f"{len(docs)} documents ready in {len(batches)} batch(es)."}
+    ans = {"ok": True, "batches": batches, "pages": sorted(docs), "no_version": no_version,
+           "line": f"{len(docs)} documents ready in {len(batches)} batch(es)."}
+    if expected:
+        ans["wall_sent"] = wall is not None
+        if wall is None:
+            ans["wall_line"] = WALL_NOT_SENT_LINE + " " + wall_why
+    return ans
 
 
 def _unpack_refresh_cli(argv: List[str]) -> int:
@@ -16335,6 +16847,9 @@ def _unpack_refresh_cli(argv: List[str]) -> int:
     parts: Optional[int] = None
     pins: Dict[str, int] = {}
     files: List[str] = []
+    wall_in_turn: Optional[int] = None
+    now_cli: Optional[str] = None
+    feed_listing = ""
     i = 0
     while i < len(argv):
         if argv[i] == "--out" and i + 1 < len(argv):
@@ -16349,6 +16864,15 @@ def _unpack_refresh_cli(argv: List[str]) -> int:
         elif argv[i] == "--parts" and i + 1 < len(argv) and argv[i + 1].isdigit():
             parts = int(argv[i + 1])
             i += 2
+        elif argv[i] == "--wall-in-turn" and i + 1 < len(argv) and argv[i + 1].isdigit():
+            wall_in_turn = int(argv[i + 1])
+            i += 2
+        elif argv[i] == "--feed-listing" and i + 1 < len(argv):
+            feed_listing = argv[i + 1]
+            i += 2
+        elif argv[i] == "--now" and i + 1 < len(argv):  # suites only: a fixed clock
+            now_cli = argv[i + 1]
+            i += 2
         elif argv[i] == "--pin" and i + 1 < len(argv) and "=" in argv[i + 1]:
             doc, _eq, ver = argv[i + 1].rpartition("=")
             if ver.isdigit():
@@ -16358,9 +16882,10 @@ def _unpack_refresh_cli(argv: List[str]) -> int:
             files.append(argv[i])
             i += 1
     if not out_dir or not files:
-        print(json.dumps({"ok": False, "line": "usage: cockpit_helpers.py unpack-refresh --out <dir> --token <token> --parts <n> [--versions <dir>] [--pin <doc>=<version>]... <saved answer>..."}))
+        print(json.dumps({"ok": False, "line": "usage: cockpit_helpers.py unpack-refresh --out <dir> --token <token> --parts <n> [--versions <dir>] [--feed-listing <file>] [--wall-in-turn 0] [--pin <doc>=<version>]... <saved answer>..."}))
         return 2
-    ans = unpack_refresh(files, out_dir, versions, token=token, parts=parts, pins=pins)
+    ans = unpack_refresh(files, out_dir, versions, token=token, parts=parts, pins=pins,
+                         wall_in_turn=wall_in_turn, now_iso=now_cli, feed_listing=feed_listing)
     print(json.dumps(ans))
     return 0 if ans.get("ok") else 1
 
@@ -16394,6 +16919,7 @@ __all__ = [
     "refresh_all", "refresh_part", "unpack_refresh", "REFRESH_READS", "REFRESH_PART_BUDGET",
     "REFRESH_DOC_LIMIT", "REFRESH_BATCH_BUDGET", "REFRESH_PLATE_FAILED_LINE", "REFRESH_DOCS",
     "refresh_start", "REFRESH_BUSY_LINE", "REFRESH_BATCH_MAX",
+    "feed_focus", "FOCUS_SURFACE", "feed_allopen",
     "RETIRED_TASKS", "RETIRED_TASK_NAMES", "UPDATE_NARROW", "UPDATE_RECORD_FEEDS", "UPDATE_DOCS",
     "touched_feeds", "update_press_key", "update_press_space", "update_claim", "update_save", "update_build", "update_finish",
     "UPDATE_NOTHING_LINE", "UPDATE_SAVE_FAILED_LINE", "UPDATE_BUSY_LINE", "UPDATE_BUSY_NARROW_LINE",

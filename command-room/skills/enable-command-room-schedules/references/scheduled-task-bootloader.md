@@ -239,7 +239,7 @@ echo "CR_WORKSPACE=$CR_WORKSPACE"
    cd "$PLUGIN_ROOT" && CR_DEVICE_NAME="<the device name Step 0's get_device_info reported>" python3 shared/scripts/schedule_holder.py early --holder '<the discovery JSON's holder value>'
    ```
 
-   Leave `CR_DEVICE_NAME=…` out when Step 0 was skipped. It prints one JSON line and writes nothing. `stop: false`, no output, or output that is not JSON → carry on to point 2: the full check still runs at Step 1.5. `stop: true` → this computer or account does not hold the schedules, so never restage the runtime and never read the brain file. Do point 2's comparison only: when the runtime is present and its `manifest_sha` equals the one `expect` prints, do point 3's exports and write the Step 1.35 stop record (`foreign_scheduled_writer`, the `receipts:log_fire_stopped` line), and otherwise write nothing. Then post its `line`, exactly as it came back, as the ENTIRE chat turn, and STOP.
+   Leave `CR_DEVICE_NAME=…` out when Step 0 was skipped. It prints one JSON line and writes nothing. `stop: false`, no output, or output that is not JSON → carry on to point 2: the full check still runs at Step 1.4. `stop: true` → this computer or account does not hold the schedules, so never restage the runtime and never read the brain file. Do point 2's comparison only: when the runtime is present and its `manifest_sha` equals the one `expect` prints, do point 3's exports and write the Step 1.35 stop record (`foreign_scheduled_writer`, the `receipts:log_fire_stopped` line), and otherwise write nothing. Then post its `line`, exactly as it came back, as the ENTIRE chat turn, and STOP.
 
 2. **Check the runtime.** The question is whether the runtime installed in the workspace matches the plugin THIS FIRE resolved in Step 1 — never this prompt's `plugin-version` stamp, which is diagnostic and is deliberately never rewritten on a version-only bump, so comparing against it would stop every chat on the first patch release after registration.
 
@@ -281,11 +281,11 @@ echo "CR_WORKSPACE=$CR_WORKSPACE"
 
    rendered HERE, in the container, and the ONE line it prints — `CR_PLAN_ORIGIN=container` and the writer identity in front of `python3 "<staged_root>/…"` — pasted into `device_bash` unchanged. The argument is the WORKSPACE ROOT (`<vm_path>` = the discovery JSON's `ws`) — the helper resolves the ledger itself, and the access layer binds these arguments by NAME onto the helper's own parameters, so a key the helper does not take comes back `ok: false` and this chat stops for nothing. `events_io.count_rows` counts the rows in the ledger — the cheapest possible read that proves helpers, workspace and mount are all reachable together. If the envelope is `ok: false`, treat it exactly like a missing runtime and post the message in point 2. If it says `folder_not_attached`, that is Step 0 point 6: re-request the folder exactly once, retry the SAME command string, and stop on a second drop.
 
-If either branch prints `ABORT_WORKSPACE_NOT_FOUND`, ask Step 1.5's retirement question FIRST, before posting anything (cr1#140). A retired chat must say that it retired even on a computer with no workspace folder; otherwise it tells the customer to re-bind a chat the product has retired. The question needs no workspace: membership and the line come from the plugin's own registry, and the plugin is in this run's own shell on every shape (Step 1 resolved it there; on the device shape this is the container, never `device_bash`). So ask it right here, in this shell, straight from the plugin, with no access-layer line:
+If either branch prints `ABORT_WORKSPACE_NOT_FOUND`, ask Step 1.4's retirement question FIRST, before posting anything (cr1#140). A retired chat must say that it retired even on a computer with no workspace folder; otherwise it tells the customer to re-bind a chat the product has retired. The question needs no workspace: membership and the line come from the plugin's own registry, and the plugin is in this run's own shell on every shape (Step 1 resolved it there; on the device shape this is the container, never `device_bash`). So ask it right here, in this shell, straight from the plugin, with no access-layer line:
 
 `cd "$PLUGIN_ROOT" && python3 shared/scripts/fire_guards.py --task-id <TASK_ID>`
 
-(If `$PLUGIN_ROOT` is empty in this shell, re-run Step 1's bash block first to re-derive it, exactly as Step 1.5 says.) It prints one JSON line. If `retirement.retired` is true: post `retirement.line`, exactly as it came back, as the ENTIRE chat turn, then STOP, under every rule Step 1.5 sets for that line. Anything else (`retired` false, no output, output that is not JSON) is the FALL-THROUGH: post this message in chat and STOP:
+(If `$PLUGIN_ROOT` is empty in this shell, re-run Step 1's bash block first to re-derive it, exactly as Step 1.4 says.) It prints one JSON line. If `retirement.retired` is true: post `retirement.line`, exactly as it came back, as the ENTIRE chat turn, then STOP, under every rule Step 1.4 sets for that line. Anything else (`retired` false, no output, output that is not JSON) is the FALL-THROUGH: post this message in chat and STOP:
 
 > ⚠️ Command Room's scheduled chat `<TASK_ID>` could not reach your workspace folder from this run, so it did nothing. Open a new chat with your Command Room folder attached and say `set up command room schedules` to re-bind.
 
@@ -295,78 +295,52 @@ Six days of silence on one seat left no row, receipt or line saying what stopped
 
 `cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "receipts:log_fire_stopped", "args": {"workspace_root": "<vm_path>", "task_id": "<TASK_ID>", "abort_code": "<the code below>"}}'`
 
-The codes, one per stop: `runtime_missing` (Step 1.3's merged branch, the runtime could not be brought current), `root_blocked` (Step 1.4), `retired` and `foreign_scheduled_writer` (Step 1.5; `foreign_scheduled_writer` also from Step 1.3 point 1a, cr1#1138), `contract_marker` (Step 2), `migration_gate` (Step 2.4). Run it, read nothing from its answer, then post the stop's own line exactly as that step says: an `ok: false` here never changes the stop and is never said. This is the one write a retired or foreign chat makes, and it is not a receipt: the watchdog still reads the chat as stopped, and the health check reads this row to say why. Stops before this step (Step 0's folder card, Step 1's missing plugin, Step 1.3's missing workspace) have no folder to write into and leave nothing; the health check names those by their silence.
+The codes, one per stop: `runtime_missing` (Step 1.3's merged branch, the runtime could not be brought current), `root_blocked`, `retired` and `foreign_scheduled_writer` (Step 1.4; `foreign_scheduled_writer` also from Step 1.3 point 1a, cr1#1138), `contract_marker` and `migration_gate` (Step 2). Run it, read nothing from its answer, then post the stop's own line exactly as that step says: an `ok: false` here never changes the stop and is never said. This is the one write a retired or foreign chat makes, and it is not a receipt: the watchdog still reads the chat as stopped, and the health check reads this row to say why. Stops before this step (Step 0's folder card, Step 1's missing plugin, Step 1.3's missing workspace) have no folder to write into and leave nothing; the health check names those by their silence.
 
-## Step 1.4 — Fire-time root guard (SPEC PATHREPAIR1)
+## Step 1.4 — The fire's four questions, in ONE call (SPEC PATHREPAIR1, RETIREGATE1, SAFETY0, IDENT1 I-15; cr1#1808)
 
-Step 1.3 found a LIVE `$WORKSPACE` — but that is not the same question as whether this workspace's OWN registration record (`_hq/workspace_config.json`'s `workspace_root`) still agrees with it. A folder rename or move leaves the stored value stale even on a fire that resolved fine: this step corrects that stale self-reference against the now-confirmed live `$WORKSPACE`, or aborts loudly rather than letting a chat keep running on a registration nobody can trust.
+Four read-only questions come before anything else, and they are asked together so a fire spends one rendered line on them, not four: is this workspace's registration still trustworthy (the root guard), is this task RETIRED, is THIS chat the workspace's declared scheduled writer, and is this chain migrated onto the access layer. Each is answered exactly as it was when it was its own call, with its own fall-through.
 
-Ask the guard through the access layer — ONE rendered `run_helper` form, the same door every other read of the workspace goes through:
+Render it HERE, in the container, like every access-layer line in this file, in ONE bash call that first makes sure the plugin path survived (a fresh shell does not carry an earlier export, and `cd ""` would run the question from wherever the shell happens to be, cr1#140). The check, then the line, in the same call:
 
-`cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "fire_guards:root_guard", "args": {"root": "<vm_path>"}}'`
+```bash
+[ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT/shared/scripts" ] || echo "PLUGIN_ROOT_LOST"
+```
 
-(rendered HERE, in the container, like every access-layer line in this file — then the ONE line it prints runs in this shell on the legacy and mounted shapes and is pasted into `device_bash` unchanged on the device shape. The same holds for every fire question below. A line rendered on the device carries no identity, so the scheduled-writer question would answer `foreign: true` for this workspace's own chat.)
+If it prints `PLUGIN_ROOT_LOST`, re-run Step 1's bash block (the same block, unchanged) to re-derive `$PLUGIN_ROOT`, and use the path it prints. If that block aborts, post its message and STOP exactly as Step 1 says. The line:
 
-**The envelope IS the answer.** Its `result` carries `blocked`, `state` and `detail`; nothing parses it a second time. `result.blocked: true` → write the Step 1.35 stop record (`root_blocked`), post the message below as the whole turn and STOP. Anything else → continue to Step 1.5.
+`cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "fire_guards:fire_checks", "args": {"env_mode": "<CR_ENV>", "orchestrator_rel": "skills/enable-command-room-schedules/references/<ORCHESTRATOR_FILENAME>", "root": "<vm_path>", "task_id": "<TASK_ID>"}}'`
 
-**`ok: false` is the FALL-THROUGH, never a short-circuit** — the same posture Step 1.5 takes below. If the helper cannot be reached at all, or the envelope comes back `ok: false` for any reason, treat it as `blocked: false` and let the fire proceed unchanged. This is the ONE place in this file where an `ok: false` is not a stop, and the reason is the one this step has always given: a live chat must never be silenced by a hiccup in a guard that was only ever a belt. The cost of guessing wrong in that direction is one unchecked fire; the cost of guessing wrong in the other is a working chat that goes quiet and never says why.
+The ONE line it prints runs in this shell on the legacy and mounted shapes and is pasted into `device_bash` unchanged on the device shape. A line rendered on the device carries no identity, so the scheduled-writer question would answer `foreign: true` for this workspace's own chat.
 
-If `result.blocked` is true, post EXACTLY this message in chat and STOP (same discipline as the ABORT messages above — do not improvise, do not produce a widget, do not continue):
+**The envelope IS the answer.** Its `result` carries four answers, `root_guard`, `retirement`, `scheduled_writer` and `migration`; nothing parses it a second time. **`ok: false` is the FALL-THROUGH, never a short-circuit**, for the whole envelope: if the helper cannot be reached at all, read it as not blocked, not retired, not foreign and not stopped, and let the fire proceed unchanged. A live chat must never be silenced by a hiccup in a guard that was only ever a belt; the cost of guessing wrong in that direction is one unchecked fire, the cost in the other is a working chat that goes quiet and never says why. Judge the answers in THIS order, and stop at the first that stops:
+
+**1. The root guard (`result.root_guard`).** `blocked: true` → write the Step 1.35 stop record (`root_blocked`), post EXACTLY this message in chat as the whole turn and STOP (same discipline as the ABORT messages above — do not improvise, do not produce a widget, do not continue):
 
 > ⚠️ Command Room scheduled task `<TASK_ID>` can't confirm your workspace registration. Your workspace folder doesn't match what's on record — it may have moved or been renamed, and I found more than one folder (or none) that could be it, so I won't guess. Please open Command Room and say "set up command room schedules" to reconnect it. This task will work again once the registration is confirmed.
 
-If `result.blocked` is false, continue to Step 1.5 unchanged. A `state` of `"STALE"` is silent here by design: the stored root is out of date and a repair WOULD succeed, but a fire does not repair the registration underneath itself — the health check and the weekly cleanup own that, and this fire has already proved it is running against a live workspace. Same silence when `state` is `"UNKNOWN"` (SPEC PATHREPAIR1 v2, ruling 1/2/3) — the fire is running inside a session mount, or this workspace's registration belongs to a different machine's own `machines` entry: neither is evidence the workspace moved, so nothing repairs, nothing alarms, and BLOCKED stays `0` exactly like a healthy root. This is the fix for the class of bug this guard used to CAUSE: a v1 build compared the stored root against `$WORKSPACE` by plain existence, which reads DEAD on every single cloud fire (the session mount never matches a real machine path) and would self-heal by writing the ephemeral `/sessions/...` path into `workspace_config.json` every time — the exact defect WALKFIX1 exists to purge.
+Step 1.3 found a LIVE `$WORKSPACE`, but that is not the same question as whether this workspace's OWN registration record (`_hq/workspace_config.json`'s `workspace_root`) still agrees with it: a folder rename or move leaves the stored value stale even on a fire that resolved fine. A `state` of `"STALE"` is silent here by design: the stored root is out of date and a repair WOULD succeed, but a fire does not repair the registration underneath itself — the health check and the weekly cleanup own that. Same silence when `state` is `"UNKNOWN"` (SPEC PATHREPAIR1 v2, ruling 1/2/3): the fire is running inside a session mount, or this workspace's registration belongs to a different machine's own `machines` entry; neither is evidence the workspace moved, so nothing repairs, nothing alarms. A v1 build compared the stored root against `$WORKSPACE` by plain existence, which reads DEAD on every cloud fire and would self-heal by writing the ephemeral `/sessions/...` path into `workspace_config.json` — the exact defect WALKFIX1 exists to purge.
 
-## Step 1.5 — Is this task RETIRED? (SPEC RETIREGATE1)
+**2. Is this task RETIRED? (`result.retirement`).** A retired chat must say that it retired, and never that the plugin is broken (BUG-9517: a retirement stub without the `OUTPUT CONTRACT` marker failed Step 2's grep and said "partially installed or corrupted"). Membership AND class come from the registry, never from a name anyone remembers. A RENAMED row is deliberately NOT retired: its orchestrator is the live successor pack. If `retired` is true: write the Step 1.35 stop record (`retired`), then post its `line` in chat, exactly as it came back, as the ENTIRE chat turn — then STOP. **Skip Step 2 and Step 3 completely.** No widget, no scans, no connector reads, no other substrate write of any kind — not a receipt; a retired chat that keeps writing receipts is a retired chat that still looks alive (the stop record is not a receipt and never makes it look alive). Do NOT offer to re-register the task, do NOT propose an alternative schedule, and do NOT run any part of the old prompt "just this once." **Do not append a deregistration suggestion of your own.** The line already carries the right one for its class: an ELIMINATED chat's line offers the `pause` that clears it, while a READINESS retirement's line deliberately offers none. `schedule_config.retirement_line` is the ONE renderer for this sentence; whatever it printed is the whole message. Every retirement stub also carries the `OUTPUT CONTRACT` marker inside its own first 2000 bytes and quotes the same line byte for byte, so the two paths cannot answer one customer two ways.
 
-A retired chat must say that it retired. It must never say the plugin is broken — and before this step existed it said exactly that, because Step 2's contract grep runs BEFORE Step 3 ever opens the file. A retirement stub that had not been given the `OUTPUT CONTRACT` marker failed that grep, the fire aborted with "the plugin may be partially installed or corrupted", and the customer's only available workaround was to switch the task off themselves (BUG-9517). This step makes the corruption message unreachable for a retired task id.
+**3. Is THIS chat the workspace's declared scheduled writer? (`result.scheduled_writer`, SAFETY0).** If `foreign` is true: write the Step 1.35 stop record (`foreign_scheduled_writer`; it is the one write the door lets a foreign chat make), then post its `line`, exactly as it came back, as the ENTIRE chat turn — then STOP. No other write of any kind, no widget, no receipt.
 
-First make sure the plugin path survived. Every earlier step exported `$PLUGIN_ROOT`, but a fresh shell does not carry an earlier export, and `cd ""` would run the question from wherever the shell happens to be (cr1#140):
+**4. The migration answer (`result.migration`) is judged in Step 2, after the contract marker,** exactly where it was judged before. Otherwise continue to Step 2 unchanged.
 
-```bash
-[ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT/shared/scripts" ] && echo "PLUGIN_ROOT=$PLUGIN_ROOT" || echo "PLUGIN_ROOT_LOST"
-```
-
-If it prints `PLUGIN_ROOT_LOST`, re-run Step 1's bash block (the same block, unchanged) to re-derive `$PLUGIN_ROOT`, and use the path it prints. If that block aborts, post its message and STOP exactly as Step 1 says.
-
-Then ask the registry through the same door, with ONE rendered `run_helper` form:
-
-`cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "fire_guards:retirement", "args": {"task_id": "<TASK_ID>"}}'`
-
-Membership AND class come from the registry, never from a name anyone remembers. A RENAMED row is deliberately NOT retired: its orchestrator is the live successor pack, so that chat keeps firing the real surface forever. Every other retired class — eliminated, readiness, and any class the registry grows later — answers `retired: true`, which is the safe direction, because the file such an id resolves to is a stub that can only post one line anyway.
-
-**The envelope IS the answer.** If `result.retired` is true: write the Step 1.35 stop record (`retired`), then post `result.line` in chat, exactly as it came back, as the ENTIRE chat turn — then STOP. **Skip Step 2 and Step 3 completely.** No widget, no scans, no connector reads, no other substrate write of any kind — not a receipt; a retired chat that keeps writing receipts is a retired chat that still looks alive (the stop record is not a receipt and never makes it look alive). Do NOT offer to re-register the task, do NOT propose an alternative schedule, and do NOT run any part of the old prompt "just this once."
-
-**Do not append a deregistration suggestion of your own.** The line already carries the right one for its class, and the classes disagree on purpose: an ELIMINATED chat's line offers the `pause` that clears it, while a READINESS retirement's line deliberately offers none — the update that retired it already switched the task off, and asking the customer to perform a tap the product has already taken reads as the product not knowing its own state. `schedule_config.retirement_line` is the ONE renderer for this sentence; whatever it printed is the whole message.
-
-Then ask ONE more question through the same door — is THIS chat the workspace's declared scheduled writer (SAFETY0, one scheduled writer per workspace)?
-
-`cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "fire_guards:scheduled_writer", "args": {"root": "<vm_path>"}}'`
-
-If `result.foreign` is true: write the Step 1.35 stop record (`foreign_scheduled_writer`; it is the one write the door lets a foreign chat make), then post `result.line`, exactly as it came back, as the ENTIRE chat turn — then STOP. No other write of any kind, no widget, no receipt. `ok: false` here is the same fall-through as the retirement question (R-FIX3-2's exception): proceed.
-
-If `result.retired` is false, continue to Step 2 unchanged. **`ok: false` is the FALL-THROUGH, never a short-circuit** — the second and last place in this file where that is true: if the helper cannot be reached or the registry cannot be read, a live task must still fire, and the cost of guessing wrong in that direction is one ordinary fire rather than a working chat silenced without being asked. That is also why this step is a belt and not the only brace — every retirement stub carries the `OUTPUT CONTRACT` marker inside its own first 2000 bytes, so Step 2 passes and Step 3 reaches a file that posts the same line by itself. **The same line, byte for byte:** every stub's quoted line is pinned equal to `schedule_config.retirement_line(<its id>)`, which is the sentence this step prints, so the two paths cannot answer one customer two ways. Either half alone produces the retirement line; the pair is what makes the corruption message unreachable.
-
-## Step 2 — Verify the orchestrator content carries the canonical contract marker
+## Step 2 — The contract marker and the orchestrator, in ONE shell call
 
 Run this bash:
 
 ```bash
 HEAD=$(head -c 2000 "$ORCH")
-echo "$HEAD" | grep -q "OUTPUT CONTRACT" && echo "CONTRACT_OK" || echo "CONTRACT_FAIL"
+if echo "$HEAD" | grep -q "OUTPUT CONTRACT"; then echo "CONTRACT_OK"; cat "$ORCH"; else echo "CONTRACT_FAIL"; fi
 ```
 
-If the output is `CONTRACT_FAIL`, write the Step 1.35 stop record (`contract_marker`), then post EXACTLY this message in chat and STOP. Do NOT improvise. Do NOT produce any widget.
+If the output starts with `CONTRACT_FAIL`, write the Step 1.35 stop record (`contract_marker`), then post EXACTLY this message in chat and STOP. Do NOT improvise. Do NOT produce any widget.
 
 > ⚠️ The orchestrator file for `<TASK_ID>` exists but doesn't contain the canonical OUTPUT CONTRACT marker. The plugin may be partially installed or corrupted. Please reinstall Command Room and type `set up command room schedules`.
 
-## Step 2.4 — Is this chain migrated? (IDENT1 I-15)
-
-After `CONTRACT_OK`, ask once whether this chat's chain has moved onto the workspace access layer — rendered in the container like every access-layer line (the census it reads is the plugin's own):
-
-`cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "migration_gate:gate", "args": {"env_mode": "<CR_ENV>", "orchestrator_rel": "skills/enable-command-room-schedules/references/<ORCHESTRATOR_FILENAME>", "task_id": "<TASK_ID>"}}'`
-
-If `result.stop` is true: write the Step 1.35 stop record (`migration_gate`), then post `result.line`, exactly as it came back, as the ENTIRE chat turn — then STOP. Write nothing else: no receipt, no page, no push beyond that same line. Anything else (including `ok: false`) → continue to Step 2.5 unchanged; a legacy or local seat never stops here.
+After `CONTRACT_OK`, everything that follows that line is the FULL orchestrator for this fire (Step 3 executes it). Then judge Step 1.4's `migration` answer (IDENT1 I-15, is this chain migrated?): if its `stop` is true, write the Step 1.35 stop record (`migration_gate`), then post its `line`, exactly as it came back, as the ENTIRE chat turn — then STOP. Write nothing else: no receipt, no page, no push beyond that same line. Anything else → continue to Step 2.5 unchanged; a legacy or local seat never stops here.
 
 ## Step 2.5 — Determine the run mode (DOGFIX1 2026-07-27)
 
@@ -383,13 +357,7 @@ If `result.stop` is true: write the Step 1.35 stop record (`migration_gate`), th
 
 ## Step 3 — Read the orchestrator and execute it verbatim
 
-Run this bash to fetch the full orchestrator content:
-
-```bash
-cat "$ORCH"
-```
-
-The output of that `cat` is the FULL orchestrator for this fire. Treat it as if it were prepended to your instructions: every Phase, every step, every contract clause, every leak-scanner check it specifies — execute them all, in order, without paraphrasing or skipping.
+What Step 2 printed after `CONTRACT_OK` is the FULL orchestrator for this fire; it is not read again. Treat it as if it were prepended to your instructions: every Phase, every step, every contract clause, every leak-scanner check it specifies — execute them all, in order, without paraphrasing or skipping.
 
 Specifically:
 

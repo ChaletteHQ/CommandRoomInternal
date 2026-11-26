@@ -209,7 +209,39 @@ def scheduled_writer(root) -> Dict[str, Any]:
     return answer
 
 
-__all__ = ["STATE_STALE", "retirement", "root_guard", "scheduled_writer"]
+def fire_checks(root, task_id: str = "", env_mode: str = "", orchestrator_rel: str = "") -> Dict[str, Any]:
+    """cr1#1808: the fire's four questions in ONE door call, so a scheduled
+    fire asks them with one rendered line instead of four (on the device
+    seat, eight calls become two). `{root_guard, retirement,
+    scheduled_writer, migration}`, each EXACTLY what its own question answers
+    alone (`root_guard`, `retirement`, `scheduled_writer`,
+    `migration_gate.gate`), each with its own fall-through: a question that
+    cannot reach a verdict answers what it answers alone on failure, and
+    never changes the other three. The bootloader judges them in the same
+    order as before; nothing is decided here. READ ONLY, like each of them."""
+    out: Dict[str, Any] = {}
+    try:
+        out["root_guard"] = root_guard(root)
+    except Exception:  # noqa: BLE001 - the fall-through, stated above
+        out["root_guard"] = _quiet("UNKNOWN")
+    try:
+        out["retirement"] = retirement(task_id)
+    except Exception:  # noqa: BLE001
+        out["retirement"] = {"retired": False, "line": ""}
+    try:
+        out["scheduled_writer"] = scheduled_writer(root)
+    except Exception:  # noqa: BLE001
+        out["scheduled_writer"] = {"foreign": False, "declared": None, "forwarded": None, "line": ""}
+    try:
+        import migration_gate as mg
+
+        out["migration"] = mg.gate(orchestrator_rel, env_mode, task_id=str(task_id or "") or None)
+    except Exception:  # noqa: BLE001 - a gate that cannot read never stops a fire
+        out["migration"] = {"migrated": True, "stop": False, "line": ""}
+    return out
+
+
+__all__ = ["STATE_STALE", "fire_checks", "retirement", "root_guard", "scheduled_writer"]
 
 
 def _main(argv: Optional[list] = None) -> int:

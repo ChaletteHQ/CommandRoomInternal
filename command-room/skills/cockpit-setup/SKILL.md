@@ -372,7 +372,10 @@ mail never waits for a whole rebuild: `list` on `feed` with `out_dir` set to
 `<scratch>/wall/page` (its answer saved to `<scratch>/wall/list.txt` exactly
 as it came), one `run_helper` call of `cockpit_helpers:feed_wall`
 with `{"workspace_root": "<WS>"}`, its answer saved to a file in this chat's
-own scratch exactly as it came (its `digest` must match its document), then
+own scratch exactly as it came (its `digest` must match its document; when
+the tool did not save the answer to a file and it came back in the turn, do
+not retype it: skip the rest of this paragraph, because every Hub Update
+carries the list in a part the tool saves, cr1#1837), then
 `python3 "$RT/shared/scripts/cockpit_helpers.py" wall-batch --answer "<that
 file>" --stored "<scratch>/wall/page" --out "<scratch>/wall"` in this shell
 (with `--stored-empty "<scratch>/wall/list.txt"` in place of `--stored

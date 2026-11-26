@@ -1330,8 +1330,8 @@ The timed tasks (`cockpit-prep`, `cockpit-inbox`, `cockpit-update`,
 `morning-brief`, `maintenance`, and the retired `cockpit-apply` and
 `cockpit-refresh`, cr1#1722) carry their run's per-phase
 timings, measured by code: `{measured, total_s, between_steps_s, phases: {phase:
-{s, calls[, shared][, failed_calls][, by_job]} | {not_run: true} |
-{writes_receipt: true}}, measured_by}`. `total_s` runs from the run's first door
+{s, calls[, shared][, failed_calls][, failed][, by_job]} | {not_run: true} |
+{writes_receipt: true}}, measured_by, plugin_version[, gaps, largest_gaps, after_last_s[, gaps_dropped]]}`. `plugin_version` (cr1#1808) is the version in the `plugin.json` shipped beside the code that ran (the staged runtime's copy on a merged seat), `unknown` when it cannot be read, never a guess. `gaps` is, for each step of the run in order, `{name, before_s}`: the seconds from the previous step's end to this one's start (the first is 0), at most 120 (`gaps_dropped` says how many more); `largest_gaps` names the three widest, each `{name, before_s, step}`, and the wait after the last step as `{name: "after_last", before_s}` when it is among them; `after_last_s` is that wait. Helper names and numbers only, never an argument, a path or text. With calls in a row the gaps and `after_last_s` add up to `between_steps_s`; with two calls at once `between_steps_s` subtracts the overlap twice and reads short, and the gaps are the truer number. `failed` (cr1#1808) names each failed call of the phase as `{name, code}`, at most ten: the helper and one code: a word from a fixed list (one of the door's own refusal reasons, or an exception's type name), `other` for anything else that came back, and `unknown` when the row kept no code; never a message, an argument, content or a helper's own word. `total_s` runs from the run's first door
 step to the receipt; `between_steps_s` is the time not inside a timed door call (the
 model's own turns and waits between calls, and the door's `read`, `write` and
 `append_jsonl`, which are not timed: only `run_helper` and `run_writer` are). Read from the door's step log

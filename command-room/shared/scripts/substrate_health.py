@@ -46,6 +46,12 @@ OFF_LIMITS_UNREADABLE_ALARM = (
     "⚠ Your off-limits list could not be read, so the Hub names nobody on your "
     "meetings and lists no new mail until it is repaired. Nobody new can be put off "
     "limits until then either.")
+#: cr1#1837: the alarm when the last Hub Update could not send the off-limits
+#: list to the page (live mail and the live Today wait for a fresh one).
+WALL_NOT_SENT_ALARM = (
+    "⚠ The last Hub Update could not send your off-limits list to the Hub, so the "
+    "page keeps the copy it has, and lists no new mail by itself once that copy is "
+    "a day old.")
 _CONFIG_JSONS = ("workspace_config.json",)  # under _hq/
 
 
@@ -747,6 +753,23 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
         from account_scope_gate import off_limits_readable
         if not off_limits_readable(workspace_root):
             lines.append(OFF_LIMITS_UNREADABLE_ALARM)
+    except Exception:  # noqa: BLE001 - a check that cannot run says nothing
+        pass
+    # cr1#1837: the list did not go. Review round 1 (must 1): read from the
+    # newest Hub Update receipt that says "sent" or "not_sent"; only a newer
+    # one that says "sent" clears it (an Update that ended early after its
+    # claim says "not_sent"). Skipped: "not_attempted" (a refused claim: the
+    # run that holds the light speaks for the list) and receipts naming none.
+    try:
+        from receipts import iter_receipts
+        rows = [r for r in iter_receipts(workspace_root, task_ids=["cockpit-update"]) if r.get("dt") is not None]
+        for r in sorted(rows, key=lambda r: r["dt"], reverse=True):
+            word = ((((r.get("raw") or {}).get("data") or {}).get("counts") or {}).get("update") or {}).get("wall")
+            if word not in ("sent", "not_sent"):
+                continue  # not_attempted, or a receipt from before cr1#1837
+            if word != "sent":
+                lines.append(WALL_NOT_SENT_ALARM)
+            break
     except Exception:  # noqa: BLE001 - a check that cannot run says nothing
         pass
     # FS-15 read-time alarms. Files already reported unreadable above are

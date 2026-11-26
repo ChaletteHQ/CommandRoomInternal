@@ -39,23 +39,9 @@ python3 "$RT/shared/scripts/cockpit_helpers.py" update-start --reads "<scratch>/
 
 It reads the saved page in code and prints one JSON line. `ok: false`: the start could not run; the whole turn is its `line`; STOP, writing nothing. `stop: true`: another update holds this task's light now; the whole turn is its `line`; STOP, writing nothing: the presses that wait are saved by the run that holds it, or by the next one. Otherwise send `batches[0]` (this run's claim of its own light, the page's own run id when the page started this run) as ONE `batch`. Refused because `status/update` changed: another update claimed it a moment ago; the whole turn is "Another update is running now; this one stopped without changing anything."; STOP. Then send each later list in `batches` as ONE `batch` (the lights a dead run left, and the old applied choices to clear); a refusal there is left alone, the next update does it.
 
-## 3b. The off-limits list, first
+## 3b. The off-limits list travels with the rebuild
 
-Only a run that WON its claim at step 3 gets here, so a run that stopped never publishes. Before the claim of the presses, the save and every part of the rebuild, publish the off-limits list on its own (cr1#1765), so a part that runs out of time later can never take it down. First `list` on `feed` with `out_dir` `<scratch>/wall/page` (only the file names come back) and save that answer to `<scratch>/wall/list.txt` exactly as it came, then:
-
-```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_wall"}'
-```
-
-Save its answer to `<scratch>/wall/answer.json` exactly as it came (when the tool saved the answer to a file, copy that file there unchanged). Never retype or shorten it: its `digest` must match its document. Then, in this shell:
-
-```bash
-python3 "$RT/shared/scripts/cockpit_helpers.py" wall-batch --answer "<scratch>/wall/answer.json" --stored "<scratch>/wall/page" --out "<scratch>/wall"
-```
-
-When that `list` answered and listed no documents (a new page), run the same command with `--stored-empty "<scratch>/wall/list.txt"` in place of `--stored "<scratch>/wall/page"`; never use it after a `list` that failed or was not made. The helper checks the saved answer itself and publishes nothing unless it says no documents were listed.
-
-Send its `batches[0]` as ONE `batch`, exactly as printed. Nothing here stops the run: a helper that fails, a `wall-batch` that answers `ok: false` (an answer that does not match its digest, a list that is not a list, a list dated more than five minutes ahead of this computer's clock, no saved page read, or a page that already has a newer list), or a batch that is refused is left alone, and the run goes on to step 4. The page keeps the copy it has, and lists no new mail by itself from a copy more than a day old.
+Nothing to run here (cr1#1837). Every Update, a narrow one too, builds the off-limits list with the rebuild's first part, after the save, so a saved mail rule is in it. It is the first part pulled at step 7, alone, and the first write sent at step 8, before any document that names people. An unreadable list is built held, never empty.
 
 ## 4. The claim
 
@@ -81,7 +67,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"d
 
 and send its `writes` as one `batch`, once. A second refusal is left alone: the press stays waiting and the next update saves it.
 
-When the answer carries `wall_again: true` (the save changed the mail rules, or it cannot tell what it changed), do step 3b again now, before anything below.
+`wall_again: true` in the answer needs nothing here: the list is built after the save, with the rebuild (step 3b).
 
 `next: detail` means a connector part is left, named by choice id: a confirmed send or draft (`connectors.inbox`) or a "Missed something?" search (`connectors.miss`). Only then read `cockpit-apply-detail.md` and do ITS STEP 1 AND ITS STEP 3 ONLY, with these three differences: the run's id there is step 3's `run_id` here; `status` in its `apply_repin` call is `null`; and its step 2 (the feeds) and its step 4 (`apply_finish`, the Apply light and the Apply receipt) are NEVER run from this file, because step 6 rebuilds the feeds and step 9 writes this run's receipt. Keep its `{<choice id>: <its result>}` for step 6. A step there that fails is "When a call says no" below, with that step's line.
 
@@ -109,24 +95,28 @@ Numbered from 0 to one less than the length of `parts`:
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"part": <the part's number>, "task": "update", "token": "<the token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_part"}'
 ```
 
-One part per call, never two in one call. A part must reach a file in this session's own scratch WHOLE: when the tool saved the answer to a file, that file is the part; when the answer came back in the turn, save it to a file exactly as it came. Never retype, shorten or re-compose a part, and never save one in the workspace.
+One part per call, never two in one call. A part must reach a file in this session's own scratch WHOLE: when the tool saved the answer to a file, that file is the part; when the answer of every other part came back in the turn, save it to a file exactly as it came (the list's part is below). Never retype, shorten or re-compose a part, and never save one in the workspace.
+
+**The off-limits list's part** is the part the `record` answer names as `wall_part` (the list alone, padded so the tool saves it to a file). When the tool saved it to a file, that file is the part, as above. When its answer came back in the turn instead, do NOT save it and do NOT retype it: leave it out, and run step 8 with `--wall-in-turn <wall_part>`. The list is then not published on this run, and the light and the receipt say so.
 
 ## 8. The page again, then unpack HERE
 
-The claim changed `status/update`, so read the page's versions again into the same folder, in one turn: `list` on `status` and `list` on `feed`, each with `out_dir` `<scratch>/page`. Then, in this shell:
+The claim changed `status/update`, so read the page's versions again into the same folder, in one turn: `list` on `status` and `list` on `feed`, each with `out_dir` `<scratch>/page`. Save the `list` on `feed` answer to `<scratch>/feed-list.txt` as it came (the file the tool saved it to, or the answer written out whole); never shorten, repair or rebuild it. Then, in this shell:
 
 ```bash
-python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" "<each saved part file>"
+python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" --feed-listing "<scratch>/feed-list.txt" "<each saved part file>"
 ```
 
-It takes every version it needs from those saved reads; there is nothing to pin by hand. It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE `batch`, exactly as printed; this task's light comes last. A batch refused because a document changed names that entry: another run wrote it a moment ago, so it is current; send the batch again WITHOUT that entry, once per named entry. Never drop a pin to force a write.
+The listing is how a page with no off-limits list yet is told from a read that was cut short: when they disagree, the list is not published on this run, and the light and the receipt say so.
+
+Only when the list's part came back in the turn (step 7), add `--wall-in-turn <wall_part>` to that command. It takes every version it needs from those saved reads; there is nothing to pin by hand. It checks the list against the digest its part was made with: a list that arrived cut, mixed or changed is not published, and the rest goes as usual. Keep its `wall_sent` (true, false, or absent) for step 9. It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE `batch`, exactly as printed; this task's light comes last. A batch refused because a document changed names that entry: another run wrote it a moment ago, so it is current; send the batch again WITHOUT that entry, once per named entry. Never drop a pin to force a write.
 
 **A batch not sent for any other reason means the light is written as `error`, never `done`**: that is "When a call says no" below, with one sentence naming the documents that did not land.
 
 ## 9. The receipt, then the final response
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"fired_via": "<scheduled or manual>", "run_id": "<step 3's run_id>", "token": "<the token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_finish"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"fired_via": "<scheduled or manual>", "run_id": "<step 3's run_id>", "token": "<the token>", "wall_sent": <step 8's wall_sent, or null when it had none>, "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_finish"}'
 ```
 
 The final response is the answer's `line`, one line, and nothing else. A document under the `record` answer's `failed` was not built or was too large to pull; the page keeps its old copy, and it is NOT retried in this run.

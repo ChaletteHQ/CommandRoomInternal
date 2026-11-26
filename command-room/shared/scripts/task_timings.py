@@ -46,8 +46,22 @@ closed).
 
 THE RECEIPT FIELD is `timings` (additive; nothing renamed or dropped):
 `{measured, total_s, between_steps_s, phases: {phase: {s, calls[, shared]
-[, failed_calls][, by_job]} | {not_run: true} | {writes_receipt: true}},
-measured_by}`. `total_s` runs from the run's first step to the receipt;
+[, failed_calls][, failed][, by_job]} | {not_run: true} | {writes_receipt: true}},
+measured_by, plugin_version[, gaps, largest_gaps, after_last_s[, gaps_dropped]]}`.
+`plugin_version` (cr1#1808) is the version in the `plugin.json` shipped beside
+the code that ran (the staged runtime's copy on a merged seat, the installed
+plugin's on a local one), or `unknown`; never a guess. `gaps` is, for each
+step of the run in order, `{name, before_s}`: the seconds from the previous
+step's end to this one's start (the first step's is 0), helper names and
+numbers only. `largest_gaps` names the `LARGEST_GAPS_NAMED` widest of them
+(and the wait after the last step, as `after_last`, when it is among them),
+so a reader sees where the time between steps went without the step file;
+`after_last_s` is the time from the last step's end to the receipt. With
+calls in a row the gaps and `after_last_s` add up to `between_steps_s`. With
+two calls at once (parallel calls, or a shared helper another run made in the
+same seconds) `between_steps_s` subtracts the overlap twice and reads short,
+while the gaps measure the time no call was running: the gaps are then the
+truer number. `total_s` runs from the run's first step to the receipt;
 `between_steps_s` is the time not inside a timed door call: the model's own
 turns and waits between calls, and the door's `read`, `write` and
 `append_jsonl`, which are not timed (only `run_helper` and `run_writer`
@@ -137,6 +151,7 @@ TASKS: Dict[str, Dict[str, Any]] = {
                                   ("call_prep", ("brief_writer:make_brief_from_json", "morning_brief_helpers:call_prep_config",
                                                "morning_brief_helpers:prep_opener", "morning_brief_helpers:prep_constraints",
                                                "morning_brief_helpers:thread_payloads", "morning_brief_helpers:coaching_handoff",
+                                               "morning_brief_helpers:call_prep_context",  # cr1#1808: the nine reads in one
                                                "prep_pipeline:resolve_prep_brief_path", "receipts:log_prep_receipt",
                                                "commitments_helpers:meeting_today_rows", "craft_recall:cite_rules",
                                                "craft_recall:craft_for_task", "correction_turn:handle_correction_turn",
@@ -197,16 +212,14 @@ TASKS: Dict[str, Dict[str, Any]] = {
     # code, not through the door) and closes with `update_finish`, which
     # writes its one receipt. The detail steps are the connector parts only.
     "cockpit-update": {
-        # review round 1 of #1772: the off-limits wall is published after the
-        # light's claim and before `update_claim`, so it leads with `load_config`
-        "opener": (_CH + "update_claim", None), "lead": (_CH + "load_config", _CH + "feed_wall"),
+        # review round 1 of #1772: it leads with `load_config`. cr1#1837: the
+        # off-limits list is built inside `update_build` now, not its own call
+        "opener": (_CH + "update_claim", None), "lead": (_CH + "load_config",),
         "writers": (_CH + "update_finish",),
         "closers": [(_CH + "update_finish", None)],
         "phases": [
             # no `status_doc` here: the Update's light is claimed by `update-start`, in code
             ("setup", (_CH + "load_config",)),
-            # cr1#1765: the off-limits wall, published first and again after a mail-rules save
-            ("offlimits", (_CH + "feed_wall",)),
             ("claim", (_CH + "update_claim",)),
             ("save", (_CH + "update_save", _CH + "apply_repin")),
             ("wall", (_WALL,)),
@@ -239,7 +252,7 @@ TASKS: Dict[str, Dict[str, Any]] = {
                    _CH + "feed_mail_rules", _CH + "feed_people", _CH + "feed_brief", _CH + "feed_review",
                    "friday_wrap_helpers:week_sections", _CH + "feed_week", _CH + "feed_settings",
                    _CH + "feed_stillyours", _CH + "feed_followups", _CH + "feed_pfollow",
-                   _CH + "maintenance_status", _CH + "feed_urgent")),
+                   _CH + "maintenance_status", _CH + "feed_urgent", _CH + "feed_focus", _CH + "feed_allopen")),
     ]),
     "morning-brief": {
         "opener": ("morning_brief_helpers:lateness", None), "lead": (),
@@ -263,6 +276,7 @@ TASKS: Dict[str, Dict[str, Any]] = {
             ("call_prep", ("brief_writer:make_brief_from_json", "morning_brief_helpers:call_prep_config",
                            "morning_brief_helpers:prep_opener", "morning_brief_helpers:prep_constraints",
                            "morning_brief_helpers:coaching_handoff",
+                           "morning_brief_helpers:call_prep_context",  # cr1#1808: the nine reads in one
                            "prep_pipeline:resolve_prep_brief_path", "receipts:log_prep_receipt",
                            "craft_recall:cite_rules",
                            "craft_recall:craft_for_task", "correction_turn:handle_correction_turn",
@@ -343,8 +357,48 @@ def _epoch(value: Any) -> Optional[float]:
         return None
 
 
+#: cr1#1808 (D'): a failed call's code comes from a FIXED list, never from
+#: the answer's shape (review of 5113e418e, should-fix 1). The door's own
+#: refusal reasons (workspace_access's `R_*` words and the literal reasons its
+#: refusals name; the suite proves every one is here), plus `answered_no`, the
+#: door's word for a helper that answered ok false with no reason of its own.
+DOOR_CODES = frozenset({
+    "no_workspace_on_this_host", "folder_not_attached", "refused_path",
+    "refused_runtime_cache", "refused_lock_file", "refused_append_only",
+    "refused_protected", "not_registered_jsonl", "not_in_manifest",
+    "not_allowed_helper", "not_allowed_writer", "writer_identity_required",
+    "stale_read", "timeout", "missing_parent", "not_found", "invalid_json",
+    "binary_unsupported", "helper_failed", "bad_args", "write_unverified",
+    "writer_owned", "substrate_regressed", "refused_computer_link",
+    "ledger_outside_data", "append_refused", "lock_timeout",
+    "manifest_mismatch", "manifest_unreadable", "pointer_write_failed",
+    "read_failed", "write_failed", "answered_no",
+})
+#: ...and the language's own exception type names (`KeyError`, `TimeoutError`),
+#: a closed set fixed by Python, never by what a helper answered.
+EXCEPTION_CODES = frozenset(n for n, v in vars(__import__("builtins")).items()
+                            if isinstance(v, type) and issubclass(v, BaseException))
+#: The word kept for a failure whose code is on neither list.
+OTHER_CODE = "other"
+#: How many failed calls one phase names on the receipt.
+FAILED_NAMED_MAX = 10
+
+
+def failure_code(value: Any) -> str:
+    """A failed call's code as the receipt keeps it: a word from the fixed
+    lists above (a door reason such as `helper_failed`, or an exception's type
+    name, read from the text before a first colon), `other` for anything else
+    that came back, or "" when nothing came back. Never a message, an argument,
+    content or a helper's own word, however short."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    v = raw.split(":", 1)[0].strip()
+    return v if (v in DOOR_CODES or v in EXCEPTION_CODES) else OTHER_CODE
+
+
 def append_step(workspace_root, name: str, *, started: float, elapsed_ms: int, ok: bool,
-                args: Any = None) -> None:
+                args: Any = None, code: str = "") -> None:
     """The DOOR's one write: one timing row for one call it made. `started`
     is the clock at the call's start (epoch seconds), `elapsed_ms` the
     monotonic duration. Never raises: a timing that cannot be kept is lost,
@@ -352,6 +406,9 @@ def append_step(workspace_root, name: str, *, started: float, elapsed_ms: int, o
     try:
         row: Dict[str, Any] = {"name": str(name)[:120], "at": _iso(float(started)),
                                "ms": max(0, int(elapsed_ms)), "ok": bool(ok)}
+        # cr1#1808 (D'): a failed call says why, as one code token only
+        if not ok and failure_code(code):
+            row["code"] = failure_code(code)   # a listed word, or `other`
         key_arg = KEY_ARGS.get(str(name))
         if key_arg and isinstance(args, dict) and args.get(key_arg) is not None:
             row["key"] = str(args.get(key_arg))[:80]
@@ -439,10 +496,61 @@ def _mine(spec: Dict[str, Any], row: Dict[str, Any]) -> bool:
     return row.get("key") in {spec["opener"][1]} | {c[1] for c in spec.get("closers") or []}
 
 
+#: cr1#1808: how many of a run's gaps are named on the receipt's summary.
+LARGEST_GAPS_NAMED = 3
+#: ...and how many per-step gaps one receipt carries (a longer run says how
+#: many were left off, `gaps_dropped`, so the receipt stays small).
+GAPS_MAX = 120
+#: The word for a version that cannot be read.
+VERSION_UNKNOWN = "unknown"
+#: The name the wait after the last step goes by among the largest gaps.
+AFTER_LAST = "after_last"
+
+
+def executed_version(plugin_root=None) -> str:
+    """cr1#1808: the plugin version the run EXECUTED: the `plugin.json`
+    shipped beside this module (the runtime ships it with the scripts, so on a
+    merged seat this is the staged runtime's copy, which is what ran), read
+    now, at the receipt. `unknown` when it cannot be read; never a guess, and
+    never the version a chat handed in."""
+    try:
+        base = Path(plugin_root) if plugin_root else Path(__file__).resolve().parent.parent.parent
+        payload = json.loads((base / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        version = payload.get("version") if isinstance(payload, dict) else None
+        if isinstance(version, str) and version.strip():
+            return version.strip()[:40]
+    except Exception:  # noqa: BLE001 - no file, no version
+        pass
+    return VERSION_UNKNOWN
+
+
+def _gaps(mine: List[Dict[str, Any]], now_s: float) -> Dict[str, Any]:
+    """cr1#1808: the gap before each step of the run, and the widest named.
+    Names and numbers only: a row's name, never its key, arguments or code."""
+    out: List[Dict[str, Any]] = []
+    prev_end: Optional[float] = None
+    for r in sorted(mine, key=lambda row: _epoch(row.get("at")) or 0.0):
+        start = _epoch(r.get("at"))
+        if start is None:
+            continue
+        before = 0.0 if prev_end is None else max(0.0, start - prev_end)
+        out.append({"name": str(r.get("name"))[:120], "before_s": round(before, 2)})
+        prev_end = _end(r) if prev_end is None else max(prev_end, _end(r))
+    after = round(max(0.0, now_s - prev_end), 2) if prev_end is not None else 0.0
+    ranked = sorted([[g["before_s"], i, g["name"]] for i, g in enumerate(out)] + [[after, len(out), AFTER_LAST]],
+                    key=lambda t: (-t[0], t[1]))
+    largest = [{"name": n, "before_s": b, "step": i + 1} if n != AFTER_LAST else {"name": n, "before_s": b}
+               for b, i, n in ranked[:LARGEST_GAPS_NAMED] if b > 0]
+    field: Dict[str, Any] = {"gaps": out[:GAPS_MAX], "largest_gaps": largest, "after_last_s": after}
+    if len(out) > GAPS_MAX:
+        field["gaps_dropped"] = len(out) - GAPS_MAX
+    return field
+
+
 def _not_run(spec: Dict[str, Any], why: str) -> Dict[str, Any]:
     return {"measured": False, "why": why, "total_s": None, "between_steps_s": None,
             "phases": {phase: {"not_run": True} for phase, _ in spec["phases"]},
-            "measured_by": MEASURED_BY}
+            "measured_by": MEASURED_BY, "plugin_version": executed_version()}
 
 
 def _last_receipt(workspace_root, task_id: str, now_s: float) -> Optional[float]:
@@ -659,6 +767,10 @@ def timings_for(workspace_root, task_id: str, *, now: Any = None,
                 entry["by_job"] = by
             if any(r.get("ok") is False for r in hits):
                 entry["failed_calls"] = sum(1 for r in hits if r.get("ok") is False)
+                # cr1#1808 (D'): which helper failed and its code, names and
+                # codes only, so the next receipt says where the retries go
+                entry["failed"] = [{"name": str(r.get("name")), "code": failure_code(r.get("code")) or "unknown"}
+                                   for r in hits if r.get("ok") is False][:FAILED_NAMED_MAX]
             if set(pnames) & others:
                 entry["shared"] = True
             phases[phase] = entry
@@ -667,8 +779,10 @@ def timings_for(workspace_root, task_id: str, *, now: Any = None,
             out = _not_run(spec, "window_too_long")
             out["phases"] = phases
             return out
-        return {"measured": True, "total_s": round(total, 2),
-                "between_steps_s": round(max(0.0, total - attributed / 1000.0), 2),
-                "phases": phases, "measured_by": MEASURED_BY}
+        out = {"measured": True, "total_s": round(total, 2),
+               "between_steps_s": round(max(0.0, total - attributed / 1000.0), 2),
+               "phases": phases, "measured_by": MEASURED_BY, "plugin_version": executed_version()}
+        out.update(_gaps(mine, now_s))
+        return out
     except Exception:  # noqa: BLE001 - a receipt is never refused for its timings
         return _not_run(spec, "unreadable")

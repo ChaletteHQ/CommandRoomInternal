@@ -219,6 +219,22 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 
 `set` the answer on `feed/urgent` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
+**Then Focus (cr1#1785).** The list the owner picks: what is in it, in the owner's order, from its own small store, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_focus"}'
+```
+
+`set` the answer on `feed/focus` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
+**Then All open (cr1#1785).** Every open item, lean, so To do's search finds one past the plate's cap, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_allopen"}'
+```
+
+`set` the answer on `feed/allopen` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
 **Then the Maintenance record (cr1#666).** When the Maintenance chat last finished, each job's last completion and how many hours it is behind, one read beside the data:
 
 ```bash
