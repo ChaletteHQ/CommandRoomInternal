@@ -109,13 +109,13 @@ PROJECT_DROP_CAP = 200
 UNDO_TOKEN_CAP = PROJECT_DROP_CAP
 
 UNREADABLE_LINE = ("The review could not be checked just now (your book, your owner or who is off limits "
-                   "could not be read), so nothing was written. Press Go, then try again.")
+                   "could not be read), so nothing was written.")
 NOT_LISTED_LINE = "That one is not on the review any more, so it was left as it is; nothing was written."
 HELD_LINE = "That one is personal or about someone you put off limits, so it is not changed from here; nothing was written."
 NO_PROJECT_LINE = "Nothing open on that project can be dropped from here (it is not archived, or nothing is open on it); nothing was written."
 TOO_MANY_LINE = "That project has more than {cap} open items, so nothing was dropped. Say it in a chat."
-BAD_VERB_LINE = "That press is not one the review takes; nothing was written."
-BAD_UNDO_LINE = "That Undo does not name a press of this review; nothing was written."
+BAD_VERB_LINE = "That choice is not one the review takes; nothing was written."
+BAD_UNDO_LINE = "That Undo does not name a choice made on this review; nothing was written."
 KEEP_LINE = "Kept. It stays on your list and leaves the review."
 DONE_LINE = "Marked done."
 DROP_LINE = "Dropped."
@@ -129,21 +129,23 @@ PROJECT_FAILED_LINE = " {n} could not be dropped ({why})."
 WHY_SUBITEMS = "it has open sub-items"
 WHY_NOT_WRITTEN = "it could not be written"
 #: A row the Hub's writer gave no answer for, and whose close is not on the log.
-NOT_WRITTEN_LINE = "That one could not be written just now, so it was left as it is. Press Apply again."
+#: No line said to the owner tells them to press anything (as hub_meeting, part D's
+#: review, point 2): each says plainly what did not land.
+NOT_WRITTEN_LINE = "That one could not be written just now, so it was left as it is."
 #: Fix round 4 (NOTE 2): the Hub's writer gave no answer and the log could not
 #: be read to see what landed, so the press can be neither claimed nor denied.
-UNCONFIRMED_LINE = "That one could not be confirmed just now; look at the item before you press again."
-PROJECT_UNCONFIRMED_LINE = "The drop on {name} could not be confirmed just now; look at its items before you press again."
+UNCONFIRMED_LINE = "That one could not be confirmed just now; the item shows whether it changed."
+PROJECT_UNCONFIRMED_LINE = "The drop on {name} could not be confirmed just now; its items show which changed."
 PROJECT_SOME_UNCONFIRMED_LINE = " {n} more could not be confirmed just now."
 #: The feed answers this when the wall cannot be read when it is read.
 FEED_UNREADABLE = "unreadable"
-UNDO_FAILED_LINE = "That could not be put back just now, so it was left as it is. Press Apply again."
+UNDO_FAILED_LINE = "That could not be put back just now, so it was left as it is."
 NO_UNDO_LINE = " Its Undo is not available here; reopen it from its own row."
 PROJECT_NO_UNDO_LINE = " {n} of them have no Undo here; reopen those from their own rows."
 UNDO_LINE = "Put back as it was."
 UNDO_SOME_LINE = "Put back {n} of {total}; the rest were already put back or changed since, so they were left as they are."
 UNDO_ALREADY_LINE = "That was already undone; nothing was written."
-UNDO_MOVED_LINE = "That one was changed again after the press this Undo is for, so it was left as it is; nothing was written."
+UNDO_MOVED_LINE = "That one was changed again after the choice this Undo is for, so it was left as it is; nothing was written."
 UNDO_HELD_LINE = ("That one is personal or about someone you put off limits now, so it is not put back from here; "
                   "nothing was written.")
 

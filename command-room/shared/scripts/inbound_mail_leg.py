@@ -113,6 +113,31 @@ NO_ACCOUNT_REASON = "no mail account is set to file into the business book"
 ACCOUNTS_UNREADABLE_REASON = ("the workspace's mail accounts could not be "
                               "read, so no account can be shown to be in "
                               "business scope")
+#: cr1#1831 (owner rulings 142a, 142b): the off-limits list cannot be read,
+#: so this leg reads no new mail. The plan says so as its skip reason (the
+#: fire fetches nothing) and the writer lands a HELD receipt whatever it is
+#: handed: status `blocked`, the state every receipt reader already treats as
+#: "read nothing" (the window stays put and the job stays owed), with
+#: `held_reason` saying why. The first pass after the list is readable reads
+#: the held span, as far back as the 30-day window reaches.
+OFF_LIMITS_HELD_REASON = ("your off-limits list could not be read, so no new "
+                          "mail was read")
+HELD_REASON_FIELD = "held_reason"
+HELD_OFF_LIMITS = "off_limits_unreadable"
+HELD_LINE = ("New mail was not read this time because your off-limits list "
+             "could not be read, so nothing was opened or closed from it. Once "
+             "the list is readable again, the next pass reads the mail held "
+             "back, up to 30 days of it.")
+
+
+def _off_limits_held(workspace_root) -> bool:
+    """True when the off-limits list cannot be read (cr1#1830), including a
+    held list Maintenance set aside (cr1#1831). Fails closed."""
+    try:
+        import account_scope_gate as _asg
+        return not _asg.off_limits_readable(workspace_root)
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _effective_fired_via(explicit):
@@ -503,6 +528,9 @@ def plan_inbound_mail(workspace_root, now=None) -> dict:
                    else (None if unreadable
                          else (NO_ACCOUNT_REASON if not accounts else None)))
     open_skip, close_skip = _skip_of(reads["open"]), _skip_of(reads["close"])
+    if not skip_reason and provider and _off_limits_held(workspace_root):
+        # cr1#1831: fetch nothing; WRITE lands the held receipt.
+        skip_reason = OFF_LIMITS_HELD_REASON
     if not skip_reason and open_skip and close_skip:
         # Both halves turned away: fetch nothing, the writer lands the skip.
         skip_reason = "; ".join(dict.fromkeys((open_skip, close_skip)))
@@ -705,6 +733,8 @@ def _summary(r: dict) -> str:
     """One plain line, no field names, never claiming coverage it lacks."""
     if r.get("status") == "skipped":
         return ""
+    if r.get(HELD_REASON_FIELD) == HELD_OFF_LIMITS:
+        return HELD_LINE
     if r.get("status") == "blocked":
         return ("New mail was not read this time, so nothing was opened or "
                 "closed from it; the same mail is read on the next pass.")
@@ -890,6 +920,16 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
                             "n_closed": 0, "n_proposed": 0,
                             "open_skip_reason": open_skip,
                             "close_skip_reason": close_skip}
+
+    if provider and _off_limits_held(workspace_root):
+        # cr1#1831: held, whatever was fetched. Nothing is opened or closed,
+        # and a blocked receipt does not move the window.
+        receipt = dict(base, status="blocked", blocked_reason=OFF_LIMITS_HELD_REASON)
+        receipt[HELD_REASON_FIELD] = HELD_OFF_LIMITS
+        receipt[WINDOW_INCOMPLETE_FIELD] = _incomplete_marker(window)
+        receipt["summary"] = _summary(receipt)
+        _log(workspace_root, receipt, fired_via=fired_via)
+        return receipt
 
     skip = None
     if not provider:
@@ -1107,7 +1147,8 @@ def captured_keys_since(workspace_root, *, now=None,
 __all__ = [
     "JOB_ID", "SOURCE_SKILL", "RECEIPT_TYPE", "YIELD_HOURS",
     "MESSAGE_FIELDS", "CAPTURE_FIELDS", "NO_MAIL_REASON", "NO_ACCOUNT_REASON",
-    "ACCOUNTS_UNREADABLE_REASON",
+    "ACCOUNTS_UNREADABLE_REASON", "OFF_LIMITS_HELD_REASON", "HELD_REASON_FIELD",
+    "HELD_OFF_LIMITS", "HELD_LINE",
     "fetch_accounts", "connector_reads_for", "drop_excluded",
     "plan_inbound_mail", "inbound_messages",
     "capture_items", "run_inbound_mail", "validate_inbound_mail_ran",

@@ -9,7 +9,7 @@
 - **`<WS>`** is the `ws` field of the device's discover answer (the bootloader's Step 1.3). **`<RT>`** is the runtime the bootloader resolved. Every device call below is rendered and run the way the bootloader renders its own.
 - **The run's id** is the `run_id` that step 3 answers. Never this session's id.
 - **No time is typed.** No call below passes a time: each helper and command reads its own clock.
-- **The page's documents stay in files.** Every read below saves them with `out_dir` in this session's own scratch, and only code reads those files. Never type a page document, a version or a choice into a call.
+- **The page's documents stay in files.** Every read below saves them with `out_dir` in this session's own scratch, and each read's answer, which lists the versions, is saved as it came beside them; only code reads those files. Never type a page document, a version or a choice into a call.
 - **Every answer passes through unchanged.** `batches` go to the page exactly as printed; parts are saved whole.
 - **The run mode** is `scheduled` unless a human message exists in this session, then `manual`; when uncertain, `manual`.
 
@@ -23,7 +23,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 
 ## 2. The page, read into files: three reads in one turn
 
-Each with `out_dir` set to the same new folder in this session's own scratch, `<scratch>/page`: `list` on `status`; `query` on `choices` with `where: [["applied", "==", true]]` and `limit: 1000`; `list` on `feed`. Only the file names come back, which is all this run needs.
+Each with `out_dir` set to the same new folder in this session's own scratch, `<scratch>/page`: `list` on `status`; `query` on `choices` with `where: [["applied", "==", true]]` and `limit: 1000`; `list` on `feed`. Each answer lists the documents it saved, each with its version: save each answer, exactly as it came, as its own file directly in `<scratch>/page` (a new name each time, for example `answer-1.txt`). Never retype an answer and never put a version into a call yourself; the code reads them there. An empty collection answers one line (`No documents matched in collection "<name>".`): save that line as its answer too, since it is the proof that nothing is there, and without it nothing new is created.
 
 ## 3. The start, HERE in this shell
 
@@ -61,13 +61,13 @@ One part per call, never two in one call. A part must reach a file in this sessi
 
 ## 6. The page again, then unpack HERE
 
-The claim changed `status/refresh`, so read the page's versions again into the same folder, in one turn: `list` on `status` and `list` on `feed`, each with `out_dir` `<scratch>/page`. Then, in this shell:
+The claim changed `status/refresh`, so read the page's versions again into the same folder, in one turn: `list` on `status` and `list` on `feed`, each with `out_dir` `<scratch>/page`, each answer saved as at step 2. Then, in this shell: An empty collection answers one line (`No documents matched in collection "<name>".`): save that line as its answer too, since it is the proof that nothing is there, and without it nothing new is created.
 
 ```bash
 python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" "<each saved part file>"
 ```
 
-It takes every version it needs from those saved reads; there is nothing to pin by hand. It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE `batch`, exactly as printed; this task's light comes last. A batch refused because a document changed names that entry: another run wrote it a moment ago, so it is current; send the batch again WITHOUT that entry, once per named entry. Never drop a pin to force a write.
+It takes every version it needs from those saved answers; there is nothing to pin by hand. It answers `ok: false` with `unversioned` or `unread_answers` when a document the page holds has no version in the saved answers: send nothing, pulling a part again will not help; go to "When a call says no" with its `line`. An answer with `note` (cr1#1763: the page's read ended with a line this version does not know, so a document it did not list was not created; the rest is in the batches) is sent as any other, and its `note` ends this run's final response, word for word, after the line it would have said. It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE `batch`, exactly as printed; this task's light comes last. A batch refused because a document changed names that entry: another run wrote it a moment ago, so it is current; send the batch again WITHOUT that entry, once per named entry. Never drop a pin to force a write.
 
 **A batch not sent for any other reason means the light is written as `error`, never `done`** (the light is in the last batch, so a refused batch never leaves a `done` over feeds that did not land, and a refused last batch never leaves the light claimed and running). Write it through the `status_doc` call in "When a call says no", with one sentence naming the documents that did not land, `run_id` step 3's run id, and `set` it on `status/refresh` pinned to the version a `get` on `status/refresh` shows now. The final response is that sentence.
 
@@ -77,7 +77,7 @@ It takes every version it needs from those saved reads; there is nothing to pin 
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"counts": {"refresh": <the answer's counts>}, "fired_via": "<scheduled or manual>", "legs": ["refresh"], "task_id": "cockpit-refresh", "workspace_root": "<WS>"}, "name": "cockpit_helpers:log_run_receipt"}'
 ```
 
-The final response is the answer's `line`, one line, and nothing else. A document under `failed` was not built or was too large to pull; the page keeps its old copy, and it is NOT retried in this run.
+The final response is the answer's `line` (then the unpack's note, if any), and nothing else. A document under `failed` was not built or was too large to pull; the page keeps its old copy, and it is NOT retried in this run.
 
 ## When a call says no
 

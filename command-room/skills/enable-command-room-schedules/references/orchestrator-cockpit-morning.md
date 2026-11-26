@@ -21,7 +21,7 @@ Read `cockpit-shared.md` in this folder and do its shared step 0, once: the work
 
 ## 1. The start, HERE in this shell
 
-`list` on `status` with `out_dir` set to a new folder in this session's own scratch, `<scratch>/page`. Then:
+`list` on `status` with `out_dir` set to a new folder in this session's own scratch, `<scratch>/page`. Its answer lists the documents it saved, each with its version: save that answer, exactly as it came, as its own file directly in that same folder (for example `answer-1.txt`). Never retype it and never put a version into a call yourself; the code reads it there. Then: An empty collection answers one line (`No documents matched in collection "<name>".`): save that line as its answer too, since it is the proof that nothing is there, and without it nothing new is created.
 
 ```bash
 python3 "$RT/shared/scripts/cockpit_helpers.py" morning-start --reads "<scratch>/page" --out "<scratch>/start" --tz "<tz>"
@@ -31,7 +31,7 @@ It prints one JSON line. `stop: true`: another morning run holds the light, noth
 
 ## 2. Each part, in order
 
-For each part in `parts`, first say it has started, so the light shows the run is alive: `get` on `status/morning` with `out_dir` `<scratch>/begin-<part>`, then:
+For each part in `parts`, first say it has started, so the light shows the run is alive: `get` on `status/morning` with `out_dir` `<scratch>/begin-<part>` (its answer saved there as at step 1), then:
 
 ```bash
 python3 "$RT/shared/scripts/cockpit_helpers.py" morning-mark --reads "<scratch>/begin-<part>" --out "<scratch>/begin-<part>/out" --run-id "<step 1's run_id>" --part "<part>" --state "started" --tz "<tz>"
@@ -44,11 +44,11 @@ Send its `batches[0]` as ONE `batch`. `held: false`: STOP, as above. Then do the
 - **`update`**: `orchestrator-cockpit-update.md`, from its step 2 to its last step, exactly as written (its step 1 is this file's step 0), except that its step 3's `update-start` carries `--whole`: the Morning's update always builds everything, even when a press on the page asked for less. It publishes the off-limits list at its step 3b, after that claim and before any heavy part. When that file stops on its own busy line (another update is running now), keep that line as the part's line, as for any part: the mark reads it. Behind an update that builds everything, the mark counts the part as done, because that update builds the page (ruling 129). Behind one that saves only the latest changes, the mark counts it as not done, and the next morning fire runs it.
 - **`brief`**: `orchestrator-morning-brief.md`, from its first step to its last, exactly as written, except that its post is not said yet: hold it, word for word, for the final response at step 3. Its file's STOP ends the part, never this run: the brief is marked, and the finish is sent, before anything is posted.
 
-**A long part marks as it goes.** The 35-minute rule counts from the light's last mark, so a part that runs long says it is still alive: in `prep`, after each meeting's brief is written, and in `inbox`, after each batch of mail is sorted, run the `started` mark above again for that part (`get` into `<scratch>/begin-<part>-<n>`, `<n>` counting up, then the same command) and send its `batches[0]` as ONE `batch`. `held: false` there: STOP, as above.
+**A long part marks as it goes.** The 35-minute rule counts from the light's last mark, so a part that runs long says it is still alive: in `prep`, after each meeting's brief is written, and in `inbox`, after each batch of mail is sorted, run the `started` mark above again for that part (`get` into `<scratch>/begin-<part>-<n>`, `<n>` counting up, its answer saved there as at step 1, then the same command) and send its `batches[0]` as ONE `batch`. `held: false` there: STOP, as above.
 
 Each part's file ends with a final line and STOP: here that line is kept as the part's line, and its STOP ends the part, not this run. Then record the part:
 
-`get` on `status/morning` with `out_dir` `<scratch>/mark-<part>`, then:
+`get` on `status/morning` with `out_dir` `<scratch>/mark-<part>` (its answer saved there as at step 1), then:
 
 ```bash
 python3 "$RT/shared/scripts/cockpit_helpers.py" morning-mark --reads "<scratch>/mark-<part>" --out "<scratch>/mark-<part>/out" --run-id "<step 1's run_id>" --part "<part>" --state "<done, or error when the part stopped before its last step>" --line "<the part's line>" --tz "<tz>"
@@ -58,7 +58,7 @@ Send its `batches[0]` as ONE `batch`. `held: false` (another run holds the light
 
 ## 3. The finish, then the final response
 
-`list` on `status` with `out_dir` `<scratch>/finish` (the update's light comes with the morning's: a part handed to another update counts only while that update has not failed), then:
+`list` on `status` with `out_dir` `<scratch>/finish`, its answer saved there as at step 1 (the update's light comes with the morning's: a part handed to another update counts only while that update has not failed), then: An empty collection answers one line (`No documents matched in collection "<name>".`): save that line as its answer too, since it is the proof that nothing is there, and without it nothing new is created.
 
 ```bash
 python3 "$RT/shared/scripts/cockpit_helpers.py" morning-finish --reads "<scratch>/finish" --out "<scratch>/finish/out" --run-id "<step 1's run_id>" --tz "<tz>"

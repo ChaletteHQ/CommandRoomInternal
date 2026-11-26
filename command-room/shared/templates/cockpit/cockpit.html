@@ -645,6 +645,16 @@
   .hhtodos .row.one .title { display: flex; align-items: baseline; min-width: 0; white-space: nowrap; }
   .hhtodos .row.one .title .tt { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .hhtodos .row.one .title .when, .hhtodos .row.one .title .tag { flex: none; }
+  /* cr1#1854: a To do row's grey lines (who, and the client or project) go under
+     the title when the row has no room beside it, and one still wider than the
+     row ends in an ellipsis inside it: never past the screen's edge (it ran
+     past at 375 px, and in the narrow To do column from 741 to about 1150 px).
+     A row whose line fits stays one line, as before. Its whole text is its
+     hover. */
+  .tside .row.one.fxrow .title, .hhtodos .row.one.fxrow .title { flex-wrap: wrap; }
+  /* the title stays on the check's line: never wider than the line less the check */
+  .tside .row.one.fxrow .title .tt, .hhtodos .row.one.fxrow .title .tt { max-width: calc(100% - 1.5em); }
+  .tside .row.one.fxrow .title .sub, .hhtodos .row.one.fxrow .title .sub { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hhtodos .row.one .acts { flex-wrap: nowrap; }
   .hhtodos .row.one .when { color: var(--ink-soft); font-weight: 400; }
   .hhtodos .row.one .slot:empty { display: none; }
@@ -907,6 +917,20 @@
   .pmrow { display: flex; gap: 9px; padding: 6px 0; font-size: 13.5px; line-height: 1.35; }
   .pmrow .tm { color: var(--ink-soft); font-size: 12.5px; width: 62px; flex: none; }
   .pmrow .tt { flex: 1; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+  /* cr1#1788: the Prep page (theme variables only) */
+  .pxtop { margin-bottom: 6px; }
+  .pxsrc { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+  .pxagenda { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 8px; }
+  .pxempty, .pxline { color: var(--ink-soft); font-size: 13px; padding: 4px 0; overflow-wrap: anywhere; }
+  .pxform { display: grid; gap: 6px; margin: 6px 0 10px; }
+  .pxform textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px; resize: vertical; }
+  .pxbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pxstate { margin: 4px 0; display: flex; gap: 6px; flex-wrap: wrap; }
+  .pxadd { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+  .pxadd input { flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 8px; }
+  .pxx { border: 0; background: none; color: var(--ink-soft); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px; }
+  .pxx:hover, .pxx:focus-visible { color: var(--ink); }
+  .pxflag { font-size: 11.5px; color: var(--need-text); border: 1px solid var(--line); border-radius: var(--pill); padding: 0 6px; white-space: nowrap; }
   /* cr1#1668: a past meeting's row is one press into its wrap-up */
   button.pmrow.pmbtn { width: 100%; text-align: left; background: none; border: 0; border-radius: var(--radius); color: inherit; font: inherit; cursor: pointer; }
   button.pmrow.pmbtn:hover { background: var(--surface); }
@@ -1571,7 +1595,9 @@
   var LIVE_NOT_SET_LINE = "This list shows what the last Inbox run landed. New mail between runs is not listed for this seat's mail service.";
   // cr1#1765: what is missing, said plainly (never a silent nothing)
   var LIVE_NO_FEED_LINE = "Live mail starts once your off-limits list loads.";
-  var TL_ASOF_LINE = "Live from your calendar, as of ", TL_NO_WALL_LINE = "Live calendar starts once your off-limits list loads.";
+  var TL_ASOF_LINE = "Live from {server}, as of ", TL_NO_WALL_LINE = "Live calendar starts once your off-limits list loads.";
+  var TL_NOJOIN_LINE = "Today shows your calendar as of its last update: the live read from {server} did not match any of its meetings.";
+  var TL_ACCOUNT_LINE = "Today shows your calendar as of its last update: {server} answered for an account that is not one of yours for business. Confirm the calendar again in Settings, or say \"update my hub\".";
   var TL_ALLOW_LINE = "This page is not allowed to read your calendar from {server} yet. Press Allow calendar and allow it when the page asks. Until then Today shows your calendar as of its last update.";
   var LIVE_NO_ACCOUNT_LINE = "One of your mailboxes is personal, and {server} cannot be told which mailbox to list, so new mail is not listed here between Inbox runs.";
   var LIVE_NO_MCP_LINE = "This view cannot reach your connectors, so the list shows what the last Inbox run landed.";
@@ -4071,7 +4097,7 @@
   }
   function fxTags(r) {
     return (r.late ? '<span class="tag err late">Late</span>' : r.due_today ? '<span class="tag due">Due today</span>' : r.due ? '<span class="tag">' + esc("due " + fmtDate(r.due)) + "</span>" : "")
-      + (r.who ? '<span class="sub">' + esc(r.who) + "</span>" : "") + (r.where ? '<span class="sub">' + esc(r.where) + "</span>" : "");
+      + (r.who ? '<span class="sub" title="' + esc(r.who) + '">' + esc(r.who) + "</span>" : "") + (r.where ? '<span class="sub" title="' + esc(r.where) + '">' + esc(r.where) + "</span>" : "");
   }
   // A row's source line: its own, else the one Focus or the plate holds for the
   // same item; `undefined` when no list on the page carries one for it.
@@ -6588,7 +6614,7 @@
     var o = toCopy(m);
     // cr1#1784 part B: "A meeting" wherever a title is read, never "Meeting"
     o.title = TO_WORDS; o.title_whole = false; o.people = []; o.prep = null; o.prep_text = null; o.prep_parts = null; o.place = null;
-    ["note_to", "live_who", "link", "attendees"].forEach(function (k) { delete o[k]; });
+    ["note_to", "live_who", "link", "attendees", "invite_text", "prepx_moved", "prepx_unplaced", "prepx_held"].forEach(function (k) { delete o[k]; });   // cr1#1788: the Prep page's fields too
     return o;
   }
   function toAnyOff(t) {
@@ -6657,7 +6683,7 @@
   function toTitleWalled(title) {
     var t = String(title == null ? "" : title); if (!t.trim()) return false;
     var w = typeof liveWall === "function" ? liveWall() : null; if (!w || !w.ok) return true;
-    var names = toWords(t), addrs = (t.match(/[^\s<>()"',;:]+@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g) || []).map(function (a) { return a.replace(/[.]+$/, "").toLowerCase(); });
+    var names = toWords(t), addrs = (t.match(/[^\s<>()"',;:]+@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g) || []).map(function (a) { return a.replace(/[.?!]+$/, "").toLowerCase(); });
     var all = names.concat(addrs);
     if (all.some(function (v) { return !HASHES[normOf(v)]; })) { toHashThen(all); return true; }
     // a name with marks on file (an initial, "Jr.", brackets, a curly apostrophe, a long dash) is found by its word form (cr1#1845)
@@ -10117,6 +10143,7 @@
   }
   function renderMeetView() {
     var box = $("meetview"), mid = $("todaymid"), list = $("meetings"); if (!box || !mid || !list) return;
+    if (typeof pxDropWalled === "function") pxDropWalled();   // cr1#1788
     var at = meetIndex();
     // cr1#1833: a stored key that names a walled meeting opens nothing, and says so
     if (S.meetOpen && typeof toHeldKey === "function" && toHeldKey(S.meetOpen)) { S.meetOpen = null; at = -1; if (typeof toast === "function") toast(TO_HELD_LINE); }
@@ -10131,7 +10158,7 @@
     if (m.prep_parts) for (var q = 0; q < kids.length; q++) if (kids[q].classList.contains("prepbox")) kids[q].hidden = true;
     renderMeetLive(m);
     var when = m.all_day ? "All day" : fmtWhen(m.start) + (m.end ? " to " + fmtTime(m.end) : "");
-    $("meethead").innerHTML = '<div class="mt1">' + (at === SEQ.endedAt ? "Just ended: " : "") + esc(showTitle(m.title, { kind: "meeting" })) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + calendarTag(m) + '</div><div class="mwhen">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + (typeof tlWord === "function" && m.live ? " · " + esc(tlMovedLine(m) || tlWord(m)) : "") + meetingWith(m) + "</div>";
+    $("meethead").innerHTML = '<div class="mt1">' + (at === SEQ.endedAt ? "Just ended: " : "") + esc(showTitle(m.title, { kind: "meeting" })) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + calendarTag(m) + '</div><div class="mwhen">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + (typeof tlWord === "function" && m.live ? " · " + esc(tlMovedLine(m) || tlWord(m)) : "") + (typeof pxJoin === "function" ? pxJoin(m) : "") + meetingWith(m) + "</div>";
     // cr1#1658 change 8: To-do, Book a meeting and Remind me on the meeting
     var mm = $("meetmake"); if (mm) mm.innerHTML = meetMake(m);
     // cr1#1632 slice 2: Attached, drawn last so slice 1's place is filled after it is drawn
@@ -10393,6 +10420,327 @@
       ev.preventDefault(); var f = t.querySelector("input[data-attfile]"); if (f && f.click) f.click();
     }
   });
+  // ---- the Prep page (cr1#1788, Hub v6.12 slice 5; prefix px) ----
+  // Laid over the live prep page (cr1#1632): the agenda / purpose with its
+  // source, the Goal ("Walk out with"), Background (closed), and the call
+  // guide's adds and removes. An edit is a `prepedit` press the next Update
+  // writes to the edits store (`hub_prep_edit`); what is saved comes back on
+  // `feed/prepx`, keyed by the occurrence (`<jk>|<start>`), laid over the
+  // rebuilt prep. A remove names the item by the id the builder gives it
+  // (`prep_parts.guide_ids`); the page never hashes words. Opening the page
+  // starts no work and writes nothing. A walled title (`title_off`, 141n) and
+  // a personal meeting get none of this. An edits file that could not be read
+  // (`feed/prepx` ok false; 141w, 141y) turns every edit control off and says
+  // so in its own words; the page never offers to repair it (cr1#1847).
+  // Not here (decision 146g): the quick prep hooks in as `pxQuick(key)` once
+  // cr1#1812's pwNote is on main; Enrich with research as one button beside
+  // Edit once cr1#1801's mxStart and mxWork are; Insights stays hidden until
+  // a builder for it exists.
+  var PX_KIND = "prepedit", PX_TEXT_CAP = 1200, PX_ITEM_CAP = 300;
+  var PX_NO_AGENDA = "No agenda was set for this call.", PX_NO_BACKGROUND = "Nothing on file yet.";
+  var PX_OFF_LINE = "Edits on the Prep page are off until your prep edits file can be read again.";
+  var PX_HELD_LINE = "An edit made for this meeting's earlier time is not shown: its words name someone who cannot be named here.";
+  var PX_UNPLACED_LINE = "Edits made for another time of this meeting are kept with that time.";
+  var PX_KEY_RE = /^[0-9a-f]{32}$/;
+  S.pxForm = {}; S.pxNew = {}; S.pxBack = {}; S.pxBusy = {};
+  function pxOn(m) {
+    var off = typeof toOff === "function" ? toOff(m) : !!(m && m.title_off);
+    return !!(m && !off && m.calendar !== "personal" && m.personal !== true && !m.all_day && PX_KEY_RE.test(String(m.jk || "")) && m.start);
+  }
+  // A meeting the live read moved (cr1#1758) keeps its edits under the start the feed built it at.
+  function pxStart(m) { return m.live === "moved" && m.live_from && m.live_from.start ? String(m.live_from.start) : String(m.start); }
+  function pxOcc(m) { return String(m.jk) + "|" + pxStart(m); }
+  // Edits are offered only once feed/prepx has arrived and can be read (review of 8ed2ca0cb).
+  function pxReady() { return !!pxDoc() && !pxShut(); }
+  function pxHeldKey(m) { return "px." + hkey(pxOcc(m)) + ":agenda"; }
+  function pxDoc() { return S.prepx && typeof S.prepx === "object" ? S.prepx : null; }
+  // The edits file could not be read: every edit control is off (141y).
+  function pxShut() { var d = pxDoc(); return !!d && d.ok === false; }
+  function pxSaved(m) {
+    var d = pxDoc(), all = d && d.meetings && typeof d.meetings === "object" ? d.meetings : null, own = all ? all[pxOcc(m)] : null;
+    if (own && typeof own === "object") return own;
+    var mv = m.prepx_moved;
+    return mv && typeof mv === "object" && mv.edit && typeof mv.edit === "object" ? mv.edit : null;
+  }
+  // This occurrence's presses the edits feed does not hold yet: waiting, or
+  // written after the feed was built. Oldest first.
+  function pxPending(m) {
+    var occ = pxOcc(m), d = pxDoc(), gen = String((d && d.generated_at) || "");
+    return (S.choices || []).filter(function (c) {
+      if (c.kind !== PX_KIND || String(c.n) !== occ) return false;
+      if (!c.applied) return true;
+      return !!(c.result && c.result.outcome === "applied" && String(c.applied_at || "") > gen);
+    }).sort(function (a, b) { return String(a.created_at || "") < String(b.created_at || "") ? -1 : 1; });
+  }
+  // What the owner has made of this occurrence: saved, then pressed since.
+  function pxEdits(m) {
+    var s = pxSaved(m) || {}, e = { agenda: String(s.agenda || ""), goal: String(s.goal || ""), adds: [], removed: {}, waiting: 0 };
+    (Array.isArray(s.adds) ? s.adds : []).forEach(function (a) {
+      if (a && a.id && (a.kind === "topic" || a.kind === "question") && a.text) e.adds.push({ id: String(a.id), kind: a.kind, text: String(a.text), press: "" });
+    });
+    (Array.isArray(s.removed) ? s.removed : []).forEach(function (id) { e.removed[String(id)] = true; });
+    var ps = pxPending(m), backed = {};
+    ps.forEach(function (c) { if (c.action === "undo" && c.back_of) backed[String(c.back_of)] = true; });
+    ps.forEach(function (c) {
+      if (c.action === "undo" || backed[String(c.id)]) return;
+      if (!c.applied) e.waiting += 1;
+      if (c.action === "agenda" || c.action === "goal") e[c.action] = String(c.text || "");
+      else if (c.action === "add" && c.text && (c.guide_kind === "topic" || c.guide_kind === "question")) e.adds.push({ id: "", kind: c.guide_kind, text: String(c.text), press: c.applied ? "" : String(c.id) });
+      else if (c.action === "remove" && c.item_id) e.removed[String(c.item_id)] = true;
+    });
+    return e;
+  }
+  // The brief's parts with the owner's edits laid over: removed items out,
+  // added ones in, the Goal for the walk-out line. With no edits the lists
+  // are the brief's own, in its order.
+  // `screened`: leave out adds whose press is still waiting (the meeting's save
+  // carries only what the writer has screened; review of 8ed2ca0cb, MUST 1).
+  function pxParts(m, screened) {
+    var P = m && m.prep_parts;
+    if (!P || typeof P !== "object" || !pxOn(m)) return P;
+    var e = pxEdits(m), ids = P.guide_ids && typeof P.guide_ids === "object" ? P.guide_ids : {}, o = {}, k;
+    for (k in P) if (Object.prototype.hasOwnProperty.call(P, k)) o[k] = P[k];
+    o.guide_ids = {}; o.guide_press = {};
+    [["ask", "question"], ["cover", "topic"]].forEach(function (pk) {
+      var part = pk[0], kind = pk[1], list = [], gid = [], press = [], own = Array.isArray(ids[part]) ? ids[part] : [];
+      (Array.isArray(P[part]) ? P[part] : []).forEach(function (x, i) {
+        var id = typeof own[i] === "string" ? own[i] : "";
+        if (id && e.removed[id]) return;
+        list.push(x); gid.push(id); press.push("");
+      });
+      e.adds.forEach(function (a) {
+        if (a.kind !== kind || (a.id && e.removed[a.id]) || list.indexOf(a.text) >= 0) return;
+        if (screened && a.press) return;
+        list.push(a.text); gid.push(a.id); press.push(a.press);
+      });
+      o[part] = list; o.guide_ids[part] = gid; o.guide_press[part] = press;
+    });
+    if (e.goal) o.walk = e.goal;
+    return o;
+  }
+  function pxLines(m) {
+    var out = [], d = pxDoc(), t = S.today || {};
+    if (d && Array.isArray(d.lines)) d.lines.forEach(function (l) { if (typeof l === "string" && l) out.push(l); });
+    if (typeof t.prepx_line === "string" && t.prepx_line) out.push(t.prepx_line);
+    if (Array.isArray(t.size_lines)) t.size_lines.forEach(function (l) { if (typeof l === "string" && l) out.push(l); });
+    if (m.prepx_held) out.push(PX_HELD_LINE);
+    if (m.prepx_unplaced) out.push(PX_UNPLACED_LINE);
+    if (pxShut() && !out.length) out.push(PX_OFF_LINE);
+    return out.map(function (l) { return '<div class="pxline" role="status">' + esc(l) + "</div>"; }).join("");
+  }
+  function pxEditing(m) { return pxReady() && !!S.pxForm[pxOcc(m)]; }
+  function pxStartForm(m, held) {
+    var e = pxEdits(m), inv = typeof m.invite_text === "string" ? m.invite_text : "", P = m.prep_parts || {};
+    var a0 = e.agenda || inv, g0 = e.goal || String(P.walk || "");
+    // a restore compares with the values the boxes started from, kept with them, so a restart never files text the owner did not touch
+    if (held && typeof held.a0 === "string") a0 = held.a0;
+    if (held && typeof held.g0 === "string") g0 = held.g0;
+    S.pxForm[pxOcc(m)] = { agenda: held && typeof held.agenda === "string" ? held.agenda : a0, goal: held && typeof held.goal === "string" ? held.goal : g0, a0: a0, g0: g0, caret: held && held.caret ? held.caret : null };
+  }
+  function pxForm(m) {
+    var f = S.pxForm[pxOcc(m)];
+    return '<div class="pxform"><label class="frw" for="pxTaAgenda">Agenda / purpose</label><textarea id="pxTaAgenda" data-px-ta="agenda" maxlength="' + PX_TEXT_CAP + '" rows="3">' + esc(f.agenda) + "</textarea>"
+      + '<label class="frw" for="pxTaGoal">Walk out with</label><textarea id="pxTaGoal" data-px-ta="goal" maxlength="' + PX_TEXT_CAP + '" rows="2">' + esc(f.goal) + "</textarea>"
+      + '<div class="pxbtns"><button type="button" class="act primary sm" data-px-save="1">Save</button><button type="button" class="act sm" data-px-cancel="1">Cancel</button></div>'
+      + '<div class="frw">Saved at the next update. An empty agenda shows the invite\'s own words again.</div></div>';
+  }
+  function pxState(m) {
+    var e = pxEdits(m), p = typeof pressOf === "function" ? pressOf(PX_KIND, pxOcc(m)) : null, h = "";
+    if (e.waiting) h += '<span class="tag wait">' + esc(e.waiting === 1 ? "1 change waiting to be saved" : e.waiting + " changes waiting to be saved") + "</span>";
+    if (p && p.state === "failed") h += resultTag(p.choice);
+    return h ? '<div class="pxstate">' + h + "</div>" : "";
+  }
+  // What survives a restart: the agenda and Goal half edited, and a guide
+  // item half typed, put back once Today, the edits and the off-limits list
+  // have loaded, only for a meeting still listed and not walled.
+  function pxRestore(m) {
+    var occ = pxOcc(m);
+    if (S.pxBack[occ] || S.pxForm[occ] || typeof heldGet !== "function") return;
+    var wallIn = typeof liveWall === "function" ? !!liveWall() : !!S.wall;
+    if (!wallIn || !pxReady()) return;
+    S.pxBack[occ] = true;
+    var held = heldGet(pxHeldKey(m), function () { var now = meetOpenNow(); return !!now && pxOn(now) && pxOcc(now) === occ && pxReady(); });
+    if (!held || typeof held !== "object") return;
+    if (typeof held.agenda === "string" || typeof held.goal === "string") pxStartForm(m, held);
+    ["question", "topic"].forEach(function (k) { if (typeof held["new_" + k] === "string" && held["new_" + k]) S.pxNew[occ + "|" + k] = held["new_" + k]; });
+    if (held.caret && !S.pxForm[occ]) S.pxCaret = held.caret;
+  }
+  function pxKeep(m, caret) {
+    if (typeof heldPut !== "function") return;
+    var occ = pxOcc(m), f = S.pxForm[occ], st = {};
+    if (f) { st.agenda = f.agenda; st.goal = f.goal; st.a0 = f.a0; st.g0 = f.g0; }
+    ["question", "topic"].forEach(function (k) { var v = S.pxNew[occ + "|" + k]; if (v) st["new_" + k] = v; });
+    if (caret) st.caret = caret;
+    if (st.agenda == null && st.goal == null && !st.new_question && !st.new_topic) { if (typeof heldDrop === "function") heldDrop(pxHeldKey(m)); return; }
+    heldPut(pxHeldKey(m), st);
+  }
+  // A meeting walled since its agenda was kept: its kept state goes (review of 8ed2ca0cb).
+  function pxDropWalled() {
+    if (typeof heldDrop !== "function" || !S.today || !Array.isArray(S.today.meetings)) return;
+    S.today.meetings.forEach(function (r) {
+      if (r && r.title_off && PX_KEY_RE.test(String(r.jk || "")) && r.start) heldDrop(pxHeldKey(r));
+    });
+  }
+  function pxClose(m) {
+    var occ = pxOcc(m); delete S.pxForm[occ];
+    pxKeep(m, null);
+  }
+  // The top of the Prep page: the edits' own lines, Agenda / purpose with
+  // where it came from, and the Edit button for it and the Goal.
+  function pxTop(m) {
+    if (!pxOn(m)) return "";
+    pxRestore(m);
+    var e = pxEdits(m), inv = typeof m.invite_text === "string" ? m.invite_text : "", ed = pxEditing(m);
+    var h = '<div class="pxtop">' + pxLines(m) + '<div class="ph">Agenda / purpose'
+      + (!pxReady() || ed ? "" : ' <button type="button" class="act sm" data-px-edit="1">Edit</button>') + "</div>";
+    if (ed) h += pxForm(m);
+    else if (e.agenda) h += '<div class="pxsrc">Your words</div><div class="pxagenda">' + esc(e.agenda) + "</div>";
+    else if (inv) h += '<div class="pxsrc">From the invite</div><div class="pxagenda">' + esc(inv) + "</div>";
+    else h += '<div class="pxempty">' + esc(PX_NO_AGENDA) + "</div>";
+    if (!m.prep_parts && e.goal && !ed) h += '<div class="ph">Walk out with</div><div class="walk">' + esc(e.goal) + "</div>";
+    return h + pxState(m) + "</div>";
+  }
+  // Background, closed: what the brief has on file from before.
+  function pxBackground(m, P) {
+    if (!pxOn(m)) return "";
+    var ch = Array.isArray(P.changed) ? P.changed : [];
+    var body = ch.length ? '<div class="frw">What changed since you last met</div><ul>' + ch.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul>"
+      : '<div class="pxempty">' + esc(PX_NO_BACKGROUND) + "</div>";
+    return '<details class="wkfold" data-mfold="bg"' + (S.meetFold && S.meetFold.bg ? " open" : "") + "><summary>Background</summary>" + body + "</details>";
+  }
+  // Beside a call-guide item: the yes-or-no flag, and its remove (or, for an
+  // add still waiting, its Undo).
+  function pxItem(m, P, part, i, text) {
+    if (!pxOn(m)) return "";
+    var flag = part === "ask" && Array.isArray(P.ask_closed) && P.ask_closed.indexOf(text) >= 0
+      ? ' <span class="pxflag" title="This reads as a yes-or-no question; ask it open">yes or no</span>' : "";
+    var id = P.guide_ids && Array.isArray(P.guide_ids[part]) ? P.guide_ids[part][i] : "", pr = P.guide_press && Array.isArray(P.guide_press[part]) ? P.guide_press[part][i] : "";
+    if (pr) return flag + ' <span class="tag wait">waiting to be saved</span><button type="button" class="act sm undo" data-px-unpress="' + esc(pr) + '">Undo</button>';
+    if (!id || !pxReady()) return flag;
+    return flag + ' <button type="button" class="pxx" data-px-rm="' + esc(id) + '" aria-label="' + esc("Take off the call guide: " + text) + '" title="Take off the call guide">×</button>';
+  }
+  function pxAddRow(m, kind) {
+    if (!pxOn(m) || !pxReady()) return "";
+    var v = S.pxNew[pxOcc(m) + "|" + kind] || "", word = kind === "question" ? "Add a question" : "Add a topic";
+    return '<div class="pxadd"><input type="text" data-px-new="' + kind + '" maxlength="' + PX_ITEM_CAP + '" placeholder="' + word + '" aria-label="' + word + '" value="' + esc(v) + '">'
+      + '<button type="button" class="act sm" data-px-add="' + kind + '" aria-label="' + word + '">+</button></div>';
+  }
+  function pxEmptyOwe(m) { var t = meetThem(m); return '<div class="ph">Open between you</div><div class="pxempty">' + esc("Nothing open with " + (t || "them") + " yet.") + "</div>"; }
+  function pxJoin(m) {
+    var l = pxOn(m) && typeof calLink === "function" ? calLink(m) : "";
+    return l ? ' · <a class="pxjoin" href="' + esc(l) + '" target="_blank" rel="noopener noreferrer">Join</a>' : "";
+  }
+  function pxPress(m, verb, extra) {
+    var d = { kind: PX_KIND, src: "hub", n: pxOcc(m), action: verb, meeting_key: String(m.jk), start: String(m.start), title: "Prep page" };
+    if (m.prepx_moved && typeof m.prepx_moved === "object" && m.prepx_moved.from) d.moved_from = String(m.prepx_moved.from);
+    else if (pxStart(m) !== String(m.start)) d.moved_from = pxStart(m);
+    for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) d[k] = extra[k];
+    return saveChoice(d);
+  }
+  function pxUndo(c) {
+    if (!c) return;
+    var live = (S.choices || []).filter(function (x) { return x.id === c.id; })[0] || c;
+    if (!live.applied && !(typeof claimed === "function" && claimed(live))) { undoChoice(c.id); return; }
+    saveChoice({ kind: PX_KIND, src: "hub", n: String(c.n || ""), action: "undo", back_of: String(c.id), meeting_key: String(c.meeting_key || ""), start: String(c.start || ""), title: "Prep page" });
+  }
+  // Undo takes back every press one action filed, the last first (review of 8ed2ca0cb, MUST 2).
+  function pxToast(cs, line) {
+    var got = (Array.isArray(cs) ? cs : [cs]).filter(Boolean);
+    if (got.length && typeof toast === "function") toast(line, function () { got.slice().reverse().forEach(pxUndo); });
+  }
+  var PX_NAMED_LINE = "Those words were not saved: they name someone off limits, or who may be named could not be checked just now.";
+  // Typed words that name someone off limits are not filed. The page hashes the words first; with no
+  // wall read, or no way to hash, it files and the writer judges (it refuses such words too).
+  function pxCheck(texts) {
+    var w = typeof liveWall === "function" ? liveWall() : null;
+    if (!w || !w.ok || typeof toTitleWalled !== "function" || typeof hashAll !== "function" || typeof toWords !== "function") return Promise.resolve(false);
+    var vals = [];
+    texts.forEach(function (t) { if (t) vals = vals.concat(toWords(t), (String(t).match(/[^\s<>()"',;:]+@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g) || []).map(function (a) { return a.replace(/[.?!]+$/, "").toLowerCase(); })); });
+    if (!vals.length) return Promise.resolve(false);
+    return hashAll(vals).then(function () { return texts.some(function (t) { return !!t && toTitleWalled(t); }); }, function () { return false; });
+  }
+  function pxSave(m) {
+    var occ = pxOcc(m), f = S.pxForm[occ]; if (!f || S.pxBusy[occ + "|form"]) return;
+    var a = String(f.agenda || "").replace(/\s+/g, " ").trim().slice(0, PX_TEXT_CAP), g = String(f.goal || "").replace(/\s+/g, " ").trim().slice(0, PX_TEXT_CAP);
+    var a0 = String(f.a0 || "").replace(/\s+/g, " ").trim(), g0 = String(f.g0 || "").replace(/\s+/g, " ").trim(), jobs = [];
+    if (a !== a0) jobs.push(["agenda", a]);
+    if (g !== g0) jobs.push(["goal", g]);
+    if (!jobs.length) { pxClose(m); renderMeetView(); return; }
+    S.pxBusy[occ + "|form"] = true;
+    pxCheck(jobs.map(function (j) { return j[1]; })).then(function (named) {
+      if (!named) return Promise.all(jobs.map(function (j) { return pxPress(m, j[0], { text: j[1] }); }));
+      delete S.pxBusy[occ + "|form"];
+      if (typeof toast === "function") toast(PX_NAMED_LINE);
+      return null;
+    }).then(function (cs) {
+      if (!cs) return;
+      delete S.pxBusy[occ + "|form"];
+      var ok = cs.filter(Boolean);
+      // the form stays open, with what was typed, unless every press was filed; a box that was
+      // filed takes what was filed as its starting value, so a retry files only what failed
+      if (ok.length === cs.length) { pxClose(m); renderMeetView(); }
+      else if (ok.length) { jobs.forEach(function (j, i) { if (cs[i]) f[j[0] === "agenda" ? "a0" : "g0"] = j[1]; }); pxKeep(m, null); }
+      pxToast(ok, jobs.every(function (j) { return !j[1]; }) ? "Cleared at the next update" : "Saved at the next update");
+    });
+  }
+  function pxAdd(m, kind) {
+    var key = pxOcc(m) + "|" + kind, t = String(S.pxNew[key] || "").replace(/\s+/g, " ").trim().slice(0, PX_ITEM_CAP);
+    if (!t || S.pxBusy[key]) return;
+    S.pxBusy[key] = true;
+    pxCheck([t]).then(function (named) {
+      if (!named) return pxPress(m, "add", { guide_kind: kind, text: t });
+      if (typeof toast === "function") toast(PX_NAMED_LINE);
+      return null;
+    }).then(function (c) {
+      delete S.pxBusy[key];
+      if (!c) return;
+      delete S.pxNew[key]; pxKeep(m, null); renderMeetView();
+      pxToast(c, "Added at the next update");
+    });
+  }
+  // A second press of x on an item whose remove is already waiting (or on its way) files nothing.
+  function pxRemove(m, item) {
+    var occ = pxOcc(m), bk = occ + "|rm|" + item;
+    if (S.pxBusy[bk]) return;
+    var waiting = (S.choices || []).some(function (c) { return c.kind === PX_KIND && String(c.n) === occ && c.action === "remove" && String(c.item_id) === item && !c.applied; });
+    if (waiting) return;
+    S.pxBusy[bk] = true;
+    pxPress(m, "remove", { item_id: item }).then(function (c) { delete S.pxBusy[bk]; pxToast(c, "Taken off the call guide"); });
+  }
+  document.addEventListener("click", function (ev) {
+    var t = ev.target, b = t && t.closest ? t.closest("[data-px-edit],[data-px-save],[data-px-cancel],[data-px-rm],[data-px-add],[data-px-unpress]") : null;
+    if (!b || !b.closest("#meetlive")) return;
+    var m = meetOpenNow(); if (!m || !pxOn(m)) return;
+    ev.preventDefault();
+    if (b.hasAttribute("data-px-unpress")) { var id = b.getAttribute("data-px-unpress"); pxUndo((S.choices || []).filter(function (c) { return c.id === id; })[0]); return; }
+    if (!pxReady()) return;
+    if (b.hasAttribute("data-px-edit")) { pxStartForm(m, null); renderMeetView(); var ta = $("pxTaAgenda"); if (ta) ta.focus(); return; }
+    if (b.hasAttribute("data-px-cancel")) { pxClose(m); renderMeetView(); return; }
+    if (b.hasAttribute("data-px-save")) { pxSave(m); return; }
+    if (b.hasAttribute("data-px-add")) { pxAdd(m, b.getAttribute("data-px-add")); return; }
+    if (b.hasAttribute("data-px-rm")) pxRemove(m, b.getAttribute("data-px-rm"));
+  });
+  document.addEventListener("input", function (ev) {
+    var t = ev.target; if (!t || !t.closest || !t.closest("#meetlive")) return;
+    var m = meetOpenNow(); if (!m || !pxOn(m)) return;
+    var occ = pxOcc(m), f = t.getAttribute("data-px-ta"), n = t.getAttribute("data-px-new");
+    if (f && S.pxForm[occ]) { S.pxForm[occ][f] = String(t.value || ""); pxKeep(m, { box: f, at: [t.selectionStart, t.selectionEnd] }); }
+    else if (n) { S.pxNew[occ + "|" + n] = String(t.value || ""); pxKeep(m, { box: "new_" + n, at: [t.selectionStart, t.selectionEnd] }); }
+  });
+  document.addEventListener("keydown", function (ev) {
+    var t = ev.target; if (ev.key !== "Enter" || !t || !t.getAttribute || !t.getAttribute("data-px-new") || !t.closest("#meetlive")) return;
+    var m = meetOpenNow(); if (!m || !pxOn(m) || !pxReady()) return;
+    ev.preventDefault(); pxAdd(m, t.getAttribute("data-px-new"));
+  });
+  // After a draw: the box the owner was in, with its selection (a redraw, or a restart put back).
+  function pxRefocus(box, keep) {
+    if (keep && keep.later) { var k2 = { box: keep.box, at: keep.at }; setTimeout(function () { pxRefocus(box, k2); }, 0); return; }
+    var sel = keep && keep.box ? (keep.box.indexOf("new_") === 0 ? 'input[data-px-new="' + keep.box.slice(4) + '"]' : 'textarea[data-px-ta="' + keep.box + '"]') : "";
+    var el = sel ? box.querySelector(sel) : null; if (!el) return;
+    if (el !== document.activeElement) el.focus();
+    if (Array.isArray(keep.at) && typeof el.setSelectionRange === "function") { try { el.setSelectionRange(keep.at[0], keep.at[1]); } catch (e) {} }
+  }
+  // ---- end the Prep page
   // ---- the live prep page (cr1#1632 slice 1, design E1) ----
   // A meeting whose brief has parts (`prep_parts` on the feed) opens to a page
   // the owner goes through while the meeting runs. What he picks, ticks and
@@ -10472,7 +10820,7 @@
   function livePick(st, d) { var v = st.picks[hkey(d.q)]; return v && (d.opts || []).indexOf(v) >= 0 ? v : ""; }
   // What the save carries, from the brief's parts and what is ticked.
   function liveInput(m) {
-    var P = m.prep_parts || {}, st = liveOf(m), inp = { title: m.title || "", start: m.start || "", calendar: m.calendar || "", decide: [], answers: [], asked: [], covered: [], carried: [] };
+    var P = (typeof pxParts === "function" ? pxParts(m, true) : m.prep_parts) || {}, st = liveOf(m), inp = { title: m.title || "", start: m.start || "", calendar: m.calendar || "", decide: [], answers: [], asked: [], covered: [], carried: [] };
     if (Array.isArray(m.people)) inp.others = m.people.length;
     (P.decide || []).forEach(function (d) { var pk = livePick(st, d); if (pk) inp.decide.push({ q: d.q, pick: pk }); else inp.carried.push(d.q); });
     (P.ask || []).forEach(function (q) {
@@ -10516,16 +10864,26 @@
   }
   function renderMeetLive(m) {
     var box = $("meetlive"); if (!box) return;
-    var P = m && m.calendar !== "personal" ? m.prep_parts : null;
+    var P = m && m.calendar !== "personal" ? (typeof pxParts === "function" ? pxParts(m) : m.prep_parts) : null;
+    // cr1#1788: the box the owner is typing in, put back after the draw
+    var pxAe = document.activeElement, pxIn = pxAe && pxAe.closest && pxAe.closest("#meetlive") === box ? pxAe : null;
+    var pxCaret = pxIn && (pxIn.getAttribute("data-px-ta") || pxIn.getAttribute("data-px-new")) ? { box: pxIn.getAttribute("data-px-ta") || "new_" + pxIn.getAttribute("data-px-new"), at: [pxIn.selectionStart, pxIn.selectionEnd] } : null;
+    var pxT = m && typeof pxTop === "function" ? pxTop(m) : "";
+    // a caret put back after a restart is placed once the open has finished (openMeeting focuses Back after the draw)
+    if (!pxCaret && m && typeof pxOn === "function" && pxOn(m)) { var pf = S.pxForm[pxOcc(m)]; if (pf && pf.caret) { pxCaret = pf.caret; pf.caret = null; } else if (S.pxCaret) { pxCaret = S.pxCaret; S.pxCaret = null; } if (pxCaret) pxCaret.later = true; }
     if (!m || !P) {
       // Upcoming with no brief: Brief me now, a new chat with the prep asked for.
       var later = m && !m.prep && !m.prep_text && !m.all_day && m.calendar !== "personal" && new Date(m.end || m.start).getTime() > Date.now();
-      putHtml(box, later && typeof jumpLink === "function" ? '<div class="walk quiet">No brief yet.</div><div class="parts">' + jumpLink(jumpText("prep", m.title, fmtWhen(m.start)), "Brief me now", "primary") + "</div>" + meetAttached(m) : "");
+      putHtml(box, pxT + (later && typeof jumpLink === "function" ? '<div class="walk quiet">No brief yet.</div><div class="parts">' + jumpLink(jumpText("prep", m.title, fmtWhen(m.start)), "Brief me now", "primary") + "</div>" + meetAttached(m) : ""));
+      if (pxCaret && typeof pxRefocus === "function") pxRefocus(box, pxCaret);
       if (typeof renderMeetAttach === "function") renderMeetAttach();   // cr1#1632 slice 2
       return;
     }
-    var st = liveOf(m), them = meetThem(m), h = '<div class="mlive"><div>';
+    var st = liveOf(m), them = meetThem(m), h = '<div class="mlive"><div>' + pxT;
+    var pxBg = typeof pxBackground === "function" ? pxBackground(m, P) : "", pxI = typeof pxItem === "function" ? pxItem : function () { return ""; };
+    var pxAdd1 = function (k) { return typeof pxAddRow === "function" ? pxAddRow(m, k) : ""; };
     if (P.walk) h += '<div class="ph">Walk out with</div><div class="walk">' + esc(P.walk) + "</div>";
+    h += pxBg;
     if ((P.decide || []).length) {
       h += '<div class="ph">Decide</div>';
       P.decide.forEach(function (d) {
@@ -10540,20 +10898,23 @@
       h += '<div class="ph">' + (one ? "Ask " + esc(one) : "To ask") + "</div>";
       P.ask.forEach(function (q, qi) {
         var k = hkey(q), on = !!st.ask[k], said = whos[qi] ? "What " + whos[qi] + " said" : "What was said";
-        h += '<div class="mask"><input type="checkbox" data-mask="' + k + '"' + (on ? " checked" : "") + ' aria-label="Asked: ' + esc(q) + '"><div style="flex:1"><div>' + esc(q) + "</div>"
+        h += '<div class="mask"><input type="checkbox" data-mask="' + k + '"' + (on ? " checked" : "") + ' aria-label="Asked: ' + esc(q) + '"><div style="flex:1"><div>' + esc(q) + pxI(m, P, "ask", qi, q) + "</div>"
           + (on ? '<input type="text" data-msaid="' + k + '" maxlength="' + MEET_SAID_CAP + '" placeholder="' + esc(said) + '" aria-label="' + esc(said) + '" value="' + esc(st.said[k] || "") + '">' : "") + "</div></div>";
       });
-    }
+      h += pxAdd1("question");
+    } else if (pxAdd1("question")) h += '<div class="ph">To ask</div>' + pxAdd1("question");
     h += "</div><div>";
-    var ticks = function (list, key) {
-      return (list || []).map(function (x) { var k = hkey(x); return '<label class="mask"><input type="checkbox" data-mtick="' + key + '" data-mi="' + k + '"' + (st[key][k] ? " checked" : "") + "><span>" + esc(x) + "</span></label>"; }).join("");
+    var ticks = function (list, key, part) {
+      return (list || []).map(function (x, xi) { var k = hkey(x); return '<label class="mask"><input type="checkbox" data-mtick="' + key + '" data-mi="' + k + '"' + (st[key][k] ? " checked" : "") + "><span>" + esc(x) + "</span>" + (part ? pxI(m, P, part, xi, x) : "") + "</label>"; }).join("");
     };
     var fold = function (k, label, body) { return '<details class="wkfold" data-mfold="' + k + '"' + (S.meetFold && S.meetFold[k] ? " open" : "") + "><summary>" + esc(label) + "</summary>" + body + "</details>"; };
-    if ((P.cover || []).length) h += fold("cover", "Cover · " + P.cover.length + (P.cover.length === 1 ? " point" : " points"), ticks(P.cover, "cover"));
+    if ((P.cover || []).length) h += fold("cover", "Cover · " + P.cover.length + (P.cover.length === 1 ? " point" : " points"), ticks(P.cover, "cover", "cover") + pxAdd1("topic"));
+    else if (pxAdd1("topic")) h += fold("cover", "Cover", pxAdd1("topic"));
     var yo = (P.you_owe || []).length, to = (P.they_owe || []).length;
     if (yo || to) h += fold("owe", "Open between you · you owe " + yo + ", " + (them ? them + " owes " : "they owe ") + to,
       (yo ? '<div class="frw">You owe</div>' + ticks(P.you_owe, "you") : "") + (to ? '<div class="frw">' + (them ? esc(cap1(them)) + " owes" : "They owe") + "</div>" + ticks(P.they_owe, "they") : ""));
-    if ((P.changed || []).length) h += fold("changed", "What changed since you last met · " + P.changed.length + (P.changed.length === 1 ? " thing" : " things"), "<ul>" + P.changed.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul>");
+    else if (pxBg && typeof pxEmptyOwe === "function") h += pxEmptyOwe(m);
+    if ((P.changed || []).length && !pxBg) h += fold("changed", "What changed since you last met · " + P.changed.length + (P.changed.length === 1 ? " thing" : " things"), "<ul>" + P.changed.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul>");
     if ((P.carried || []).length) h += fold("carried", "Carried from last time · " + P.carried.length, ticks(P.carried, "carried"));
     // the brief as written, one press away (review of #1651)
     if (m.prep_text) h += fold("prose", "The brief as written", typeof prepHtml === "function" ? prepHtml(m.prep_text) : esc(m.prep_text));
@@ -10564,6 +10925,7 @@
     putHtml(box, h);
     var again = keepK ? box.querySelector('input[data-msaid="' + keepK + '"]') : null;
     if (again && again !== document.activeElement) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+    if (pxCaret && typeof pxRefocus === "function") pxRefocus(box, pxCaret);
     if (typeof renderMeetAttach === "function") renderMeetAttach();   // cr1#1632 slice 2
   }
   // Attached (design E3): slice 2 fills this; the place is kept on every meeting page.
@@ -13983,8 +14345,11 @@
     }
     function inWin(m, dayDate) {
       if (from == null || to == null) return false;
-      if (m.all_day) { var d = dayDate || tlDay(feed, m.start); return !!d && d >= tlDay(feed, calIso(from)) && d <= tlDay(feed, calIso(to)); }
+      if (m.all_day) { if (L.inside === true) return false; var d = dayDate || tlDay(feed, m.start); return !!d && d >= tlDay(feed, calIso(from)) && d <= tlDay(feed, calIso(to)); }
       var s = calMs(m.start), e = calMs(m.end); if (s == null) return false; if (e == null) e = s + 3600000;
+      // cr1#1818: a read of events that start after its start and end before
+      // its end says nothing of a meeting running across either end.
+      if (L.inside === true) return s >= from && e <= to;
       return e > from && s < to;
     }
     function covered(m) { return m.calendar === "personal" || m.personal === true ? covers.personal === true : covers.business === true; }
@@ -14120,6 +14485,24 @@
     var s = typeof v === "string" ? v : (v && typeof v === "object" ? (v.dateTime || v.date_time) : null);
     return typeof s === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(s) && !/([zZ]|[+-]\d\d:?\d\d)$/.test(s) ? calFromWall(s, tz) : null;
   }
+  // cr1#1818: on a plan that says so, a clock time with no offset is read
+  // only in the zone the event names (calInstant reads that one). A zone the
+  // browser cannot read makes the event unreadable: it is never read in the
+  // workspace's zone instead, and no zone is ever guessed.
+  function tlZoned(v, tz) {
+    if (!CALLIVE || CALLIVE.event_zone !== true) return tlInstant(v, tz);
+    var t = calInstant(v); if (t != null) return t;
+    var z = v && typeof v === "object" ? (v.timeZone || v.time_zone) : null;
+    return calZoneOk(z) ? tlInstant(v, z) : null;
+  }
+  // cr1#1818: the trailing item of an offset plan's page that carries only
+  // paging facts (no id, no start, nothing but the plan's own paging keys).
+  function tlPageItem(o) {
+    if (!CALLIVE || CALLIVE.page_kind !== "offset" || !o || typeof o !== "object" || Array.isArray(o)) return false;
+    if (o.id != null || o.eventId != null || o.event_id != null || o.start != null || o.startTime != null || o.start_time != null) return false;
+    var ks = Object.keys(o), facts = Array.isArray(CALLIVE.page_facts) ? CALLIVE.page_facts : [CALLIVE.page_out];
+    return ks.length > 0 && ks.every(function (k) { return facts.indexOf(k) >= 0; });
+  }
   function tlDateOnly(v) { var d = v && typeof v === "object" ? v.date : v; return typeof d === "string" && /^\d{4}-\d\d-\d\d$/.test(d) ? d : ""; }
   function tlAnswer(v) {
     v = lowerOf(v && typeof v === "object" ? v.response : v).replace(/[^a-z]/g, "");
@@ -14151,7 +14534,8 @@
       if (!e.start_day) return null;
       e.start = null; e.end = null;
     } else {
-      var a = tlInstant(st, tz), b = tlInstant(en, tz); if (a == null) return null;
+      var a = tlZoned(st, tz), b = tlZoned(en, tz); if (a == null) return null;
+      if (b == null && CALLIVE && CALLIVE.event_zone === true && en != null) return null;
       if (b == null || b <= a) b = a + 3600000;
       e.start = calIso(a); e.end = calIso(b);
     }
@@ -14175,6 +14559,10 @@
     var org = o.organizer && typeof o.organizer === "object" ? o.organizer : null;
     if (typeof o.isOrganizer === "boolean") e.mine = o.isOrganizer;
     else if (org) e.mine = org.self === true || liveOwn(org.email || (org.emailAddress && org.emailAddress.address) || "", "");
+    // cr1#1818 part B: the event's own address (its self attendee, else a self
+    // organiser or creator), for the read's account check.
+    var selfAtt = e.att.filter(function (x) { return x.self && x.addr; })[0], crt = o.creator && typeof o.creator === "object" ? o.creator : null;
+    e.own = selfAtt ? selfAtt.addr : (org && org.self === true && org.email ? bareAddr(org.email) : (crt && crt.self === true && crt.email ? bareAddr(crt.email) : ""));
     // A calendar the answer names that is not the owner's own main one is read
     // as personal: its event shows its time, its title and its tag, no more.
     var cm = o.calendarId != null ? o.calendarId : o.calendar_id, wl = liveWall();
@@ -14189,12 +14577,20 @@
     var list = Array.isArray(p) ? p : null;
     if (!list && p) ["events", "items", "value", "results", "data"].forEach(function (k) { if (!list && Array.isArray(p[k])) list = p[k]; });
     if (!list) return null;
+    // cr1#1818: an offset plan's last item that carries only paging facts is
+    // not an event; it is taken out before the rule below, and only then.
+    var off = CALLIVE && CALLIVE.page_kind === "offset", next = "";
+    if (off && list.length && tlPageItem(list[list.length - 1])) {
+      var n = list[list.length - 1][CALLIVE.page_out]; list = list.slice(0, -1);
+      if (n != null && !(typeof n === "number" && isFinite(n) && n > 0 && Math.floor(n) === n)) return null;
+      next = n == null ? "" : n;
+    }
     var rows = [], bad = false;
     list.forEach(function (o) { var e = tlEvent(o, tz); if (e) rows.push(e); else bad = true; });
     // One event that cannot be read would read as a meeting gone: no answer at all, then.
     if (bad) return null;
-    var next = p && !Array.isArray(p) ? (p.nextPageToken || p.next_page_token || "") : "";
-    return { rows: rows, next: typeof next === "string" ? next : "" };
+    if (!off) { next = p && !Array.isArray(p) ? (p.nextPageToken || p.next_page_token || "") : ""; next = typeof next === "string" ? next : ""; }
+    return { rows: rows, next: next };
   }
   function tlShow() { calRefresh(); if (typeof renderToday === "function") renderToday(); }
   // cr1#1771 (coordinator, 2026-11-24): one quiet line under Today. Up: the
@@ -14203,7 +14599,7 @@
   // A half-read answer still never strikes a built meeting; it drops the layer.
   function tlStatusLine() {
     var T = S.tlive; if (!T || !CALLIVE) return "";
-    if (T.state === "ok" && T.layers.calendar) return TL_ASOF_LINE + fmtTime(T.layers.calendar.at);
+    if (T.state === "ok" && T.layers.calendar) return TL_ASOF_LINE.replace("{server}", CALLIVE.server) + fmtTime(T.layers.calendar.at);
     if ((T.state === "error" || T.state === "denied") && T.line) return String(T.line);
     if (T.state === "off" && T.why === "wall") return TL_NO_WALL_LINE;
     return "";
@@ -14220,11 +14616,17 @@
     var T = S.tlive; if (T.busy) return Promise.resolve();
     clearTimeout(T.timer); T.timer = null;
     var plan = tlPlan();
+    // cr1#1818 part B: a read through the calendar under a Superhuman seat that
+    // the owner stopped in Settings is not made again until its Allow is pressed.
+    if (!plan.off && CALLIVE.via && liveSrcState("calendar") === "skipped" && !byPress) plan = { off: "stopped" };
+    // ...and nothing is read before the set-up document that holds that Stop
+    // has loaded; one that cannot be read keeps the reads off (review of #1818 part B).
+    if (!plan.off && CALLIVE.via && !S.livesrcReady) plan = { off: "waitsrc" };
     if (plan.off) { var had = !!T.layers.calendar; T.layers.calendar = null; T.state = "off"; T.why = plan.off; if (had) tlShow(); else renderTodayLive(); return Promise.resolve(); }
     // A refusal is not asked again by the timer; the owner's Allow asks again (cr1#1771).
     if (T.state === "denied" && !byPress) return Promise.resolve();
     T.busy = true;
-    var now = Date.now(), from = now - (num(CALLIVE.back_hours) || 2) * 3600000, to = now + (num(CALLIVE.ahead_days) || 7) * 86400000, got = [], pages = 0;
+    var now = Date.now(), from = now - (num(CALLIVE.back_hours) || 2) * 3600000, to = now + (num(CALLIVE.ahead_days) || 7) * 86400000, got = [], pages = 0, lastOff = 0;
     function page(token) {
       var inp = JSON.parse(JSON.stringify(CALLIVE.args || {}));
       if (CALLIVE.time === "local") { inp[CALLIVE.from_key] = calWall(from, plan.tz).wall; inp[CALLIVE.to_key] = calWall(to, plan.tz).wall; if (CALLIVE.tz_key) inp[CALLIVE.tz_key] = plan.tz; }
@@ -14236,8 +14638,10 @@
         if (!a) throw { code: "unreadable" };
         got = got.concat(a.rows); pages += 1;
         if (!a.next) return null;
+        // cr1#1818: an offset that does not move on is no next page.
+        if (CALLIVE.page_kind === "offset") { if (!(a.next > lastOff)) throw { code: "unreadable" }; lastOff = a.next; }
         // More than the page reads: the window ends where the last event read begins.
-        if (!CALLIVE.page_in || pages >= TODAY_LIVE_PAGES) { var last = 0; got.forEach(function (e) { var s = calMs(e.start); if (s != null && s > last) last = s; }); if (!last) throw { code: "unreadable" }; to = last; return null; }
+        if (!CALLIVE.page_in || pages >= TODAY_LIVE_PAGES || (CALLIVE.page_kind === "offset" && num(CALLIVE.page_max) && a.next > num(CALLIVE.page_max))) { var last = 0; got.forEach(function (e) { var s = calMs(e.start); if (s != null && s > last) last = s; }); if (!last) throw { code: "unreadable" }; to = last; return null; }
         return page(a.next);
       });
     }
@@ -14250,15 +14654,66 @@
       // Hash first: the keys the join reads, and everyone the wall is asked about.
       return evKeyAll(ids).then(function () { return hashAll(vals); }).then(function () {
         got.forEach(function (e) { e.jk = EVKEYS[e.id] || ""; e.sk = e.series ? EVKEYS[e.series] || "" : ""; });
-        T.layers.calendar = { name: "calendar", authority: true, ok: true, at: nowIso(), from: calIso(from), to: calIso(to), covers: { business: true, personal: false, missing: false, kind: lowerOf(CALLIVE.provider), cks: cals.map(function (v) { return EVKEYS[v] || ""; }).filter(Boolean) }, rows: got };
-        T.state = "ok"; T.line = ""; T.why = ""; T.allow = false;
+        var inside = CALLIVE.window === "inside";
+        // cr1#1818: when both sides hold meetings in the window and no live
+        // row joins any built one, this is a read through the wrong key or
+        // the wrong account, not a day on which every meeting changed.
+        // (the offset plan only: Google's read is left exactly as before, review round 1 of #1826)
+        // A read through the calendar under a Superhuman seat is held to it too,
+        // strictly: meetings on both sides and not one joined is no layer, ids
+        // or no ids (review of #1818 part B).
+        if ((CALLIVE.page_kind === "offset" || CALLIVE.via) && !tlJoinsAny(got, from, to, inside, !!CALLIVE.via)) throw { code: "nojoin" };
+        // ...and every event that says whose calendar it is must be the account the
+        // owner confirmed at set-up (the backstop for an assumed account).
+        if (CALLIVE.via && got.some(function (e) { return e.own && !tlOwnOk(e.own); })) throw { code: "account" };
+        T.layers.calendar = { name: "calendar", authority: true, ok: true, at: nowIso(), from: calIso(from), to: calIso(to), inside: inside, covers: { business: true, personal: false, missing: false, kind: lowerOf(CALLIVE.provider), cks: cals.map(function (v) { return EVKEYS[v] || ""; }).filter(Boolean) }, rows: got };
+        T.state = "ok"; T.line = ""; T.why = ""; T.allow = false; T.everOk = true;
       });
     }).then(null, function (e) {
       T.layers.calendar = null;
-      var st = liveErr(e, CALLIVE.server, "calendar events"); T.state = st.state === "denied" ? "denied" : "error"; T.line = st.line; T.why = e && e.code ? String(e.code) : "";
+      var st = liveErr(e, CALLIVE.server, "calendar events");
+      // cr1#1818: a first read waiting on a permission prompt rejects with
+      // upstream_error and is not retried: it is the Allow path. Only the
+      // consent shape (stamped retryable, with retryAfterMs) is such a prompt;
+      // any other upstream_error is a passing failure, and the timer tries again.
+      if (e && e.code === "upstream_error" && e.retryable === true && typeof e.retryAfterMs === "number" && !T.everOk) st = { state: "denied", allow: true, line: "" };
+      T.state = st.state === "denied" ? "denied" : "error"; T.line = st.line; T.why = e && e.code ? String(e.code) : "";
+      if (T.why === "nojoin") T.line = TL_NOJOIN_LINE.replace("{server}", CALLIVE.server);
+      if (T.why === "account") T.line = TL_ACCOUNT_LINE.replace("{server}", CALLIVE.server);
       // cr1#1771: a refusal names the calendar's own Allow, on set-up's panel
       T.allow = !!st.allow; if (st.allow) T.line = TL_ALLOW_LINE.replace("{server}", CALLIVE.server);
     }).then(function () { T.busy = false; T.lastAt = Date.now(); tlSrcFound(byPress); tlArm(); tlShow(); if (typeof renderLiveSetup === "function") renderLiveSetup(); });
+  }
+  // cr1#1818 part B: an event's own address is right when it is the account the
+  // owner confirmed, or another of the owner's own addresses that is not walled
+  // (a personal mailbox never stands for the business calendar).
+  function tlOwnOk(addr) {
+    var a = bareAddr(addr);
+    if (a && a === bareAddr(CALLIVE.account || "")) return true;
+    return !!a && liveOwn(a, "") && !liveWalled(a);
+  }
+  // cr1#1818: false only when the built feed and the read both hold keyed
+  // meetings inside the window and not one of the read's joins a built one.
+  function tlJoinsAny(rows, from, to, inside, strict) {
+    var f = S.todayFeed, built = f ? (f.meetings || []).slice() : [];
+    if (f && f.week && Array.isArray(f.week.days)) f.week.days.forEach(function (d) { built = built.concat(d.meetings || []); });
+    var keys = {}, nb = 0, nAll = 0;
+    built.forEach(function (m) {
+      if (!m || m.all_day) return;
+      // A read through Superhuman covers the business calendar only: personal and
+      // family rows are neither counted nor joined (fix check of #1818 part B).
+      if (strict && (lowerOf(m.calendar) === "personal" || m.personal === true)) return;
+      var s0 = calMs(m.start), e0 = calMs(m.end); if (s0 == null) return; if (e0 == null) e0 = s0 + 3600000;
+      if (inside ? !(s0 >= from && e0 <= to) : !(e0 > from && s0 < to)) return;
+      nAll += 1;
+      if (!m.jk && !m.sk) return;
+      nb += 1; if (m.jk) keys["j" + m.jk] = true; if (m.sk) keys["s" + m.sk] = true;
+    });
+    var live = rows.filter(function (r) { return r && !r.all_day && (r.jk || r.sk); });
+    // strict (a read through another calendar): every meeting counts, keyed or not
+    if (strict) { if (!nAll || !rows.filter(function (r) { return r && !r.all_day; }).length) return true; }
+    else if (!nb || !live.length) return true;
+    return live.some(function (r) { return (r.jk && keys["j" + r.jk]) || (r.sk && keys["s" + r.sk]); });
   }
   // Started by whichever arrives last (the connectors, the wall, the built
   // feed), and again when the page is looked at after a while out of sight.
@@ -15396,7 +15851,8 @@
     // cr1#1771: the live Today reads the calendar itself (Google Calendar's
     // list read, the only one verified), so set-up asks for it there, and its
     // test read is that same read. A seat with no live calendar read
-    // (Superhuman, Microsoft 365) is not asked.
+    // is not asked (cr1#1818: a Superhuman seat is asked when it reads through
+    // the calendar under it).
     if (CALLIVE && CALLIVE.list && CALLIVE.server) o.push("calendar");
     return o;
   }
@@ -15445,12 +15901,18 @@
   // Review round 1 of #1772 (SHOULD 5): in Settings, every source that was
   // skipped, refused or did not work, with its Allow, so a Skip is never final.
   var LIVE_SRC_STATE_WORDS = { skipped: "Skipped.", refused: "Not allowed yet.", failed: "The test read did not work." };
+  // cr1#1818 part B: a Superhuman seat's live read goes through the calendar
+  // under it; once it works, Settings names that calendar and offers Stop.
+  var TL_VIA_LINE = "Read live through {server}, read only. Superhuman still books and moves meetings.";
+  function liveSrcStoppable(src) { return src === "calendar" && !!(CALLIVE && CALLIVE.via) && liveSrcState("calendar") === "ok"; }
   function renderLiveSettings() {
     var box = $("livesrcset"), rows = $("livesrcrows"); if (!box || !rows) return;
-    var later = liveSrcList().filter(function (src) { return !!LIVE_SRC_STATE_WORDS[liveSrcState(src)]; });
+    var later = liveSrcList().filter(function (src) { return !!LIVE_SRC_STATE_WORDS[liveSrcState(src)] || liveSrcStoppable(src); });
     if (!mcp || !db || !S.livesrcReady || !later.length) { box.hidden = true; rows.innerHTML = ""; return; }
     rows.innerHTML = later.map(function (src) {
       var off = liveSrcBusy(src) || !liveSrcCan(src);
+      if (liveSrcStoppable(src)) return '<div class="row"><div class="main"><div class="title">' + esc(LIVE_SRC_WORDS[src]) + '</div><div class="sub">' + esc(TL_VIA_LINE.replace("{server}", CALLIVE.server)) + "</div></div>"
+        + '<div class="acts"><button class="act" type="button" data-livesrc="stop" data-src="' + src + '">Stop</button></div></div>';
       return '<div class="row"><div class="main"><div class="title">' + esc(LIVE_SRC_WORDS[src]) + '</div><div class="sub">' + esc(LIVE_SRC_STATE_WORDS[liveSrcState(src)]) + "</div></div>"
         + '<div class="acts"><button class="act" type="button" data-livesrc="allow" data-src="' + src + '"' + (off ? " disabled" : "") + ">" + (liveSrcBusy(src) ? "Checking." : esc(LIVE_SRC_ALLOW[src])) + "</button></div></div>";
     }).join("");
@@ -15476,6 +15938,7 @@
     var src = b.getAttribute("data-src");
     if (liveSrcList().indexOf(src) < 0) return;
     if (b.getAttribute("data-livesrc") === "skip") { liveSrcSave(src, "skipped"); return; }
+    if (b.getAttribute("data-livesrc") === "stop") { if (src === "calendar" && liveSrcStoppable(src)) { liveSrcSave(src, "skipped"); tlCheck(false); renderLiveSettings(); } return; }
     liveAllow(src);
   }
   // (guarded: a suite runs this script on a page without these two places)
@@ -15689,10 +16152,21 @@
       db.doc("feed/mail_rules").onSnapshot(function (snap) { S.mailrules = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); if (typeof toWallMoved === "function") toWallMoved(); }, onErr);
       // cr1#1765: the off-limits wall on its own, and what set-up asked of each live source
       db.doc("feed/wall").onSnapshot(function (snap) { S.wall = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); if (typeof toWallMoved === "function") toWallMoved(); }, onErr);
-      db.doc("config/live_sources").onSnapshot(function (snap) { S.livesrc = snap.exists ? snap.data() : null; S.livesrcReady = true; renderLiveSetup(); }, function (e) { S.livesrcReady = false; renderLiveSetup(); onErr(e); });
+      db.doc("config/live_sources").onSnapshot(function (snap) {
+        var was = S.livesrcReady ? liveSrcState("calendar") : null;
+        S.livesrc = snap.exists ? snap.data() : null; S.livesrcReady = true; renderLiveSetup();
+        // cr1#1818 part B: a read through Superhuman waits for this document, and is
+        // checked again when the calendar's state in it arrives or changes (a Stop
+        // saved on another view, or before a reload, holds).
+        if (CALLIVE && CALLIVE.via && liveSrcState("calendar") !== was) tlCheck();
+      }, function (e) { S.livesrcReady = false; renderLiveSetup(); onErr(e);
+        // ...and a document that stops being readable takes the layer down at once.
+        if (CALLIVE && CALLIVE.via) tlCheck(); });
       db.doc("feed/people").onSnapshot(function (snap) { S.people = snap.exists ? snap.data() : null; renderPeople(); renderInboxLive(); if (S.tlive.layers.calendar) tlShow(); }, onErr);
       // cr1#1758: the "Prep this one" presses and what the Prep run said of each
       db.doc("config/prep_one").onSnapshot(function (snap) { S.prepOne = snap.exists ? snap.data() : null; renderToday(); }, onErr);
+      // cr1#1788: the Prep page's own edits, laid over each meeting's prep
+      db.doc("feed/prepx").onSnapshot(function (snap) { S.prepx = snap.exists ? snap.data() : null; S.prepxReady = true; if (S.meetOpen && typeof renderMeetView === "function") renderMeetView(); }, function (e) { S.prepxReady = true; onErr(e); });
       db.doc("feed/board").onSnapshot(function (snap) { S.board = snap.exists ? snap.data() : null; renderBoard(); if (typeof renderCalParts === "function") renderCalParts(); if (typeof renderComing === "function") renderComing(); }, onErr);
       // cr1#1745: the follow-ups waiting on the wrap-up page, their words in this doc only
       db.doc("feed/followups").onSnapshot(function (snap) { S.followups = snap.exists ? snap.data() : null; if (typeof renderWrapView === "function") renderWrapView(); if (typeof renderPast === "function" && S.today) renderTodayParts(); }, onErr);

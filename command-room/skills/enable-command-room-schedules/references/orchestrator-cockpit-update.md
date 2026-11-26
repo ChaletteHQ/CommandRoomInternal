@@ -27,7 +27,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 
 ## 2. The page's reads: six reads in one turn
 
-Three into files, each with `out_dir` set to the same new folder in this session's own scratch, `<scratch>/page`: `list` on `status`; `query` on `choices` with `where: [["applied", "==", true]]` and `limit: 1000`; `list` on `feed`. A fourth into files with `out_dir` `<scratch>/page/waiting`: `query` on `choices` with `where: [["applied", "==", false]]` (cr1#1701: the start reads which messages the waiting presses name). Only the file names come back from those, which is all this run needs of them.
+Three into files, each with `out_dir` set to the same new folder in this session's own scratch, `<scratch>/page`: `list` on `status`; `query` on `choices` with `where: [["applied", "==", true]]` and `limit: 1000`; `list` on `feed`. Each answer lists the documents it saved, each with its version: save each answer, exactly as it came, as its own file directly in `<scratch>/page` (a new name each time, for example `answer-1.txt`). Never retype an answer and never put a version into a call yourself; the code reads them there. A fourth into files with `out_dir` `<scratch>/page/waiting`: `query` on `choices` with `where: [["applied", "==", false]]` (cr1#1701: the start reads which messages the waiting presses name); its answer need not be saved. An empty collection answers one line (`No documents matched in collection "<name>".`): save that line as its answer too, since it is the proof that nothing is there, and without it nothing new is created.
 
 Two as read, kept for step 4: `query` on `choices` with `where: [["applied", "==", false]]`; `query` on `choices` with `where: [["by_page", "==", true]]`.
 
@@ -79,7 +79,7 @@ First the plate's call, which goes on to the later parts while there is time (cr
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"results": <the connector part's results, or null>, "run_id": "<step 3's run_id>", "stage": "all", "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_build"}'
 ```
 
-When its answer is the `record` part's (`stage: "record"`), the rebuild is done: go to step 7. Otherwise its answer carries `token` and `next`: call the part it names as `next`, with that token, and the part THAT answer names, until the `record` part has answered. Every command here is the one printed in this file, never one written by hand. One call each, never two in one call, and never a part the answers did not name: on a run the page started after a press, a part with nothing to rebuild is skipped by `next`, and `record` always runs.
+When its answer is the `record` part's (`stage: "record"`), the rebuild is done: go to step 7. Otherwise its answer carries `token` and `next`: call the part it names as `next`, with that token, and the part THAT answer names, until the `record` part has answered. Every command here is the one printed in this file, never one written by hand. Each such answer also carries `next_call` (cr1#1808): a JSON string whose value is the `--json` text of the second command below, with that answer's own values already in it. Hand that value to `plan`'s render as it came, in place of filling the command in. An answer with no `next_call` is filled in from the command below, as written. One call each, never two in one call, and never a part the answers did not name: on a run the page started after a press, a part with nothing to rebuild is skipped by `next`, and `record` always runs.
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"run_id": "<step 3's run_id>", "stage": "<the answer's next>", "token": "<the plate's token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_build"}'
@@ -95,13 +95,13 @@ Numbered from 0 to one less than the length of `parts`:
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"part": <the part's number>, "task": "update", "token": "<the token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_part"}'
 ```
 
-One part per call, never two in one call. A part must reach a file in this session's own scratch WHOLE: when the tool saved the answer to a file, that file is the part; when the answer of every other part came back in the turn, save it to a file exactly as it came (the list's part is below). Never retype, shorten or re-compose a part, and never save one in the workspace.
+One part per call, never two in one call. Every part is padded so the tool saves its answer to a file (cr1#1808); the padding is filler and is never read. A part must reach a file in this session's own scratch WHOLE: when the tool saved the answer to a file, that file is the part; when the answer of any other part came back in the turn anyway, save it to a file exactly as it came, except that its `pad` field may be left out (the list's part is below). Never retype, shorten or re-compose a part, and never save one in the workspace.
 
 **The off-limits list's part** is the part the `record` answer names as `wall_part` (the list alone, padded so the tool saves it to a file). When the tool saved it to a file, that file is the part, as above. When its answer came back in the turn instead, do NOT save it and do NOT retype it: leave it out, and run step 8 with `--wall-in-turn <wall_part>`. The list is then not published on this run, and the light and the receipt say so.
 
 ## 8. The page again, then unpack HERE
 
-The claim changed `status/update`, so read the page's versions again into the same folder, in one turn: `list` on `status` and `list` on `feed`, each with `out_dir` `<scratch>/page`. Save the `list` on `feed` answer to `<scratch>/feed-list.txt` as it came (the file the tool saved it to, or the answer written out whole); never shorten, repair or rebuild it. Then, in this shell:
+The claim changed `status/update`, so read the page's versions again into the same folder, in one turn: `list` on `status` and `list` on `feed`, each with `out_dir` `<scratch>/page`, each answer saved as at step 2. Also save the `list` on `feed` answer to `<scratch>/feed-list.txt` as it came (the file the tool saved it to, or the answer written out whole); never shorten, repair or rebuild it. An empty collection answers one line (`No documents matched in collection "<name>".`): save that line as its answer too, since it is the proof that nothing is there, and without it nothing new is created. Then, in this shell:
 
 ```bash
 python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" --feed-listing "<scratch>/feed-list.txt" "<each saved part file>"
@@ -109,7 +109,7 @@ python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/
 
 The listing is how a page with no off-limits list yet is told from a read that was cut short: when they disagree, the list is not published on this run, and the light and the receipt say so.
 
-Only when the list's part came back in the turn (step 7), add `--wall-in-turn <wall_part>` to that command. It takes every version it needs from those saved reads; there is nothing to pin by hand. It checks the list against the digest its part was made with: a list that arrived cut, mixed or changed is not published, and the rest goes as usual. Keep its `wall_sent` (true, false, or absent) for step 9. It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE `batch`, exactly as printed; this task's light comes last. A batch refused because a document changed names that entry: another run wrote it a moment ago, so it is current; send the batch again WITHOUT that entry, once per named entry. Never drop a pin to force a write.
+Only when the list's part came back in the turn (step 7), add `--wall-in-turn <wall_part>` to that command. It takes every version it needs from those saved answers; there is nothing to pin by hand. It answers `ok: false` with `unversioned` or `unread_answers` when a document the page holds has no version in the saved answers: send nothing, pulling a part again will not help; go to "When a call says no" with its `line`. An answer with `note` (cr1#1763: the page's read ended with a line this version does not know, or had no answer for a collection, so a document it did not list was not created; the rest is in the batches) is sent as any other, and its `note` ends this run's final response, word for word, after the line it would have said. It checks the list against the digest its part was made with: a list that arrived cut, mixed or changed is not published, and the rest goes as usual. Keep its `wall_sent` (true, false, or absent) for step 9. It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE `batch`, exactly as printed; this task's light comes last. A batch refused because a document changed names that entry: another run wrote it a moment ago, so it is current; send the batch again WITHOUT that entry, once per named entry. Never drop a pin to force a write.
 
 **A batch not sent for any other reason means the light is written as `error`, never `done`**: that is "When a call says no" below, with one sentence naming the documents that did not land.
 
@@ -119,7 +119,7 @@ Only when the list's part came back in the turn (step 7), add `--wall-in-turn <w
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"fired_via": "<scheduled or manual>", "run_id": "<step 3's run_id>", "token": "<the token>", "wall_sent": <step 8's wall_sent, or null when it had none>, "workspace_root": "<WS>"}, "name": "cockpit_helpers:update_finish"}'
 ```
 
-The final response is the answer's `line`, one line, and nothing else. A document under the `record` answer's `failed` was not built or was too large to pull; the page keeps its old copy, and it is NOT retried in this run.
+The final response is the answer's `line` (then step 8's note, if any), and nothing else. A document under the `record` answer's `failed` was not built or was too large to pull; the page keeps its old copy, and it is NOT retried in this run.
 
 ## When a call says no
 

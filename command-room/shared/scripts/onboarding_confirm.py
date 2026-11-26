@@ -474,6 +474,11 @@ def _check(root: Path, answers: Dict[str, Any]) -> tuple:
         if len(mail_rules.active_rules(mail_rules.load(root))) + n_new > mail_rules.RULES_CAP:
             return None, _refuse("never_wait" if "never_wait" in clean else "off_limits",
                                  "Your inbox rules are full.")
+        # cr1#1831 (decision 141aa): a held list with a kept copy refuses every
+        # rule write, so it is checked here with the rest, before anything lands.
+        held = mail_rules.held_refusal(root)
+        if held is not None:
+            return None, _refuse("off_limits" if "off_limits" in clean else "never_wait", held["line"])
     if "priorities" in clean:
         import objective_state as os_
         data = os_._load_entities(root)

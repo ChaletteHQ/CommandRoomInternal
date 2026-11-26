@@ -369,8 +369,8 @@ final line; the page still works and its first run seeds the lights.
 
 Then publish the off-limits list on its own (cr1#1765), so the page's live
 mail never waits for a whole rebuild: `list` on `feed` with `out_dir` set to
-`<scratch>/wall/page` (its answer saved to `<scratch>/wall/list.txt` exactly
-as it came), one `run_helper` call of `cockpit_helpers:feed_wall`
+`<scratch>/wall/page` (its answer saved as the file `<scratch>/wall/page/list.txt`,
+directly in that folder, exactly as it came), one `run_helper` call of `cockpit_helpers:feed_wall`
 with `{"workspace_root": "<WS>"}`, its answer saved to a file in this chat's
 own scratch exactly as it came (its `digest` must match its document; when
 the tool did not save the answer to a file and it came back in the turn, do
@@ -378,7 +378,7 @@ not retype it: skip the rest of this paragraph, because every Hub Update
 carries the list in a part the tool saves, cr1#1837), then
 `python3 "$RT/shared/scripts/cockpit_helpers.py" wall-batch --answer "<that
 file>" --stored "<scratch>/wall/page" --out "<scratch>/wall"` in this shell
-(with `--stored-empty "<scratch>/wall/list.txt"` in place of `--stored
+(with `--stored-empty "<scratch>/wall/page/list.txt"` in place of `--stored
 "<scratch>/wall/page"` only when
 that `list` answered and listed no documents; never after a `list` that
 failed or was not made),
@@ -393,7 +393,34 @@ on a seat whose live Today reads the calendar itself (Google Calendar, cr1#1771)
 the calendar, with that same read as its test. On any other seat the
 calendar is called only when the owner presses a booking button, with that
 press's own approval, so it is not asked for there. Only the owner can allow that, on the page, so set-up asks for it
-here and is not finished until each one works or is skipped. One `run_helper`
+here and is not finished until each one works or is skipped.
+
+**A Superhuman seat first (cr1#1818 part B).** When the declared calendar is
+Superhuman, look at this chat's own tools: a Google Calendar connector or a
+Microsoft 365 connector, either one with a tool that lists the calendar's events.
+When neither is connected, record nothing: Today shows the calendar as last
+built. Never call either connector here.
+
+When one is connected, name the account it is on from what this chat already
+shows about that connector (its listing, or the account it says it is
+connected as). When nothing this chat shows names the account, say "I can't
+see which account that calendar is on without reading it, so the Hub will show
+the calendar as last built." and record nothing: never guess an account.
+Otherwise ask the owner ONE question, naming the connector and its account:
+"The <Google Calendar or Microsoft 365> connector in this chat is signed in as <account>. Is that the calendar Superhuman shows for your business?"
+Only a plain yes records it;
+no, a personal calendar, or no answer records nothing (the default is no). On a
+yes, ONE call, and say its `line`:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" plan run_writer --json '{"name": "cockpit_helpers:record_live_calendar", "args": {"workspace_root": "<WS>", "provider": "<that connector's key in cockpit_helpers.LIVE_READ_PROVIDERS: the Google Calendar one or the Microsoft 365 one>", "server_id": "<that connector's server name>", "account": "<the account the question named>", "owner_said_yes": true}}'
+```
+
+Superhuman still books, moves and answers. When the owner says to stop the
+live calendar, the same call with `"provider": null` clears it; the Hub's
+Settings also offers Stop.
+
+Then one `run_helper`
 call of `cockpit_helpers:live_sources` with `{"workspace_root": "<WS>"}`. With
 an empty `sources`, skip this step.
 

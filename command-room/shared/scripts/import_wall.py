@@ -286,7 +286,13 @@ def _load_rules(root: Path) -> Optional[Dict[str, Any]]:
     when it is there and its rules cannot be read as a list (the shared
     reader answers "nobody" for both, which is no answer for an import)."""
     import mail_rules
+    import account_scope_gate
 
+    # cr1#1831: a list Maintenance set aside (a held store parses, with no
+    # rules) or one that vanished while a kept copy still names someone is no
+    # answer either; the gate's own check says so, and the import holds.
+    if not account_scope_gate.off_limits_readable(root):
+        return None
     path = mail_rules.store_path(root)
     if not path.exists():
         return {"rules": []}

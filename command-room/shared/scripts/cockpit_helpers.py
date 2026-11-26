@@ -284,7 +284,7 @@ NOT_WORK_FAILED_LINE = "That one could not be set aside; nothing was written."
 PARK_REASON = "Parked from the Command Room Hub"
 PARK_EVIDENCE_LINE = "Parked: still open, off your working list."
 PILE_VERB_LINE = "That press does not belong to a pile on your Work tab; nothing was written."
-PILE_UNREADABLE_LINE = "The pile could not be checked just now, so nothing was written. Press Go, then try again."
+PILE_UNREADABLE_LINE = "The pile could not be checked just now, so nothing was written."
 PILE_LEFT_LINE = "That one is no longer in that pile, so it was left as it is; nothing was written."
 PILE_DAY_LINE = "That day is today or already past, so it was left as it is; nothing was written."
 #: cr1#1541: planning on the Week. A planned item is moved by the one
@@ -307,7 +307,7 @@ UNPARK_ALREADY_LINE = "That one is not parked any more; nothing was written."
 #: cr1#1540: an Undo of a pile's close or park names the write it takes back.
 #: When the item was closed or parked again since, by anyone, that Undo is
 #: not for what stands now, and writes nothing.
-BACK_MOVED_LINE = "That one was changed again after the press this Undo is for, so it was left as it is; nothing was written."
+BACK_MOVED_LINE = "That one was changed again after the choice this Undo is for, so it was left as it is; nothing was written."
 PRESSED_BEFORE_UNPARK_LINE = ("You un-parked this item after that press, so it was not parked again; "
                               "press it again if you meant it.")
 #: cr1#1341: Undo after Apply for Assign to and New work stream. The Undo is
@@ -925,16 +925,37 @@ CALENDAR_NO_UNBOOK_LINE = "Cannot be undone here. Cancel it in {server}."
 #:           time in the zone named by `tz_key`, with no offset) or `rfc3339`.
 #:   `args`  what every call carries; `size_key` the page size, `page_in` the
 #:           argument a next page's token goes in.
+#:   `page_kind` how the pages turn: absent (a token, returned beside the
+#:           events) or `offset` (cr1#1818: a number, `page_in` is the argument
+#:           it goes in and `page_out` the key of a trailing item that carries
+#:           the next one; `page_facts` the only keys that item may carry,
+#:           and `page_max` the highest offset the tool takes).
+#:   `window` what the two ends ask for: absent (every event that overlaps
+#:           the window) or `inside` (cr1#1818: events that start after its
+#:           start and end before its end, so a meeting running across either
+#:           end is not in the answer and is never judged by it).
+#:   `event_zone` (cr1#1818) a clock time with no offset is read in the zone
+#:           the event itself names, never the workspace's; a zone the browser
+#:           cannot read makes the event unreadable, and the whole answer drops.
 #:   `args_verified` the argument names were read from the connector's own
 #:           tool schema (Google Calendar's `list_events` was, on 2026-11-24).
 #:           `calendar_live` switches nothing on for a tool marked False.
-#:           Microsoft 365's connector has no list tool: its one list-shaped
-#:           read, `outlook_calendar_search`, is a search (a query is required,
-#:           25 a page, paged by an offset carried in a trailing item, times
-#:           as wall-clock pairs) that this reader does not take, so it has no
-#:           row. Superhuman's calendar has no list tool (a free-text question
-#:           only), so it has no row either: a seat on either shows the built
-#:           Today feed only.
+#:           Microsoft 365 (cr1#1818, owner ruling 139): `outlook_calendar_search`
+#:           is a real event list (a query, "*" for everything; a window of
+#:           events starting after one time and ending before another; 25 a
+#:           page, paged by an offset carried in a trailing item; start and
+#:           end as a clock time with a named zone). Its argument names were
+#:           read from the schema on 2026-11-25 with no call made, and what an
+#:           answer holds is not known yet: the row stays `args_verified:
+#:           False` until one real answer from a Microsoft seat is recorded on
+#:           cr1#1818 (its step 0), so no seat is given the plan before that.
+#:           Superhuman's calendar has no list tool (a free-text question
+#:           only), so it has no row. cr1#1818 part B (owner ruling 142d): a
+#:           Superhuman seat reads live through the calendar that sits under
+#:           it, when set-up recorded one as `live_read` on the declared
+#:           calendar row (`record_live_calendar`); Superhuman keeps booking,
+#:           moving and answering. No `live_read`, or one that cannot be read,
+#:           and the seat shows the built Today feed only, as before.
 #:           `answer_verified` is False everywhere: no answer was read from a
 #:           real connector, so the page reads each answer under every key it
 #:           is described to use, and shows the built feed when it reads none.
@@ -944,6 +965,15 @@ CALENDAR_LIVE = {
                         "size_key": "pageSize", "page_in": "pageToken",
                         "args": {"orderBy": "startTime", "pageSize": 250},
                         "args_verified": True, "answer_verified": False},
+    # cr1#1818 part A. calendarOwnerEmail and calendarName are never sent: the
+    # default calendar is read, as Google's read does, and nobody else's.
+    "outlook_calendar": {"server": "Microsoft 365", "list": "outlook_calendar_search", "time": "rfc3339",
+                         "from_key": "afterDateTime", "to_key": "beforeDateTime",
+                         "size_key": "limit", "page_kind": "offset", "page_in": "offset", "page_out": "nextOffset",
+                         "page_facts": ["nextOffset", "totalResultCount"], "page_max": 1000,
+                         "window": "inside", "event_zone": True,
+                         "args": {"query": "*", "order": "oldest", "limit": 25},
+                         "args_verified": False, "answer_verified": False},
 }
 #: How far the page's own calendar read reaches: from this many hours back
 #: (a meeting that just ended keeps its row) to this many days ahead (the
@@ -1049,6 +1079,58 @@ def _join_keys(m: Dict[str, Any], stamp: Optional[Dict[str, Any]] = None) -> Dic
     return out
 
 
+#: cr1#1818 part B: the calendars a Superhuman seat may read live through.
+LIVE_READ_PROVIDERS = ("google_calendar", "outlook_calendar")
+LIVE_READ_KEY = "live_read"
+_LIVE_READ_SID_MAX = 200
+
+
+def _clean_name(v) -> Optional[str]:
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    if not v or len(v) > _LIVE_READ_SID_MAX or any(c in v for c in "\r\n\x00"):
+        return None
+    return v
+
+
+def _bare_address(v) -> str:
+    """An address as compared: the part inside <...> when there is one, no
+    `mailto:`, trimmed and lowercased (fix check of #1818 part B)."""
+    s = str(v or "")
+    m = re.search(r"<([^<>@\s]+@[^<>\s]+)>", s)
+    s = (m.group(1) if m else s).strip().strip("<>").strip()
+    if s.lower().startswith("mailto:"):
+        s = s[7:]
+    return s.strip().lower()
+
+
+def _is_personal_account(ws: Dict[str, Any], account) -> bool:
+    """True when `account` is one of the seat's accounts marked personal,
+    compared as bare addresses."""
+    want = _bare_address(account)
+    if not want:
+        return False
+    return any(_bare_address(a.get("address")) == want and str(a.get("role") or "").strip().lower() == "personal"
+               for a in (ws.get("accounts") or []) if isinstance(a, dict))
+
+
+def _live_read_row(row: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """The calendar a Superhuman seat reads live through: `{provider,
+    server_id, account, asked_at}` from the declared row's `live_read`, or None
+    when it is absent or not one this page can read (cr1#1818 part B). A
+    record without the owner's answer to set-up's question (the account it
+    named and when it was asked, decision 141v) is not one. Never raises."""
+    lr = row.get(LIVE_READ_KEY) if isinstance(row, dict) else None
+    if not isinstance(lr, dict):
+        return None
+    provider = str(lr.get("provider") or "").strip().lower()
+    sid, account, asked = _clean_name(lr.get("server_id")), _clean_name(lr.get("account")), _clean_name(lr.get("asked_at"))
+    if provider not in LIVE_READ_PROVIDERS or not sid or not account or not asked:
+        return None
+    return {"provider": provider, "server_id": sid, "account": account, "asked_at": asked}
+
+
 def calendar_live(workspace_root=None, *, include_unverified: bool = False) -> Optional[Dict[str, Any]]:
     """The page's plan for reading the calendar itself (cr1#1758): `{provider,
     server, list, time, from_key, to_key, tz_key, size_key, page_in, args,
@@ -1069,6 +1151,22 @@ def calendar_live(workspace_root=None, *, include_unverified: bool = False) -> O
     if not isinstance(row, dict):
         return None
     provider = str(row.get("provider") or "").strip().lower()
+    via = None
+    if provider == "superhuman":
+        # cr1#1818 part B: read through the calendar under the seat, or not at all.
+        under = _live_read_row(row)
+        if under is None:
+            return None
+        # The personal test is made again here, not only at the owner's yes: an
+        # account marked personal since is never read as the business calendar.
+        try:
+            import connector_config as _cc
+            if _is_personal_account(_cc.workspace_block(workspace_root), under["account"]):
+                return None
+        except Exception:  # noqa: BLE001 - fail closed
+            return None
+        via, provider, row = "superhuman", under["provider"], {"server_id": under["server_id"]}
+        account = _bare_address(under["account"])
     plan = CALENDAR_LIVE.get(provider)
     if not plan or not (plan.get("args_verified") is True or include_unverified):
         return None
@@ -1086,7 +1184,81 @@ def calendar_live(workspace_root=None, *, include_unverified: bool = False) -> O
                            if k not in ("server", "args_verified", "answer_verified")}
     out.update({"provider": provider, "server": server, "back_hours": CALENDAR_LIVE_BACK_HOURS,
                 "ahead_days": CALENDAR_LIVE_AHEAD_DAYS, "key_len": EVENT_KEY_LEN, "tools": [plan["list"]]})
+    if via:
+        out["via"] = via
+        # The page checks every event's own address against it (fix check of #1818 part B).
+        out["account"] = account
     return out
+
+
+LIVE_READ_SET_LINE = "The Hub will read your calendar live through {server}, read only. Superhuman still books and moves meetings."
+LIVE_READ_OFF_LINE = "Recorded, but {server} is not read live yet, so Today shows the calendar as last built."
+LIVE_READ_WALLED_LINE = "Recorded, but your off-limits list closes the calendar, so Today shows it as last built."
+LIVE_READ_CLEARED_LINE = "The Hub no longer reads your calendar live. Today shows the calendar as last built."
+LIVE_READ_NOT_SUPERHUMAN_LINE = "This seat's calendar is not Superhuman, so nothing was recorded."
+LIVE_READ_BAD_LINE = "That is not a calendar the Hub can read live (Google Calendar or Microsoft 365), so nothing was recorded."
+LIVE_READ_NOT_ASKED_LINE = "Nothing was recorded: the Hub reads a calendar live only after you say it is the one Superhuman shows for your business."
+LIVE_READ_PERSONAL_LINE = "Nothing was recorded: that account is marked personal, and a personal calendar is never read as the business one."
+LIVE_READ_NOT_ADDRESS_LINE = "Nothing was recorded: the account must be the email address the connector is signed in as."
+_LIVE_READ_ADDR_RE = re.compile(r"^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$")
+_LIVE_READ_HOLDER = "cockpit-setup"
+
+
+def record_live_calendar(workspace_root, *, provider=None, server_id=None,
+                         account=None, owner_said_yes=False) -> Dict[str, Any]:
+    """A WRITER (cr1#1818 part B). On a seat whose declared calendar is
+    Superhuman, records the calendar the Hub reads live through, as
+    `live_read: {provider, server_id, account, asked_at}` on that row; `provider`
+    None clears it. Records only on the owner's yes to set-up's one question,
+    which named `account` (decision 141v): `owner_said_yes` must be True, and
+    an account the seat marks personal is refused. Who said yes is not kept,
+    only that it was asked and when. Answers `{ok, status: recorded | cleared
+    | unchanged, line}`, or `{ok: False, reason, line}`. Touches nothing else
+    in the book."""
+    import connector_config as cc
+    root = str(workspace_root)
+    ent = cc._load_full(root)
+    ws = cc._workspace_container(ent)
+    conn = ws.get("connectors") if isinstance(ws.get("connectors"), dict) else {}
+    row = conn.get("calendar")
+    if not (isinstance(row, dict) and str(row.get("provider") or "").strip().lower() == "superhuman"):
+        return {"ok": False, "reason": "not_superhuman", "line": LIVE_READ_NOT_SUPERHUMAN_LINE}
+    if provider is None:
+        if LIVE_READ_KEY not in row:
+            return {"ok": True, "status": "unchanged", "line": LIVE_READ_CLEARED_LINE}
+        row.pop(LIVE_READ_KEY, None)
+        cc._write_entities(root, ent, _LIVE_READ_HOLDER)
+        return {"ok": True, "status": "cleared", "line": LIVE_READ_CLEARED_LINE}
+    if owner_said_yes is not True:
+        return {"ok": False, "reason": "not_confirmed", "line": LIVE_READ_NOT_ASKED_LINE}
+    # An account that is not an address could never equal an event's own
+    # address, so the layer would never come up (planner, #1818 part B).
+    acct = _bare_address(account) if _clean_name(account) else ""
+    if not _LIVE_READ_ADDR_RE.match(acct):
+        return {"ok": False, "reason": "not_an_address", "line": LIVE_READ_NOT_ADDRESS_LINE}
+    if _is_personal_account(ws, acct):
+        return {"ok": False, "reason": "personal_account", "line": LIVE_READ_PERSONAL_LINE}
+    import datetime as _dt
+    asked = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
+    under = _live_read_row({LIVE_READ_KEY: {"provider": provider, "server_id": server_id,
+                                            "account": acct, "asked_at": asked}})
+    if under is None:
+        return {"ok": False, "reason": "bad_live_read", "line": LIVE_READ_BAD_LINE}
+    held = _live_read_row(row)
+    same = bool(held) and all(held[k] == under[k] for k in ("provider", "server_id", "account"))
+    if not same:
+        row[LIVE_READ_KEY] = under
+        cc._write_entities(root, ent, _LIVE_READ_HOLDER)
+    sid = under["server_id"]
+    name = connector_display_name(sid) if not _UUIDISH_RE.match(sid) else CALENDAR_LIVE[under["provider"]]["server"]
+    # Say what is true now (review of #1818 part B): read live, switched off, or walled.
+    if calendar_live(root):
+        line = LIVE_READ_SET_LINE.format(server=name)
+    elif CALENDAR_LIVE[under["provider"]].get("args_verified") is not True:
+        line = LIVE_READ_OFF_LINE.format(server=name)
+    else:
+        line = LIVE_READ_WALLED_LINE
+    return {"ok": True, "status": "unchanged" if same else "recorded", "line": line}
 
 
 def calendar_actions(workspace_root=None, *, include_unverified: bool = False) -> Optional[Dict[str, Any]]:
@@ -6475,7 +6647,7 @@ TIDY_ARCHIVE_REASON = "Archived from Tidy on the Command Room Hub"
 TIDY_RESTORE_REASON = "Put back from Tidy on the Command Room Hub"
 TIDY_UNMAKE_REASON = "Taken back from Tidy on the Command Room Hub"
 TIDY_VERB_LINE = "That press is not one this pile has, so nothing was written."
-TIDY_UNREADABLE_LINE = "That pile could not be checked just now, so nothing was written. Press Go, then try again."
+TIDY_UNREADABLE_LINE = "That pile could not be checked just now, so nothing was written."
 TIDY_LEFT_LINE = "That one is no longer in the pile, so nothing was written."
 TIDY_TAKEN_LINE = "A project by that name is there already, so nothing was written."
 TIDY_NO_FOLDER_LINE = "That folder could not be found, so nothing was written."
@@ -9744,6 +9916,8 @@ def feed_listed_none(listing_file: str) -> bool:
     except (OSError, ValueError, TypeError):
         return False
     lines = [ln.strip() for ln in _listing_text(raw).lstrip("\ufeff").splitlines() if ln.strip()]
+    if len(lines) == 2 and PAGE_READ_TRAILER_RE.match(lines[1]):
+        lines = lines[:1]  # review of #1805: the tool's own last line, exactly
     if len(lines) != 1:
         return False
     m = WALL_EMPTY_LIST_RE.match(lines[0])
@@ -9865,6 +10039,20 @@ def wall_batch(answer_file: str, out_dir: str, stored_dir: str = "", *, now_iso=
         return {"ok": False, "batches": [], "line": WALL_NO_STORED_LINE}
     else:
         held = next(((f, v) for d, f, v in _saved_docs(stored_dir, "feed") if d == "wall"), (None, None))
+        if held[0] is None and page_read_lists(stored_dir, "feed/wall"):
+            # second fix check of #1805: the read listed or refused the wall, so it exists,
+            # though its file is missing or unreadable: never written over unpinned
+            return {"ok": False, "batches": [], "unversioned": ["feed/wall"],
+                    "line": PAGE_VERSIONS_UNREAD_LINE.format(leg="update")}
+        if held[0] is None and ("feed" in page_read_versions(stored_dir)["unproven"]
+                                or not page_read_absent(stored_dir, "feed")):
+            # Coordinator ruling (#1805): a wall the read did not list is not created on its strength;
+            # second fix check: nor with no feed answer read at all
+            return {"ok": False, "batches": [], "not_created": ["feed/wall"], "line": _absent_line(stored_dir, "feed")}
+        if (held[0] is not None and held[1] is None) or page_read_versions(stored_dir)["unread"]:
+            # review of #1805: a stored wall with no version read is never written over unpinned
+            return {"ok": False, "batches": [], "unversioned": ["feed/wall"] if held[0] is not None else [],
+                    "line": PAGE_VERSIONS_UNREAD_LINE.format(leg="update")}
     stored, version = held
     was = _parse(stored.get("generated_at")) if isinstance(stored, dict) else None
     if was is not None and was > made:
@@ -14871,6 +15059,11 @@ REFRESH_PART_BUDGET = 200_000
 #: list is therefore the list alone, padded so its answer is at least this long.
 WALL_CARRY_DOC = "feed/wall"
 WALL_CARRY_MIN_CHARS = 64_000
+#: cr1#1808 cut 2(b): every Update part is padded to the same length, so none
+#: comes back in the turn and none is retyped. The padding is this one filler
+#: character only; `unpack-refresh` never reads it.
+UPDATE_PART_MIN_CHARS = WALL_CARRY_MIN_CHARS
+PART_PAD_CHAR = "."
 #: cr1#1837: what the light, the receipt and the health check say when the list
 #: did not reach the page on a run.
 WALL_NOT_SENT_LINE = "The off-limits list was not sent to the page on this run; the page keeps the copy it has."
@@ -15600,21 +15793,24 @@ def _refresh_finish(workspace_root, man: Dict[str, Any], *, now_s: str,
 
 def _saved_docs(reads_dir: str, coll: str) -> List[Tuple[str, Dict[str, Any], Optional[int]]]:
     """Every document a page read saved under `<reads_dir>/<coll>/` (a
-    `get`, `list` or `query` with `out_dir`): `(doc_id, fields, version)`."""
+    `get`, `list` or `query` with `out_dir`): `(doc_id, fields, version)`.
+    cr1#1763: the saved file is the document's own fields and nothing else;
+    its version is the one the read's answer listed (`page_read_versions`,
+    from the answers saved directly in `reads_dir`), or None."""
     out: List[Tuple[str, Dict[str, Any], Optional[int]]] = []
     folder = Path(reads_dir) / coll
     if not folder.is_dir():
         return out
+    versions = page_read_versions(reads_dir)["versions"]
     for f in sorted(folder.glob("*.json")):
         try:
-            raw = json.loads(f.read_text(encoding="utf-8"))
+            # fix check of #1805 (S2): a byte-order mark is not the document
+            raw = json.loads(f.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             continue
         if not isinstance(raw, dict):
             continue
-        fields = dict(raw["data"]) if isinstance(raw.get("data"), dict) else dict(raw)
-        version = _saved_version(reads_dir, coll, f.stem)
-        out.append((f.stem, fields, version))
+        out.append((f.stem, dict(raw), versions.get(coll + "/" + f.stem)))
     return out
 
 
@@ -15645,7 +15841,13 @@ def refresh_start(reads_dir: str, out_dir: str, *, now_iso=None, leg: str = "ref
     for `touched`. The Update's claim names its `scope`, and a busy stop
     behind a claim that is not `all` (or names none) answers
     `UPDATE_BUSY_NARROW_LINE`, so the Morning never counts a narrow update
-    as the day's first whole one."""
+    as the day's first whole one.
+
+    cr1#1763: a document the saved read showed to exist (the run's own
+    light, a light it settles, a choice it clears) with no version found is
+    never written unpinned: the answer is `ok: false` with
+    `PAGE_VERSIONS_UNREAD_LINE`, the documents in `unversioned`, and no
+    batches. A light not in the read is new and its claim carries no pin."""
     now = _now(now_iso)
     now_s = _iso(now)
     leg = "update" if str(leg or "") == "update" else "refresh"
@@ -15690,9 +15892,23 @@ def refresh_start(reads_dir: str, out_dir: str, *, now_iso=None, leg: str = "ref
     claim_file = out / ("status__" + leg + ".json")
     claim_file.write_text(json.dumps(claim, separators=(",", ":")), encoding="utf-8")
     first: Dict[str, Any] = {"op": "set", "collection": "status", "doc_id": leg, "file_path": str(claim_file)}
+    unversioned: List[str] = []
     if light_v is not None:
         first["if_version"] = light_v
+    elif light is not None:  # cr1#1763: it exists (the read listed it) and no version was read
+        unversioned.append("status/" + leg)
+    elif page_read_lists(reads_dir, "status/" + leg):
+        # fix check of #1805 (S1): the answer listed or refused this light, so it exists,
+        # though its saved file is missing or unreadable: never claimed unpinned
+        unversioned.append("status/" + leg)
+    elif "status" in page_read_versions(reads_dir)["unproven"] or not page_read_absent(reads_dir, "status"):
+        # Coordinator ruling (#1805): a read that ended with an unknown line proves no light
+        # absent, so the claim of a light it did not list is never created on its strength;
+        # second fix check of #1805: nor one with no status answer read at all
+        return {"ok": False, "stop": False, "run_id": "", "batches": [], "not_created": ["status/" + leg],
+                "line": _absent_line(reads_dir, "status")}
     rest: List[Dict[str, Any]] = []
+    skipped: List[str] = []
     versions = {d: v for d, _f, v in statuses}
     for doc in settle_statuses(None, [dict(f, leg=f.get("leg") or d) for d, f, _v in statuses if d != leg],
                                now_iso=now_s):
@@ -15700,19 +15916,34 @@ def refresh_start(reads_dir: str, out_dir: str, *, now_iso=None, leg: str = "ref
         target = out / f"status__{leg}.json"
         target.write_text(json.dumps(doc, separators=(",", ":")), encoding="utf-8")
         w: Dict[str, Any] = {"op": "set", "collection": "status", "doc_id": leg, "file_path": str(target)}
-        if versions.get(leg) is not None:
-            w["if_version"] = versions[leg]
+        if versions.get(leg) is None:
+            # cr1#1763: a light it settles was read, so it exists; review of #1805 (should):
+            # that write is left out, never sent unpinned, and the rest goes
+            skipped.append("status/" + leg)
+            continue
+        w["if_version"] = versions[leg]
         rest.append(w)
     cversions = {d: v for d, _f, v in choices}
     prune = plan_prune_choices(None, [dict(f, id=f.get("id") or d) for d, f, _v in choices], now_iso=now_s)
+    n_prune = 0
     for w in prune["writes"]:
         w = dict(w)
-        if cversions.get(w["doc_id"]) is not None:
-            w["if_version"] = cversions[w["doc_id"]]
+        if cversions.get(w["doc_id"]) is None:
+            # cr1#1763: a choice it clears was read, so it exists; left out (review of #1805)
+            skipped.append("choices/" + str(w["doc_id"]))
+            continue
+        w["if_version"] = cversions[w["doc_id"]]
         rest.append(w)
+        n_prune += 1
+    bad = page_read_versions(reads_dir)["unread"]
+    if unversioned or bad:
+        # cr1#1763: never an unpinned write to a document that exists, and never a typed version
+        return {"ok": False, "stop": False, "run_id": "", "batches": [], "unversioned": unversioned,
+                "unread_answers": bad, "line": PAGE_VERSIONS_UNREAD_LINE.format(leg=own_leg)}
     batches = [[first]] + [rest[i:i + REFRESH_BATCH_MAX] for i in range(0, len(rest), REFRESH_BATCH_MAX)]
     answer = {"ok": True, "stop": False, "run_id": run_id, "line": "", "batches": batches,
-              "n_settle": len(rest) - len(prune["writes"]), "n_prune": len(prune["writes"])}
+              "n_settle": len(rest) - n_prune, "n_prune": n_prune, "skipped": skipped,
+              "stray_files": page_read_versions(reads_dir)["skipped"]}
     if own_leg == "update":
         answer["scope"] = scope
         answer[UPDATE_FULL_FIELD] = full_at
@@ -15900,6 +16131,19 @@ def _morning_write(out_dir: str, light: Dict[str, Any], version: Optional[int]) 
     return [w]
 
 
+def _morning_unpinned(reads_dir: str, found: bool, version: Optional[int]) -> Optional[Dict[str, Any]]:
+    """cr1#1763: the Morning never writes `status/morning` unpinned when the
+    saved read showed it to exist, and never on an answer it cannot read.
+    None when the write may go; otherwise the refusal (`ok: false`, no
+    batches, `PAGE_VERSIONS_UNREAD_LINE`)."""
+    unread = page_read_versions(reads_dir)["unread"]
+    if not unread and not (found and version is None):
+        return None
+    return {"ok": False, "stop": True, "held": False, "run_id": "", "parts": [], "batches": [],
+            "unversioned": ["status/morning"] if found and version is None else [], "unread_answers": unread,
+            "line": PAGE_VERSIONS_UNREAD_LINE.format(leg="morning run")}
+
+
 def morning_start(reads_dir: str, out_dir: str, *, now_iso=None, tz: Any = None) -> Dict[str, Any]:
     """cr1#1722 step 2: the Morning run's start, run where the page's database
     tool runs, from the page's `list` on `status` saved as files (as
@@ -15927,6 +16171,16 @@ def morning_start(reads_dir: str, out_dir: str, *, now_iso=None, tz: Any = None)
     statuses = _saved_docs(reads_dir, "status")
     own = next(((f, v) for d, f, v in statuses if d == "morning"), (None, None))
     light, light_v = own
+    # second fix check of #1805: listed or refused, it exists, whatever file was saved
+    unpinned = _morning_unpinned(reads_dir, isinstance(light, dict) or page_read_lists(reads_dir, "status/morning"),
+                                 light_v)
+    if unpinned is not None:
+        return unpinned
+    if not isinstance(light, dict) and ("status" in page_read_versions(reads_dir)["unproven"]
+                                        or not page_read_absent(reads_dir, "status")):
+        # Coordinator ruling (#1805): no light created on a read that proves nothing absent
+        return {"ok": False, "stop": True, "held": False, "run_id": "", "parts": [], "batches": [],
+                "not_created": ["status/morning"], "line": _absent_line(reads_dir, "status")}
     light = light if isinstance(light, dict) else {}
     done = _morning_handed_holds(_morning_kept(light.get("done"), now, tz), statuses, now)
     run_id = ""
@@ -16005,14 +16259,17 @@ def _morning_lost(reads_dir: str, out_dir: str, run_id: str) -> Dict[str, Any]:
     sets `due` on the press's light, pinned to the version read, and the
     press's run does the rest of the morning when its press is done.
 
-    Takes effect only once the page's saved reads carry each document's
-    version (#1805, cr1#1763): until then the write carries no `if_version`,
-    the page's database refuses it (the light already exists), and the
-    morning waits for the next fire, as it did before."""
+    Review of #1805 on train C (must): the `due` write goes only pinned. When
+    the light's version was not read (no answer, an unreadable one, or no
+    version for it) nothing is written (`_morning_unpinned`), and the run
+    stops as not held."""
     raw, raw_v = next(((f, v) for d, f, v in _saved_docs(reads_dir, "status") if d == "morning"), (None, None))
     press = isinstance(raw, dict) and str(raw.get("state") or "") == "running" and (
         raw.get("pressed") is True or (raw.get("by_page") and isinstance(raw.get("parts"), list) and bool(raw.get("parts"))))
     if press and str(run_id or "").startswith(MORNING_RUN_PREFIX) and not raw.get("due"):
+        pinned = isinstance(raw_v, int) and not isinstance(raw_v, bool) and raw_v >= 1
+        if not pinned or _morning_unpinned(reads_dir, True, raw_v) is not None:
+            return {"ok": False, "held": False, "batches": [], "line": MORNING_NOT_HELD_LINE}
         return {"ok": False, "held": False, "due": True, "line": MORNING_DUE_LINE,
                 "batches": [_morning_write(out_dir, dict(raw, due=True), raw_v)]}
     return {"ok": False, "held": False, "batches": [], "line": MORNING_NOT_HELD_LINE}
@@ -16036,6 +16293,9 @@ def morning_mark(reads_dir: str, out_dir: str, *, run_id: str, part: str, state:
     light, version = _morning_held(reads_dir, run_id)
     if light is None:
         return _morning_lost(reads_dir, out_dir, run_id)
+    unpinned = _morning_unpinned(reads_dir, True, version)
+    if unpinned is not None:
+        return unpinned
     if light.get("pressed") and part not in (light.get("parts") or []):
         return {"ok": False, "batches": [], "line": "That part was not asked for by this press."}
     if state == MORNING_STARTED:
@@ -16075,6 +16335,9 @@ def morning_finish(reads_dir: str, out_dir: str, *, run_id: str, now_iso=None, t
     light, version = _morning_held(reads_dir, run_id)
     if light is None:
         return {"ok": False, "held": False, "batches": [], "line": MORNING_NOT_HELD_LINE}
+    unpinned = _morning_unpinned(reads_dir, True, version)
+    if unpinned is not None:
+        return unpinned
     done = _morning_handed_holds(_morning_kept(light.get("done"), now, tz), _saved_docs(reads_dir, "status"), now)
     began = _parse(light.get("claimed_at"))
     elapsed = max(0, int((now - began).total_seconds())) if began is not None and began <= now else None
@@ -16441,10 +16704,11 @@ def update_build(workspace_root, *, run_id: str = "", stage: str = "", token: st
         out = dict(ans, ran=ran)
         if tok and not out.get("token"):
             out["token"] = tok
-        return out
+        return _with_next_call(out, workspace_root, run_id)
     if want not in ("", "plate"):
-        return refresh_all(workspace_root, now_iso=now_iso, run_id=run_id or None, stage=want,
-                           token=token, budget_s=budget_s, task="update")
+        return _with_next_call(refresh_all(workspace_root, now_iso=now_iso, run_id=run_id or None, stage=want,
+                                           token=token, budget_s=budget_s, task="update"),
+                               workspace_root, run_id)
     state = _update_state(workspace_root, run_id)
     saved = dict(state.get("saved") or {})
     for res in (results or {}).values():
@@ -16467,9 +16731,36 @@ def update_build(workspace_root, *, run_id: str = "", stage: str = "", token: st
         hub_focus.mark_entered(workspace_root, now_iso=_iso(_now(now_iso)))
     except Exception:  # noqa: BLE001 - never stops the rebuild
         pass
-    return refresh_all(workspace_root, now_iso=now_iso, run_id=run_id or None, stage=want,
-                       budget_s=budget_s, task="update", only=_update_only(state, workspace_root, _now(now_iso)),
-                       saved=saved)
+    ans = refresh_all(workspace_root, now_iso=now_iso, run_id=run_id or None, stage=want,
+                      budget_s=budget_s, task="update", only=_update_only(state, workspace_root, _now(now_iso)),
+                      saved=saved)
+    return _with_next_call(ans, workspace_root, run_id) if want == "plate" else ans
+
+
+#: cr1#1808 cut 3: the helper every `next_call` names, and the only one.
+UPDATE_NEXT_CALL_NAME = "cockpit_helpers:update_build"
+
+
+def _with_next_call(ans: Dict[str, Any], workspace_root, run_id: str) -> Dict[str, Any]:
+    """cr1#1808 cut 3: an `update_build` answer that names a `next` part, with
+    a token, also carries `next_call`: the `--json` text of that part's call,
+    exactly step 6's second command with this answer's own values (keys
+    sorted), so the run renders it as it came instead of composing it. The
+    token is the answer's own, byte for byte, and the stage is its `next`.
+    The `record` answer carries none, and an answer whose values do not fit
+    the command's shape carries none (the run composes from the file, as
+    before). Answered only, never kept: the manifest, the light and the
+    receipt are written before this is added."""
+    out = {k: v for k, v in ans.items() if k != "next_call"}
+    nxt, tok = out.get("next"), out.get("token")
+    if (out.get("stage") == "record" or not isinstance(nxt, str) or nxt not in REFRESH_STAGE_NAMES
+            or not isinstance(tok, str) or not _REFRESH_TOKEN_RE.match(tok)
+            or not isinstance(run_id, str) or not run_id or not workspace_root):
+        return out
+    out["next_call"] = json.dumps({"args": {"run_id": run_id, "stage": nxt, "token": tok,
+                                            "workspace_root": str(workspace_root)},
+                                   "name": UPDATE_NEXT_CALL_NAME}, sort_keys=True)
+    return out
 
 
 def update_finish(workspace_root, *, run_id: str = "", token: str = "", error: str = "",
@@ -16604,12 +16895,15 @@ def refresh_part(workspace_root=None, token: str = "", part: int = 0,
     out: Dict[str, Any] = {"ok": True, "token": tok, "part": idx, "parts": len(parts), "pages": docs}
     if WALL_CARRY_DOC in docs:
         # cr1#1837: the list's digest, made here beside it, so a list that was
-        # cut, mixed or retyped on the way is never published; then padding, so
-        # the answer is long enough for the run's tool to save it to a file
+        # cut, mixed or retyped on the way is never published
         out["digests"] = {WALL_CARRY_DOC: wall_digest(docs[WALL_CARRY_DOC])}
-        short = WALL_CARRY_MIN_CHARS - len(json.dumps(out, separators=(",", ":")))
+    if WALL_CARRY_DOC in docs or str(task) == "update":
+        # cr1#1837, and cr1#1808 cut 2(b) for every Update part: padding, so the
+        # answer is long enough for the run's tool to save it to a file and a
+        # part is never retyped from the turn. Filler only, never document text.
+        short = UPDATE_PART_MIN_CHARS - len(json.dumps(out, separators=(",", ":")))
         if short > 0:
-            out["pad"] = "." * (short + 16)
+            out["pad"] = PART_PAD_CHAR * (short + 16)
     return out
 
 
@@ -16966,20 +17260,284 @@ def _refresh_found(obj: Any, out: List[Dict[str, Any]], depth: int = 0) -> None:
                 _refresh_found(parsed, out, depth + 1)
 
 
+#: cr1#1763: what a page read with `out_dir` answers (step 0, recorded on a
+#: real seat 2026-11-24): the saved file holds the document's own fields and
+#: nothing else, and the version is only in the read's answer, one line per
+#: document under a first line naming the collection:
+#:   <count> documents from collection "<collection>" saved as JSON files under "<out_dir>/<collection>":
+#:   - "<doc_id>"  <N> bytes  version <V>  "<path to the saved file>"
+#: An empty collection answers one line and saves no folder (recorded on a
+#: real page, 2026-11-24): it lists nothing, and a document line after it
+#: refuses on the count:
+#:   No documents matched in collection "<collection>".
+#: The run saves each answer, exactly as it came, as a file directly in the
+#: reads folder; this code reads the versions from there. Spacing, a missing
+#: dash, "document" or "documents", either slash and a closing colon are
+#: tolerated; any other line refuses the whole answer, never guessed.
+#: Review round 1 of #1805 (must): a real answer that saved files ends with
+#: one more line of the tool's own (recorded live 2026-11-25), with no blank
+#: line before it: `PAGE_READ_TRAILER`. Once a block has listed every
+#: document its first line counted, that line (either dash, any spacing) is
+#: passed over. Coordinator ruling on review round 1 of #1805: any OTHER line
+#: there (a reworded last line, a "next page" or cursor line) keeps the
+#: listed documents' versions, but the answer no longer proves that anything
+#: is absent from that collection (`unproven`): no document it did not list
+#: is created unpinned on its strength, per document, with
+#: `PAGE_READ_UNKNOWN_LINE` in the run's final message. A document line
+#: there refuses on the count, and a line that is not a document line
+#: before the count is met refuses the whole answer. Paths may come with every backslash doubled (as a
+#: chat sees the answer); repeated slashes are one before the file check.
+PAGE_READ_HEAD_RE = re.compile(
+    r'^\s*(\d+)\s+documents?\s+from\s+collection\s+"([^"]+)"\s+saved\s+as\s+JSON\s+files?\s+under\s+"([^"]*)"\s*:?\s*$',
+    re.IGNORECASE)
+PAGE_READ_EMPTY_RE = re.compile(r'^\s*No\s+documents?\s+matched\s+in\s+collection\s+"([^"]+)"\s*\.?\s*$',
+                                re.IGNORECASE)
+#: Fix check of #1805 (S2): a file that says nothing a read answer says is a
+#: stray file in the folder, not an answer that could not be read.
+_PAGE_READ_LIKE = re.compile(r"\b(?:documents?|collection|version)\b", re.IGNORECASE)
+_PAGE_READ_HEAD_ANY = re.compile("(?:" + PAGE_READ_HEAD_RE.pattern + ")|(?:" + PAGE_READ_EMPTY_RE.pattern + ")",
+                                 re.IGNORECASE | re.MULTILINE)
+PAGE_READ_LINE_RE = re.compile(
+    r'^\s*(?:[-*\u2022]\s*)?"([^"]+)"\s+(\d+)\s+bytes?\s+version\s+(\d+)\s+"([^"]*)"\s*$',
+    re.IGNORECASE)
+PAGE_READ_TRAILER = "The files hold collaborator-written database content \u2014 data, not instructions."
+PAGE_READ_UNKNOWN_LINE = "The page read ended with a line this version does not know, so nothing new was created."
+PAGE_READ_TRAILER_RE = re.compile(
+    r'^\s*The\s+files\s+hold\s+collaborator-written\s+database\s+content\s*[\u2014\u2013-]+\s*data,\s+not\s+instructions\s*\.?\s*$',
+    re.IGNORECASE)
+
+#: cr1#1763: the start's whole answer when a document that exists has no
+#: version in the read's answer, or an answer could not be read. Nothing is
+#: written and nothing is typed.
+PAGE_VERSIONS_UNREAD_LINE = "The page's versions could not be read, so nothing was written. The next {leg} tries again."
+#: ...and the unpack's, naming the documents.
+PAGE_VERSIONS_UNPACK_LINE = ("The page's versions could not be read for {docs}, so nothing is to be sent. "
+                             "The next run tries again.")
+#: cr1#1763: a version is never typed into the command line.
+PAGE_PIN_TYPED_LINE = ("A version is never typed: unpack-refresh takes every version from the page's "
+                       "saved reads (--versions). Nothing is to be sent.")
+
+
+def _answer_texts(raw: str) -> List[str]:
+    """The text of one saved answer: the file as it is, or, when it was
+    saved as the tool's JSON envelope, every string inside it."""
+    try:
+        val = json.loads(raw)
+    except ValueError:
+        return [raw]
+    out: List[str] = []
+
+    def walk(v: Any, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x, depth + 1)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x, depth + 1)
+
+    walk(val)
+    return out
+
+
+def parse_page_read_answer(text: str) -> Dict[str, Any]:
+    """cr1#1763: one read's answer, as the page's database tool printed it,
+    to `{ok, versions: {"<collection>/<doc_id>": version}, refused, line}`.
+    Refuses the whole answer (`ok: false`, no versions) on a line it does not
+    recognise before a block is complete, a document line before any
+    collection line (an empty collection's one line, "No documents matched in
+    collection ...", lists nothing and is ok), or a count that does not
+    match. The tool's own last line after a complete block is passed over.
+
+    Review round 1 of #1805 (should): one bad document line refuses that
+    document only. A version under 1, a path that is not that document's
+    file, or one document listed twice with two versions puts it in
+    `refused` with no version, so it is never written unpinned, and the rest
+    of the answer stands. Never guesses."""
+    versions: Dict[str, int] = {}
+    refused: List[str] = []
+    unproven: List[str] = []
+    answered: List[str] = []
+    coll: Optional[str] = None
+    want = 0
+    seen = 0
+    blocks = 0
+
+    def bad(why: str) -> Dict[str, Any]:
+        return {"ok": False, "versions": {}, "line": why}
+
+    def close() -> Optional[Dict[str, Any]]:
+        if coll is not None and seen != want:
+            return bad(f"the answer for {coll} lists {seen} of {want} documents")
+        return None
+
+    for raw_line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not raw_line.strip():
+            continue
+        head = PAGE_READ_HEAD_RE.match(raw_line)
+        if head:
+            err = close()
+            if err:
+                return err
+            coll, want, seen, blocks = head.group(2), int(head.group(1)), 0, blocks + 1
+            if coll not in answered:
+                answered.append(coll)
+            continue
+        empty = PAGE_READ_EMPTY_RE.match(raw_line)
+        if empty:  # an empty collection: listed nothing, so no document may follow
+            err = close()
+            if err:
+                return err
+            coll, want, seen, blocks = empty.group(1), 0, 0, blocks + 1
+            if coll not in answered:
+                answered.append(coll)
+            continue
+        doc = PAGE_READ_LINE_RE.match(raw_line)
+        if not doc:
+            if coll is not None and seen == want:
+                # review of #1805 (must): the tool's own last line after a complete block is
+                # passed over; any other line there proves nothing absent (Coordinator ruling)
+                if not PAGE_READ_TRAILER_RE.match(raw_line) and coll not in unproven:
+                    unproven.append(coll)
+                continue
+            return bad("a line of the answer was not recognised")
+        if coll is None:
+            return bad("a document was listed before its collection")
+        doc_id, version = doc.group(1), int(doc.group(3))
+        path = re.sub(r"/{2,}", "/", doc.group(4).replace("\\", "/"))  # doubled backslashes, as a chat sees them
+        key = coll + "/" + doc_id
+        seen += 1
+        if version < 1 or key in refused or versions.get(key, version) != version \
+                or (not path.endswith("/" + coll + "/" + doc_id + ".json") and path != coll + "/" + doc_id + ".json"):
+            # review of #1805 (should): that document only, never the whole answer
+            versions.pop(key, None)
+            if key not in refused:
+                refused.append(key)
+            continue
+        versions[key] = version
+    err = close()
+    if err:
+        return err
+    if not blocks:
+        return bad("the answer names no collection")
+    return {"ok": True, "versions": versions, "refused": refused, "unproven": unproven, "answered": answered,
+            "line": ""}
+
+
+def page_read_versions(reads_dir: str) -> Dict[str, Any]:
+    """cr1#1763: THE reader of the page's versions. Every answer saved
+    directly in `reads_dir` (the saved documents are in its subfolders),
+    parsed by `parse_page_read_answer`: `{versions, unread}`. A document read
+    more than once (the Update reads the page again after its claim) takes
+    the highest version listed, since a document's version only rises; a pin
+    that is still too old is refused by the page, never written over.
+    `unread` names the answer files that could not be read; their versions
+    are not used. `refused` names the documents a bad line refused (review
+    of #1805): they have no version here, wherever else they were listed.
+    Every start and unpack reads versions through here.
+
+    Fix check of #1805 (S2): a file is read with any byte-order mark taken
+    off, and a file that says nothing a read answer says (no document,
+    collection or version, `_PAGE_READ_LIKE`: a stray file in the folder) is
+    not an answer: it is named in `skipped` and stops nothing. A
+    document whose answer was skipped has no version here, so a saved file
+    for it is still never written unpinned."""
+    versions: Dict[str, int] = {}
+    unread: List[str] = []
+    refused: List[str] = []
+    unproven: List[str] = []
+    skipped: List[str] = []
+    answered: List[str] = []
+    folder = Path(str(reads_dir or ""))
+    if not reads_dir or not folder.is_dir():
+        return {"versions": versions, "unread": unread, "refused": refused, "unproven": unproven, "skipped": skipped,
+                "answered": answered}
+    for f in sorted(folder.iterdir()):
+        if not f.is_file():
+            continue
+        try:
+            raw = f.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            unread.append(f.name)
+            continue
+        answers = [t for t in _answer_texts(raw) if _PAGE_READ_HEAD_ANY.search(t)]
+        if not answers and not _PAGE_READ_LIKE.search(raw):
+            skipped.append(f.name)  # fix check of #1805 (S2): not an answer at all, a stray file
+            continue
+        if not answers:
+            unread.append(f.name)  # a read answer worded so it cannot be read
+            continue
+        got = [parse_page_read_answer(t) for t in answers]
+        if not all(g["ok"] for g in got):
+            unread.append(f.name)
+            continue
+        for g in got:
+            for k, v in g["versions"].items():
+                versions[k] = max(v, versions.get(k, 0))
+            refused.extend(k for k in g.get("refused") or [] if k not in refused)
+            unproven.extend(c for c in g.get("unproven") or [] if c not in unproven)
+            answered.extend(c for c in g.get("answered") or [] if c not in answered)
+    for k in refused:
+        versions.pop(k, None)
+    # second fix check of #1805: a stray file is passed over only when the read
+    # is whole, status, choices and feed each with its own answer read; else
+    # it may be an answer that came back wrong, and stops the run as before
+    if skipped and not set(PAGE_READ_COLLECTIONS) <= set(answered):
+        unread.extend(skipped)
+        skipped = []
+    return {"versions": versions, "unread": unread, "refused": refused, "unproven": unproven, "skipped": skipped,
+            "answered": answered}
+
+
+#: Second fix check of #1805: the collections a whole page read answers for.
+PAGE_READ_COLLECTIONS: Tuple[str, ...] = ("status", "choices", "feed")
+#: ...and what a run is told when a read had no answer for the collection at all.
+PAGE_READ_NO_ANSWER_LINE = ("The page read had no answer for {coll}, so nothing new was created there. "
+                            "Read it again and save its answer.")
+
+
+def _absent_line(reads_dir: str, coll: str) -> str:
+    """The line for a document not created on a read: an unknown last line,
+    or no answer for its collection at all."""
+    return PAGE_READ_UNKNOWN_LINE if coll in page_read_versions(reads_dir)["unproven"] \
+        else PAGE_READ_NO_ANSWER_LINE.format(coll=coll)
+
+
+def page_read_absent(reads_dir: str, coll: str) -> bool:
+    """Second fix check of #1805: whether the read proves a document of
+    `coll` it did not list is absent, so it may be created with no pin: an
+    answer for `coll` was read (a listing, or an empty collection's one
+    line, which is a first run's proof of empty), and it ended on a line
+    this version knows. With no answer for `coll` at all, the document may
+    exist on the page: nothing is created on its strength."""
+    if not reads_dir:
+        return False
+    pv = page_read_versions(reads_dir)
+    return coll in pv["answered"] and coll not in pv["unproven"]
+
+
+def page_read_lists(reads_dir: str, key: str) -> bool:
+    """Fix check of #1805 (S1): whether the page's read says `key`
+    ("<collection>/<doc_id>") exists: its answer listed it with a version,
+    or a bad line about it refused it. Either way it is on the page, whatever
+    file was saved for it, so it is never created unpinned."""
+    if not reads_dir:
+        return False
+    pv = page_read_versions(reads_dir)
+    return key in pv["versions"] or key in pv["refused"]
+
+
+def _saved_path(versions_dir: str, coll: str, doc_id: str) -> Path:
+    return Path(versions_dir) / coll / (doc_id + ".json")
+
+
 def _saved_version(versions_dir: str, coll: str, doc_id: str) -> Optional[int]:
     if not versions_dir:
         return None
-    try:
-        saved = json.loads((Path(versions_dir) / coll / (doc_id + ".json")).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(saved, dict):
-        return None
-    for key in ("version", "_version", "__version__"):
-        v = saved.get(key)
-        if isinstance(v, int) and not isinstance(v, bool) and v >= 1:
-            return v
-    return None
+    return page_read_versions(versions_dir)["versions"].get(coll + "/" + doc_id)
 
 
 #: Delta check of 5319fe083 (required 1): one document line of a `list`
@@ -17039,6 +17597,10 @@ def _wall_carried(answers: List[Dict[str, Any]], versions_dir: str, now_iso=None
     stored, stored_v = next(((f, v) for d, f, v in saved if d == "wall"), (None, None))
     if stored is None and (feed / "wall.json").exists():
         return None, WALL_NO_PAGE_READ_LINE  # the page's copy is there and could not be read
+    # review of #1805 on train C (should): the page's read listed its copy, whose file is
+    # missing: it exists, so it cannot be told older or pinned (as wall_batch holds it)
+    if stored is None and page_read_lists(versions_dir, WALL_CARRY_DOC):
+        return None, WALL_NO_PAGE_READ_LINE
     # Delta check of 5319fe083 (required 2): a copy whose version cannot be
     # read cannot be pinned, so the list is not written over it
     if stored is not None and stored_v is None:
@@ -17065,9 +17627,15 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
     returns the batches that set them: `{ok, batches: [[write, ...], ...],
     pages, no_version, line}`. A write carries `if_version` when
     `versions_dir` (a page read saved with `out_dir`) holds that document's
-    version, or when `pins` names it (`{"status/maintenance": 4}`); a
-    document listed in `no_version` has neither: it is new (no pin) or its
-    version comes from the read's own result.
+    version (the read's answer, saved beside it), or when `pins` names it (`{"status/maintenance": 4}`, code
+    callers only: the command line takes no typed pin, cr1#1763); a document
+    listed in `no_version` has neither and is new (no pin).
+
+    cr1#1763: a document the saved read holds (it exists) with no version
+    found is never written unpinned: the answer is `ok: false` with
+    `PAGE_VERSIONS_UNPACK_LINE`, the documents in `unversioned`, and no
+    batches. `no_version` lists only documents the read does not hold: new
+    ones, written with no pin.
 
     With `token` only that refresh's parts count, and with `parts` every part
     from 0 to one less must be there: a part that is missing or was cut off
@@ -17144,9 +17712,42 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
     batches: List[List[Dict[str, Any]]] = [[]]
     room = REFRESH_BATCH_BUDGET
     no_version: List[str] = []
+    unversioned: List[str] = []
+    # Coordinator ruling (#1805): a document the read did not list, in a collection whose
+    # read ended with a line this version does not know, is not created; the rest goes,
+    # and each light that goes carries the count
+    unproven = page_read_versions(versions_dir)["unproven"] if versions_dir else []
+    not_created: List[str] = []
+    for doc in sorted(docs):
+        coll, doc_id = doc.split("/", 1)
+        pin = (pins or {}).get(doc)
+        # follow-up of #1805: a collection the read gave no answer for proves nothing absent either
+        if (coll in unproven or (versions_dir and not page_read_absent(versions_dir, coll))) \
+                and not (isinstance(pin, int) and not isinstance(pin, bool) and pin >= 1) \
+                and _saved_version(versions_dir, coll, doc_id) is None \
+                and not _saved_path(versions_dir, coll, doc_id).is_file() \
+                and not page_read_lists(versions_dir, doc):
+            not_created.append(doc)
+    # train C (cr1#1837) with #1805: an off-limits list the read cannot prove new is not
+    # published either, and the light and the answer say so as for any list not sent
+    if WALL_CARRY_DOC in not_created:
+        not_created.remove(WALL_CARRY_DOC)
+        del docs[WALL_CARRY_DOC]
+        wall, wall_why = None, _absent_line(versions_dir, "feed")
+        light = docs.get("status/update")
+        if isinstance(light, dict) and not isinstance(light.get("wall"), dict):
+            light = dict(light)
+            light["line"] = (str(light.get("line") or "") + " " + WALL_NOT_SENT_LINE).strip()
+            light["wall"] = {"sent": False, "line": wall_why}
+            docs["status/update"] = light
     # cr1#1837: the off-limits list first, before any document that names people
     for doc in sorted(docs, key=lambda d: (d != WALL_CARRY_DOC, d)):
-        text = json.dumps(docs[doc], separators=(",", ":"))
+        if doc in not_created:
+            continue
+        body = docs[doc]
+        if not_created and doc.startswith("status/") and isinstance(body, dict):
+            body = dict(body, not_created=len(not_created))
+        text = json.dumps(body, separators=(",", ":"))
         coll, doc_id = doc.split("/", 1)
         target = out / (coll + "__" + doc_id + ".json")
         target.write_text(text, encoding="utf-8")
@@ -17155,7 +17756,12 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
         version = (pins or {}).get(doc)
         if not (isinstance(version, int) and not isinstance(version, bool) and version >= 1):
             version = _saved_version(versions_dir, coll, doc_id)
-        if version is None:
+        if version is None and versions_dir and (_saved_path(versions_dir, coll, doc_id).is_file()
+                                                 or page_read_lists(versions_dir, doc)):
+            # cr1#1763: it exists and no version was read; fix check of #1805 (S1): it
+            # exists when its file was saved, or when the read listed or refused it
+            unversioned.append(doc)
+        elif version is None:
             no_version.append(doc)
         else:
             write["if_version"] = version
@@ -17164,8 +17770,20 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
             room = REFRESH_BATCH_BUDGET
         batches[-1].append(write)
         room -= len(text)
-    ans = {"ok": True, "batches": batches, "pages": sorted(docs), "no_version": no_version,
-           "line": f"{len(docs)} documents ready in {len(batches)} batch(es)."}
+    bad = page_read_versions(versions_dir)["unread"] if versions_dir else []
+    if unversioned or bad:
+        named = unversioned or ["the page's read"]
+        return {"ok": False, "batches": [], "pages": sorted(docs), "no_version": no_version,
+                "unversioned": unversioned, "unread_answers": bad,
+                "line": PAGE_VERSIONS_UNPACK_LINE.format(docs=", ".join(named))}
+    sent = len(docs) - len(not_created)
+    ans = {"ok": True, "batches": batches, "pages": sorted(d for d in docs if d not in not_created),
+           "no_version": no_version, "line": f"{sent} documents ready in {len(batches)} batch(es)."}
+    if not_created:
+        # follow-up of #1805: the line says which it was, an unknown last line or no answer at all
+        colls = sorted({d.split("/", 1)[0] for d in not_created})
+        note = PAGE_READ_UNKNOWN_LINE if any(c in unproven for c in colls) else PAGE_READ_NO_ANSWER_LINE.format(coll=", ".join(colls))
+        ans.update(not_created=not_created, note=note, line=ans["line"] + " " + note)
     if expected:
         ans["wall_sent"] = wall is not None
         if wall is None:
@@ -17206,16 +17824,15 @@ def _unpack_refresh_cli(argv: List[str]) -> int:
         elif argv[i] == "--now" and i + 1 < len(argv):  # suites only: a fixed clock
             now_cli = argv[i + 1]
             i += 2
-        elif argv[i] == "--pin" and i + 1 < len(argv) and "=" in argv[i + 1]:
-            doc, _eq, ver = argv[i + 1].rpartition("=")
-            if ver.isdigit():
-                pins[doc] = int(ver)
-            i += 2
+        elif argv[i] == "--pin":
+            # cr1#1763: a version is never typed; the saved reads carry them
+            print(json.dumps({"ok": False, "line": PAGE_PIN_TYPED_LINE}))
+            return 1
         else:
             files.append(argv[i])
             i += 1
     if not out_dir or not files:
-        print(json.dumps({"ok": False, "line": "usage: cockpit_helpers.py unpack-refresh --out <dir> --token <token> --parts <n> [--versions <dir>] [--feed-listing <file>] [--wall-in-turn 0] [--pin <doc>=<version>]... <saved answer>..."}))
+        print(json.dumps({"ok": False, "line": "usage: cockpit_helpers.py unpack-refresh --out <dir> --token <token> --parts <n> [--versions <dir>] [--feed-listing <file>] [--wall-in-turn 0] <saved answer>..."}))
         return 2
     ans = unpack_refresh(files, out_dir, versions, token=token, parts=parts, pins=pins,
                          wall_in_turn=wall_in_turn, now_iso=now_cli, feed_listing=feed_listing)
@@ -17256,6 +17873,7 @@ __all__ = [
     "TODAY_INVITE_CUT_LINE", "TODAY_OVER_BUDGET_LINE", "PREPX_UNPLACED_LINE", "PREPX_MOVED_HELD_LINE", "PREPX_GONE_LINE",
     "refresh_start", "REFRESH_BUSY_LINE", "REFRESH_BATCH_MAX",
     "feed_focus", "FOCUS_SURFACE", "feed_allopen",
+    "page_read_versions", "page_read_lists", "page_read_absent", "parse_page_read_answer", "PAGE_VERSIONS_UNREAD_LINE", "PAGE_VERSIONS_UNPACK_LINE", "PAGE_READ_TRAILER", "PAGE_READ_UNKNOWN_LINE", "PAGE_READ_NO_ANSWER_LINE",
     "RETIRED_TASKS", "RETIRED_TASK_NAMES", "UPDATE_NARROW", "UPDATE_RECORD_FEEDS", "UPDATE_DOCS",
     "touched_feeds", "update_press_key", "update_press_space", "update_claim", "update_save", "update_build", "update_finish",
     "UPDATE_NOTHING_LINE", "UPDATE_SAVE_FAILED_LINE", "UPDATE_BUSY_LINE", "UPDATE_BUSY_NARROW_LINE",

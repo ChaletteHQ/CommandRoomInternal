@@ -50,6 +50,11 @@ except Exception:  # pragma: no cover
     from atomic_write import acquire_write_lock, atomic_write_json, release_write_lock  # type: ignore
 
 STORE_REL = Path("_hq") / "data" / "mail-rules.json"
+#: The last off-limits count Maintenance saw (decision 141x 2): a number and a
+#: time only, never a name, kept in the workspace beside the store.
+#: Not `mail-rules-<word>.json`: that is the shape the sync-conflict rule
+#: reads as a copy of the list (`sync_conflict_copies.copy_tag`).
+SEEN_REL = Path("_hq") / "data" / "off-limits-count.json"
 MODES = ("hide", "show")
 MATCHES = ("sender", "domain", "subject", "kind")
 #: The inbox's own noise classes (`inbox_helpers.NOISE_CLASSES`), the only
@@ -165,11 +170,25 @@ def load(workspace_root) -> Dict[str, Any]:
 def _load_for_write(workspace_root) -> Dict[str, Any]:
     path = store_path(workspace_root)
     if not path.exists():
+        # cr1#1831 (decision 141u b): a list that vanished while a kept copy
+        # still puts someone off limits is held, not "nobody" (the likelier
+        # accident on a synced folder). No copy, or a copy with nobody on
+        # it, is a new workspace: empty, as before.
+        if _missing_is_held(workspace_root):
+            held = _empty()
+            held[HELD_KEY] = {"missing": True}
+            return held
         return _empty()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise ValueError(f"mail rules unreadable: {type(exc).__name__}") from exc
+    return _checked(data)
+
+
+def _checked(data) -> Dict[str, Any]:
+    """A parsed store, made whole, or ValueError when it is no answer. The
+    live store and every kept copy pass the same check (cr1#1831)."""
     if not isinstance(data, dict):
         raise ValueError("mail rules unreadable: not an object")
     # cr1#1830: rules that are there but not a list are no answer. Read as an
@@ -383,12 +402,430 @@ def _write(workspace_root, mutate) -> Dict[str, Any]:
             store = _load_for_write(workspace_root)
         except ValueError:
             return {"outcome": "error", "line": STORE_UNREADABLE_LINE}
+        # cr1#1831 (decision 141aa): while the list is held and a readable
+        # kept copy exists, no write lands. The copy ends the hold only by the
+        # owner's restore (ruling 142a), so one re-entered person never
+        # becomes the list while the copies from before the hold age out.
+        refusal = held_refusal(workspace_root, store)
+        if refusal is not None:
+            return refusal
+        was_held = is_held(store)
         result, changed = mutate(store)
         if changed:
             atomic_write_json(path, store)
+            if was_held:
+                # review round 1, should-fix 5: the write that ends a hold
+                # (a re-entered, maybe shorter, list) never replaces the last
+                # copy from before the hold.
+                return result
+            # cr1#1831 (decision 141t): the day's copy is taken AFTER the
+            # write, from the bytes just written, once they read back clean
+            # and are not a held store, so the newest off-limits row is never
+            # the one a restore loses and a damaged list never reaches a backup.
+            _keep_written_copy(workspace_root, path)
         return result
     finally:
         release_write_lock(lock)
+
+
+# ---------------------------------------------------------------- the last readable copy (cr1#1831)
+#
+# Owner rulings 142a and 142b on cr1#1831 (option A). A store that cannot be
+# read is no answer, so everything that names people holds (cr1#1830). The
+# repair has three parts, all here:
+#   * KEPT COPY. On every write, after the new store is written and read back
+#     clean (decision 141t), the store just written is copied into the one
+#     backups folder, `_hq/data/_backups/mail-rules.json.<YYYYMMDD>.backup`
+#     (one slot a day: a later clean write that day replaces it with a newer
+#     good copy). The folder tidy keeps the three newest
+#     (`cleanup_actions._TIDY_BACKUP_GROUPS`). A copy is `{taken_at, store}`.
+#   * SET ASIDE. Maintenance, on every fire (`set_aside_if_unreadable`), copies
+#     a damaged store's bytes into a freshly claimed dated `_archive/cleanup-*`
+#     folder with a MANIFEST.md, then replaces the live file, atomically, with
+#     a HELD store: no rules, and a `held` record. The live file is never
+#     absent, because a missing store reads as nobody off limits. A held store
+#     reads as not readable (`account_scope_gate.off_limits_readable`), so every
+#     hold stays on, and `held_line` gives the brief and the health check one
+#     line with the last readable copy's date and count, naming nobody.
+#     The same fire seeds a copy only when no readable copy exists at all
+#     (decision 141x 1), and notes the off-limits count it saw, a number only,
+#     in `_hq/data/off-limits-count.json` (141x 2): a missing store whose copies
+#     are gone too reads as held when that count was not zero.
+#   * WRITES WAIT while the list is held and a readable copy exists
+#     (`held_refusal`, decision 141aa): every write of the store answers the
+#     copy's date and count and the words to restore it, so a hold with a
+#     copy ends only by the restore. With no copy there is nothing to lose,
+#     and re-entering the list in Settings ends the hold.
+#   * RESTORE, on the owner's word only (`restore_off_limits`, confirm after
+#     the date and count are shown, with the shown copy's time handed back and
+#     compared as an instant, 141u c and 141x 3); or, with no readable copy, the owner re-enters the
+#     list in Settings (`add_rule(off_limits=True)`), which ends the hold. Nothing
+#     restores by itself.
+
+BACKUP_DIR_REL = Path("_hq") / "data" / "_backups"
+BACKUP_GROUP = STORE_REL.name
+BACKUP_SUFFIX = ".backup"
+HELD_KEY = "held"
+_ARCHIVE_ROOT = "_archive"
+_ARCHIVE_PREFIX = "cleanup-"
+#: HQRESOLVE1: an archive never holds a folder named `_hq`.
+_HQ_MIRROR = "hq-system-locks"
+
+HELD_LINE = ("\u26a0 Your off-limits list could not be read, so nobody is named on your "
+             "meetings and no new mail is read until it is fixed. The last readable copy "
+             "is from {when}, with {count} on it: say \"restore my off-limits list\" to put "
+             "it back.")
+HELD_NO_COPY_LINE = ("\u26a0 Your off-limits list could not be read, so nobody is named on "
+                     "your meetings and no new mail is read until it is fixed. There is no "
+                     "earlier readable copy, so re-enter the list in Settings.")
+RESTORE_OFFER_LINE = ("The last readable copy of your off-limits list is from {when}, with "
+                      "{count} on it. Anyone you put off limits after that is not on it. "
+                      "Say yes to put it back.")
+RESTORED_OFF_LIMITS_LINE = ("Your off-limits list is back as it was on {when}, with {count} "
+                            "on it. It applies from the next run.")
+RESTORE_NO_COPY_LINE = ("There is no earlier readable copy of your off-limits list, so nothing "
+                        "was restored. Re-enter the list in Settings.")
+RESTORE_NOT_NEEDED_LINE = "Your off-limits list reads normally, so there is nothing to restore."
+HELD_NO_COPY_COUNT_LINE = ("⚠ Your off-limits list could not be read, so nobody is named "
+                           "on your meetings and no new mail is read until it is fixed. There is "
+                           "no earlier readable copy. It last had {count} on it: re-enter them in "
+                           "Settings.")
+HELD_WRITE_REFUSED_LINE = ("Nothing was changed: your off-limits list is on hold. The last "
+                           "readable copy is from {when}, with {count} on it. Say \"restore my "
+                           "off-limits list\" to put it back, then make the change.")
+RESTORE_ASK_FIRST_LINE = ("Nothing was restored: I need to show you the copy first. {offer}")
+RESTORE_CHANGED_LINE = ("Nothing was restored: the last readable copy is not the one you were "
+                        "shown. It is now from {when}, with {count} on it. Say yes again to "
+                        "put that one back.")
+ASIDE_MANIFEST = ("# Off-limits list set aside\n\n"
+                  "The off-limits list (`_hq/data/mail-rules.json`) could not be read, so "
+                  "Command Room moved it here on {when} and left a held list in its place. "
+                  "Nobody is named until the owner restores the last readable copy or "
+                  "re-enters the list. Nothing here was deleted.\n\n"
+                  "- `{rel}`: the file as it was found\n")
+
+
+def is_held(store: Any) -> bool:
+    """A held store: the damaged one was set aside and nothing has replaced
+    it yet (cr1#1831)."""
+    return isinstance(store, dict) and isinstance(store.get(HELD_KEY), dict)
+
+
+def off_limits_count(store: Dict[str, Any]) -> int:
+    """How many senders a store puts off limits. A count, never a name."""
+    return sum(1 for r in active_rules(store) if r.get("off_limits"))
+
+
+def _backups_dir(workspace_root) -> Path:
+    return Path(workspace_root) / BACKUP_DIR_REL
+
+
+def _missing_is_held(workspace_root) -> bool:
+    """A missing store reads as held when the newest readable kept copy puts
+    anyone off limits (decision 141u b), or, with no copy left, when the last
+    count Maintenance saw was not zero (decision 141x 2: the list and its
+    copies both gone). A workspace that never had anyone off limits has no
+    count, or a zero one, and stays new. Never raises."""
+    try:
+        got = _copies(workspace_root)
+        if got:
+            return off_limits_count(got[0]["store"]) > 0
+        seen = _seen_count(workspace_root)
+        return seen is None or seen > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _seen_count(workspace_root) -> Optional[int]:
+    """The last off-limits count Maintenance saw: 0 when it never saw one (no
+    trace), None when the trace is there and cannot be read (read as held:
+    the workspace had a list, and nobody can say it was empty)."""
+    path = Path(workspace_root) / SEEN_REL
+    if not path.exists():
+        return 0
+    try:
+        n = json.loads(path.read_text(encoding="utf-8")).get("off_limits_count")
+        return n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _note_seen(workspace_root, n: int, now_iso: Optional[str] = None) -> None:
+    """Maintenance keeps the count it saw (decision 141x 2), written only when
+    it changes. Never raises."""
+    try:
+        if Path(workspace_root).joinpath(SEEN_REL).exists() and _seen_count(workspace_root) == n:
+            return
+        atomic_write_json(Path(workspace_root) / SEEN_REL,
+                          {"version": 1, "off_limits_count": int(n), "seen_at": _iso(_now(now_iso))})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _today_slot(workspace_root, now_iso: Optional[str] = None) -> Path:
+    return _backups_dir(workspace_root) / f"{BACKUP_GROUP}.{_now(now_iso):%Y%m%d}{BACKUP_SUFFIX}"
+
+
+def _keep_written_copy(workspace_root, path: Path) -> None:
+    """The store as just written, read back from disk, into today's slot;
+    nothing when it does not read back clean or is held. Never raises."""
+    try:
+        written = _checked(json.loads(path.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001 - not verified clean: no copy
+        return
+    if not is_held(written):
+        _keep_copy(workspace_root, written)
+
+
+def _keep_copy(workspace_root, store: Dict[str, Any], now_iso: Optional[str] = None) -> None:
+    """A verified store into today's backup slot. Best-effort: a copy that
+    cannot be written never stops the owner's own write."""
+    now = _now(now_iso)
+    dest = _today_slot(workspace_root, now_iso)
+    try:
+        atomic_write_json(dest, {"version": 1, "taken_at": _iso(now), "store": store})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _copies(workspace_root) -> List[Dict[str, Any]]:
+    """The readable kept copies, newest first, each `{path, taken_at, store}`.
+    A copy that does not read is skipped, never offered."""
+    out = []
+    d = _backups_dir(workspace_root)
+    if not d.is_dir():
+        return out
+    for p in d.iterdir():
+        name = p.name
+        if not (name.startswith(BACKUP_GROUP + ".") and name.endswith(BACKUP_SUFFIX)) or not p.is_file():
+            continue
+        try:
+            wrap = json.loads(p.read_text(encoding="utf-8"))
+            store = _checked(wrap.get("store"))
+            taken = _parse(wrap.get("taken_at"))
+        except Exception:  # noqa: BLE001
+            continue
+        if taken is None or is_held(store):
+            continue
+        out.append({"path": p, "taken_at": taken, "store": store})
+    out.sort(key=lambda c: (c["taken_at"], c["path"].name), reverse=True)
+    return out
+
+
+def last_readable_copy(workspace_root) -> Optional[Dict[str, Any]]:
+    """The newest readable kept copy as `{taken_at, n}`, or None. Read only."""
+    got = _copies(workspace_root)
+    if not got:
+        return None
+    return {"taken_at": _iso(got[0]["taken_at"]), "n": off_limits_count(got[0]["store"])}
+
+
+def _count_words(n: int) -> str:
+    if n == 0:
+        return "nobody"
+    return "1 person" if n == 1 else f"{n} people"
+
+
+def _when(workspace_root, value) -> str:
+    """A copy's time in the owner's timezone, in plain words."""
+    try:
+        from tz import to_local
+        d = to_local(value, workspace_path=workspace_root)
+    except Exception:  # noqa: BLE001
+        d = _parse(value)
+    if d is None:
+        return "an earlier day"
+    hour = d.hour % 12 or 12
+    return f"{d:%A}, {d:%B} {d.day} at {hour}:{d:%M} {'AM' if d.hour < 12 else 'PM'}"
+
+
+def held_refusal(workspace_root, store: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """The refusal every write of the store answers while the list is held and
+    a readable kept copy exists (decision 141aa): the copy's date and count and
+    the words to restore it, naming nobody. None when the list is not held, or
+    held with no copy (then re-entering it ends the hold: nothing to lose)."""
+    if store is None:
+        try:
+            store = _load_for_write(workspace_root)
+        except ValueError:
+            return None
+    if not is_held(store):
+        return None
+    copy = last_readable_copy(workspace_root)
+    if copy is None:
+        return None
+    return {"outcome": "refused", "reason": "held_with_copy",
+            "line": HELD_WRITE_REFUSED_LINE.format(when=_when(workspace_root, copy["taken_at"]),
+                                                   count=_count_words(copy["n"])),
+            "taken_at": copy["taken_at"], "n": copy["n"]}
+
+
+def held_line(workspace_root) -> str:
+    """The one line the brief and the health check say while the list cannot
+    be read: date and count of the last readable copy, never a name."""
+    copy = last_readable_copy(workspace_root)
+    if copy is None:
+        # the count trace knows how many were on the list (a number only)
+        seen = _seen_count(workspace_root)
+        if seen:
+            return HELD_NO_COPY_COUNT_LINE.format(count=_count_words(seen))
+        return HELD_NO_COPY_LINE
+    return HELD_LINE.format(when=_when(workspace_root, copy["taken_at"]),
+                            count=_count_words(copy["n"]))
+
+
+def _claim_archive(root: Path, today: str) -> str:
+    """A fresh dated archive folder, never one that exists (the folder tidy's
+    own rule: an existing dated folder is never written into)."""
+    arch = root / _ARCHIVE_ROOT
+    arch.mkdir(parents=True, exist_ok=True)
+    base = f"{_ARCHIVE_PREFIX}{today}"
+    name, n = base, 2
+    while True:
+        try:
+            (arch / name).mkdir()
+            return name
+        except FileExistsError:
+            name = f"{base}-{n}"
+            n += 1
+
+
+def _local_day(root: Path, now: _dt.datetime) -> str:
+    """The workspace's own day for an archive folder's name (review round 1,
+    should-fix 7); UTC only when the workspace's zone cannot be read."""
+    try:
+        from tz import to_local
+        return f"{to_local(now, workspace_path=root):%Y-%m-%d}"
+    except Exception:  # noqa: BLE001
+        return f"{now:%Y-%m-%d}"
+
+
+def _set_aside_locked(root: Path, path: Path, now: _dt.datetime) -> Dict[str, Any]:
+    """Under the store's lock, a damaged store: its bytes into a dated archive
+    folder, then the held store over it in one atomic replace."""
+    raw = path.read_bytes()
+    bucket = _claim_archive(root, _local_day(root, now))
+    rel = Path(*(_HQ_MIRROR if part == "_hq" else part for part in STORE_REL.parts))
+    dest = root / _ARCHIVE_ROOT / bucket / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(raw)
+    archived = (Path(_ARCHIVE_ROOT) / bucket / rel).as_posix()
+    from atomic_write import atomic_write_text
+    atomic_write_text(root / _ARCHIVE_ROOT / bucket / "MANIFEST.md",
+                      ASIDE_MANIFEST.format(when=_iso(now), rel=rel.as_posix()))
+    held = _empty()
+    held[HELD_KEY] = {"set_aside_at": _iso(now), "archived_to": archived}
+    atomic_write_json(path, held)
+    return {"outcome": "set_aside", "archived_to": archived}
+
+
+def set_aside_if_unreadable(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """Maintenance, every fire: a store that cannot be read is set aside and a
+    held store takes its place. A WRITER. Outcomes: `absent`, `missing_held`
+    (no file, but a kept copy puts someone off limits, or with no copy the
+    last count seen was not zero: held, decisions 141u b and 141x 2; nothing
+    is written), `readable`, `held` (already set aside), `set_aside`,
+    `error`. A readable list with no readable copy at all gets one (decisions
+    141u a and 141x 1: only when there is none, so a wrong but readable list
+    never pushes the older good copies out), and its count is noted. Never
+    raises."""
+    root = Path(workspace_root)
+    path = store_path(root)
+    if not path.exists():
+        return {"outcome": "missing_held" if _missing_is_held(root) else "absent"}
+    try:
+        lock = acquire_write_lock(path, holder="mail-rules")
+    except Exception as exc:  # noqa: BLE001
+        return {"outcome": "error", "reason": type(exc).__name__}
+    try:
+        try:
+            store = _load_for_write(root)
+        except ValueError:
+            return _set_aside_locked(root, path, _now(now_iso))
+        if is_held(store):
+            return {"outcome": "held"}
+        seeded = False
+        if not _copies(root):
+            _keep_copy(root, store, now_iso)
+            seeded = True
+        _note_seen(root, off_limits_count(store), now_iso)
+        return {"outcome": "readable", "seeded": seeded}
+    except Exception as exc:  # noqa: BLE001
+        return {"outcome": "error", "reason": type(exc).__name__}
+    finally:
+        release_write_lock(lock)
+
+
+def restore_off_limits(workspace_root, *, confirm: bool = False,
+                       taken_at: Optional[str] = None,
+                       now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """The owner's restore (ruling 142a, option A). Without `confirm`: what the
+    last readable copy is, as a date and a count, and nothing is written. With
+    `confirm` (the owner said yes after seeing them): the newest readable copy
+    is put back, keeping any rule, dropped thread or kept thread the owner
+    added during the hold. A damaged store not yet set aside is set aside
+    first, so the archive keeps it. Names nobody. Outcomes: `offer`,
+    `restored`, `changed`, `ask_first`, `no_copy`, `not_needed`, `error`.
+
+    The yes is tied to the copy shown (decision 141u c): the offer returns
+    `taken_at`, and `confirm` must hand the same `taken_at` back. Any other
+    value, or none, restores nothing and answers `changed` with the newest
+    copy's date and count, to be confirmed again. The two are compared as
+    instants, so the same moment written another way is the same copy
+    (decision 141x 3); a yes with no time at all answers `ask_first` with the
+    offer, and writes nothing."""
+    root = Path(workspace_root)
+    try:
+        current = _load_for_write(root)
+        damaged = False
+    except ValueError:
+        current, damaged = None, True
+    if not damaged and not is_held(current):
+        return {"outcome": "not_needed", "line": RESTORE_NOT_NEEDED_LINE}
+    copies = _copies(root)
+    if not copies:
+        return {"outcome": "no_copy", "line": RESTORE_NO_COPY_LINE}
+    top = copies[0]
+    when, count = _when(root, top["taken_at"]), _count_words(off_limits_count(top["store"]))
+    if not confirm:
+        return {"outcome": "offer", "line": RESTORE_OFFER_LINE.format(when=when, count=count),
+                "taken_at": _iso(top["taken_at"]), "n": off_limits_count(top["store"])}
+    if taken_at in (None, ""):
+        offer = RESTORE_OFFER_LINE.format(when=when, count=count)
+        return {"outcome": "ask_first", "line": RESTORE_ASK_FIRST_LINE.format(offer=offer),
+                "taken_at": _iso(top["taken_at"]), "n": off_limits_count(top["store"])}
+    shown = _parse(taken_at)
+    # the same instant, at the whole second a copy is stored with
+    if shown is None or _iso(shown) != _iso(top["taken_at"]):
+        return {"outcome": "changed", "line": RESTORE_CHANGED_LINE.format(when=when, count=count),
+                "taken_at": _iso(top["taken_at"]), "n": off_limits_count(top["store"])}
+    path = store_path(root)
+    lock = acquire_write_lock(path, holder="mail-rules")
+    try:
+        try:
+            current = _load_for_write(root)
+        except ValueError:
+            _set_aside_locked(root, path, _now(now_iso))
+            current = _load_for_write(root)
+        if not is_held(current):
+            return {"outcome": "not_needed", "line": RESTORE_NOT_NEEDED_LINE}
+        back = json.loads(json.dumps(top["store"]))
+        for key, ident in (("rules", "id"), ("dropped", "thread_id"), ("kept", "thread_id")):
+            rows = back.get(key) if isinstance(back.get(key), list) else []
+            have = {r.get(ident) for r in rows if isinstance(r, dict)}
+            for r in current.get(key) or []:
+                if isinstance(r, dict) and r.get(ident) not in have:
+                    rows.append(r)
+            if rows or key != "kept":
+                back[key] = rows
+        back["restored"] = {"at": _iso(_now(now_iso)), "copy_taken_at": _iso(top["taken_at"]),
+                            "set_aside_at": (current.get(HELD_KEY) or {}).get("set_aside_at")}
+        back.pop(HELD_KEY, None)
+        atomic_write_json(path, back)
+    finally:
+        release_write_lock(lock)
+    return {"outcome": "restored", "line": RESTORED_OFF_LIMITS_LINE.format(when=when, count=count),
+            "taken_at": _iso(top["taken_at"]), "n": off_limits_count(top["store"])}
 
 
 def _replay(store: Dict[str, Any], choice_id: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -465,7 +902,17 @@ def add_rule(workspace_root, *, mode: str, match: str, value: Any, note: Any = "
             out["replaced"] = replaced
         return out, True
 
-    return _write(workspace_root, mutate)
+    def mutate_or_end_hold(store):
+        # cr1#1831: the owner re-entering the list (Settings writes each
+        # answer here with `off_limits`) ends a hold; an ordinary rule does not.
+        result, changed = mutate(store)
+        if off_limits and is_held(store) and result.get("outcome") in ("applied", "already"):
+            store["re_entered"] = {"at": now, "set_aside_at": store[HELD_KEY].get("set_aside_at")}
+            store.pop(HELD_KEY, None)
+            changed = True
+        return result, changed
+
+    return _write(workspace_root, mutate_or_end_hold)
 
 
 def remove_rule(workspace_root, *, rule_id_: str, choice_id: Optional[str] = None,
@@ -689,7 +1136,13 @@ def feed(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
     kept = [{"thread_id": k.get("thread_id"), "title": k.get("title") or "", "kept_at": k.get("kept_at")}
             for k in store.get("kept") or [] if isinstance(k, dict) and not k.get("unkept_at")]
     kept.sort(key=lambda k: str(k.get("kept_at") or ""), reverse=True)
-    return {"generated_at": _iso(_now(now_iso)), "rules": rules, "dropped": dropped[:100],
+    held = None
+    if is_held(store):
+        # review round 1, should-fix 6: Settings shows why the list is empty.
+        copy = last_readable_copy(workspace_root)
+        held = {"line": held_line(workspace_root),
+                "copy_taken_at": (copy or {}).get("taken_at"), "copy_n": (copy or {}).get("n")}
+    return {"generated_at": _iso(_now(now_iso)), "held": held, "rules": rules, "dropped": dropped[:100],
             "kept": kept[:100], "n_kept": len(kept),
             "n_rules": len(rules), "n_dropped": len(dropped),
             "matches": list(MATCHES), "kinds": list(KINDS), "modes": list(MODES)}
@@ -702,4 +1155,6 @@ __all__ = [
     "add_rule", "remove_rule", "drop_thread", "bring_back", "keep_thread", "unkeep_thread",
     "apply_one", "apply_choices", "feed",
     "REOPEN_OFF_LIMITS_LINE", "reopens_off_limits",
+    "is_held", "off_limits_count", "last_readable_copy", "held_line",
+    "set_aside_if_unreadable", "restore_off_limits",
 ]

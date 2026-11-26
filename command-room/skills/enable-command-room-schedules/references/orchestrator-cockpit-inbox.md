@@ -290,13 +290,13 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"p
 
 A part must reach a file in this session's own scratch WHOLE, exactly as the refresh step says (`orchestrator-cockpit-refresh.md`, its step 3): never retyped, shortened or re-composed, and never saved in the workspace.
 
-**3. Unpack the parts HERE, in this shell,** and send the batch, exactly as the refresh step's step 4 says, with `--versions` pointing at a `list` of `feed` saved with `out_dir` in this session's scratch and no `--pin`:
+**3. Unpack the parts HERE, in this shell,** and send the batch, exactly as the refresh step's step 4 says, with `--versions` pointing at a `list` of `feed` saved with `out_dir` in this session's scratch, its answer saved exactly as it came as a file in that same folder, and no `--pin`: An empty collection answers one line (`No documents matched in collection "<name>".`): save that line as its answer too, since it is the proof that nothing is there, and without it nothing new is created.
 
 ```bash
 python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" "<each saved part file>"
 ```
 
-It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE ArtifactData `batch`, exactly as printed. The feed carries each row's number from the landed page and `fire_stamp`, exactly as Phase 6's does.
+It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE ArtifactData `batch`, exactly as printed. An answer with `note` (cr1#1763: the page's read ended with a line this version does not know, so a document it did not list was not created; the rest is in the batches) is sent as any other, and its `note` ends this run's final response, word for word, after the line it would have said. The feed carries each row's number from the landed page and `fire_stamp`, exactly as Phase 6's does.
 
 **4. The finish.** Send the batch whenever `parts` has a part, even when the answer's `light` is an error (a blocked read still built its Inbox tab; the light says the blocked line). When `parts` is empty, send nothing. Then `set` the answer's `light` on `status/inbox`, pinned to the version the running write returned. When a batch could not be sent, write the light through shared step 1's helper as `error` with one sentence saying the Inbox tab did not land, never the answer's `done` light. Then the shared last step's final response only. Nothing here sends mail.
 

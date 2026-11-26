@@ -1510,7 +1510,24 @@ def write_fire_start_marker(workspace_root, *, now: _dt.datetime,
             except Exception:  # noqa: BLE001 - a stale lock is reclaimed
                 pass
     out["sync_conflicts"] = _sync_conflict_sweep(workspace_root)
+    out["off_limits_aside"] = _off_limits_aside(workspace_root)
     return out
+
+
+def _off_limits_aside(workspace_root) -> dict:
+    """cr1#1831 (owner rulings 142a, 142b): EVERY scheduled Maintenance fire,
+    on its way in and beside the sync-conflict sweep, sets a damaged
+    off-limits list aside (`mail_rules.set_aside_if_unreadable`): its bytes
+    go into a dated archive folder and a held list takes its place, so the
+    brief and the health check can say when the last readable copy was taken
+    and how many people are on it. Nothing restores here; the owner does.
+    Best-effort: a step that fails costs this fire nothing."""
+    try:
+        import mail_rules
+
+        return mail_rules.set_aside_if_unreadable(workspace_root)
+    except Exception as exc:  # noqa: BLE001
+        return {"outcome": "error", "reason": f"{type(exc).__name__}"}
 
 
 def _sync_conflict_sweep(workspace_root) -> dict:

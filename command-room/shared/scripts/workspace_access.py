@@ -796,6 +796,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "morning_message:plan_send",  # cr1#1017 - the morning message planned (it builds the plate); see the writer table row
     "morning_message:record",  # cr1#1017 - the morning message sent or skipped, one row; see the writer table row
     "cockpit_helpers:add_chat_priority",  # cr1#776 - see the writer table row
+    "cockpit_helpers:record_live_calendar",  # cr1#1818 part B - see the writer table row
     "cockpit_helpers:apply_review_choices",  # cr1#779 - see the writer table row
     "cockpit_helpers:apply_week_choices",  # cr1#780 - see the writer table row
     "cockpit_helpers:apply_settings_choices",  # cr1#781 - see the writer table row
@@ -816,6 +817,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "words:set_words",  # cr1#1017 (train 8) - see the writer table row
     "advisor_sheet:write_sheet",  # cr1#1017 (train 8) - see the writer table row
     "onboarding_confirm:apply_confirm",  # cr1#1163 part 2 - see the writer table row
+    "mail_rules:restore_off_limits",  # cr1#1831 - the owner's restore of the off-limits list, on the owner's word; see the writer table row
     "whats_new_setup:apply_walk",  # cr1#1235 - see the writer table row
     "schedule_config:set_morning_time",  # cr1#1163 part 2 - see the writer table row
     "project_folder:create_project",  # cr1#1582 - see the writer table row

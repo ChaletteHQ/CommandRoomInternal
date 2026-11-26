@@ -344,7 +344,8 @@ def off_limits_readable(workspace_root) -> bool:
     """cr1#1830: whether the mail rules store, where onboarding's off-limits
     answers live, can be told apart from an empty one. Missing is empty
     (nobody was put off limits there): True. Present and unparseable, not
-    an object, or with `rules` that is not a list: False, because
+    an object, with `rules` that is not a list, or held after being set
+    aside (`mail_rules.is_held`, cr1#1831): False, because
     `off_limits_senders` answers "nobody" for it, which is no answer. A
     caller that names people treats False as held: it names nobody. Never
     raises."""
@@ -355,10 +356,12 @@ def off_limits_readable(workspace_root) -> bool:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             import mail_rules
         # the writers' own loader, which tells missing from broken
-        mail_rules._load_for_write(Path(str(workspace_root)))
+        store = mail_rules._load_for_write(Path(str(workspace_root)))
     except Exception:  # noqa: BLE001 - unreadable
         return False
-    return True
+    # cr1#1831: a damaged store Maintenance set aside leaves a held store in
+    # its place, which reads cleanly and holds nobody; it is still no answer.
+    return not mail_rules.is_held(store)
 
 
 def off_limits_senders(workspace_root) -> set:

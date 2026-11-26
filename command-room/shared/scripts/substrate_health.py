@@ -52,6 +52,22 @@ WALL_NOT_SENT_ALARM = (
     "⚠ The last Hub Update could not send your off-limits list to the Hub, so the "
     "page keeps the copy it has, and lists no new mail by itself once that copy is "
     "a day old.")
+
+#: Every off-limits alarm starts with these words, with or without a copy.
+OFF_LIMITS_ALARM_LEAD = "⚠ Your off-limits list could not be read"
+
+
+def _off_limits_alarm(workspace_root) -> str:
+    """cr1#1831: the off-limits alarm with the last readable copy's date and
+    count (`mail_rules.held_line`), never a name; the plain alarm when that
+    cannot be worked out."""
+    try:
+        from mail_rules import held_line
+        return held_line(workspace_root)
+    except Exception:  # noqa: BLE001
+        return OFF_LIMITS_UNREADABLE_ALARM
+
+
 _CONFIG_JSONS = ("workspace_config.json",)  # under _hq/
 
 
@@ -752,7 +768,7 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
     try:
         from account_scope_gate import off_limits_readable
         if not off_limits_readable(workspace_root):
-            lines.append(OFF_LIMITS_UNREADABLE_ALARM)
+            lines.append(_off_limits_alarm(workspace_root))
     except Exception:  # noqa: BLE001 - a check that cannot run says nothing
         pass
     # cr1#1788 (fix check, required item a): the Prep page's edits store is

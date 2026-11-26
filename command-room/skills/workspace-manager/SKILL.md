@@ -687,6 +687,16 @@ A scheduled chat on the "Require this computer" shape has no live widget, so its
 - **`stop publishing my scheduled pages`** → `fire_delivery:set_artifact_publish` with `enabled: false`; say its `line`.
 - A `fire_delivery_flag` row on the ledger (a fire that was allowed to republish and could not) is answered here, in the next interactive chat, by offering to publish that chat's page once — a fire never asks.
 
+### "restore my off-limits list" (cr1#1831, owner rulings 142a and 142b)
+
+**Trigger phrases:** `restore my off-limits list`, `put my off-limits list back`.
+
+When the off-limits list could not be read, Maintenance set it aside and the brief said when the last readable copy was taken and how many people are on it. The restore happens only on the owner's word, and the chat names nobody, before or after it.
+
+1. Ask first: `plan run_writer` `mail_rules:restore_off_limits` with `"args": {"workspace_root": "<WS>"}` (no `confirm`; it writes nothing). Say its `line` as it is. `not_needed` or `no_copy` ends here: say the line and stop.
+2. On `offer`, wait for the owner's yes. Only then run the same writer with `"confirm": true` and the offer's own `"taken_at"`, and say its `line`. On `changed` (a newer copy than the one shown) or `ask_first` (no time was handed back), say its line and ask again with its `taken_at`. A no, or anything else, writes nothing. While a copy exists, every change to the list waits for the restore (decision 141aa); only with no copy does re-entering the list in Settings end the hold.
+3. Never list who is on the copy, and never restore without that yes, in this chat or a scheduled one.
+
 ### "export that doc" / "save that doc to my folder" — a Claude Doc made anyway lands in the folder (DOCS1 D-2, 2026-09-24)
 
 **Trigger phrases:** `export that doc`, `save that doc to my folder`.

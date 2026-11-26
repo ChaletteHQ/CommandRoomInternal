@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.12.3 (2026-11-26)
+
+Open a meeting on Today to prepare it: its agenda, the goal to walk out with and a call guide you can edit, each edit with Undo. An off-limits list that cannot be read is now set aside, and you can restore it. On a Superhuman seat, Today can read your business calendar live once you say yes to one question. The Update keeps each document's version and spends fewer turns, and All open fits a phone's screen. After updating, say "update my hub" once and reload the Hub tab.
+
 ## v6.12.2 (2026-11-26)
 
 A draft with a blank in square brackets, in its body or its subject, no longer passes the voice check, and an off-limits person's last name on its own is now held. Each meeting's write-up is tied to its own calendar event, and live Today can mark a single meeting gone from your calendar. Maintenance says why a step was refused and no longer lists the session sweep as skipped on every cloud run. After updating, say "update my hub" once and reload the Hub tab.
