@@ -76,6 +76,9 @@ ROWS_CAP = 50
 PREP_AHEAD_HOURS = 24
 STATE_WORDS = {"moving": "moving", "quiet": "quiet this week", "no_signal": "no signal"}
 UNREAD_LINE = "Your follow-ups could not be listed just now: who is off limits could not be read. The next refresh tries again."
+#: review 4 of #1814 (should-fix): the follow-up choices could not be read, which is not the off-limits list
+#: review 5 of #1814: no retry is promised (an unreadable file is set aside, not read again)
+PLANS_UNREAD_LINE = "Your follow-ups could not be listed just now: your follow-up choices could not be read."
 
 
 def _date(value: Any) -> Optional[_dt.date]:
@@ -364,7 +367,7 @@ def build(workspace_root, *, now_iso: Optional[str] = None,
         return empty
     drafts = fd.feed_followups(workspace_root, now_iso=now)
     if not drafts.get("ok"):
-        return empty
+        return dict(empty, line=PLANS_UNREAD_LINE) if drafts.get("reason") == "plans_unread" else empty
     people = [p for p in feed.get("people") or [] if isinstance(p, dict)]
     # #1795 review: days on the workspace's own calendar, the resolver the
     # plate and the People tab share (`open_list._workspace_tz`)

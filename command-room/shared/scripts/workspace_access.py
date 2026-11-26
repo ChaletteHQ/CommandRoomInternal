@@ -436,6 +436,8 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_urgent",  # cr1#1786 - Urgent, re-ranked from the inbox part's store, read only
     "cockpit_helpers:feed_prepx",  # cr1#1788 - the Prep page's edits, read only
     "followup_draft:feed_followups",  # cr1#1745 - the same, with the wall checked as it stands
+    "followup_draft:drafts_wanted",  # cr1#1787 - the emails the owner's plan wants for one written-up meeting, read only
+    "followup_draft:redrafts_due",  # cr1#1787 - the follow-ups the plan changed after they were drafted, read only
     "cockpit_helpers:feed_focus",  # cr1#1785 - Focus, the list the owner picks, read only
     "cockpit_helpers:feed_allopen",  # cr1#1785 - every open item, lean, for All open's search, read only
     "cockpit_helpers:feed_stillyours",  # cr1#1706 - the Still yours? review's own document, as its writers left it, read only
@@ -825,6 +827,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "project_folder:undo_create_project",  # cr1#1582 - see the writer table row
     "followup_draft:record_draft",  # cr1#1745 - keeps a meeting's follow-up text in the book; see the writer table row
     "followup_draft:apply_skip",  # cr1#1745 - the "don't draft for meetings like this" rule and its Undo
+    "followup_draft:record_held",  # cr1#1787 part C - a written-up meeting's drafting held, recorded so the page says so
     "still_yours:review_apply",  # cr1#1706 - the Still yours? review's presses and their Undos; see the writer table row
     # KEEP THIS NAME LAST, directly above the closing brace - the same anchor
     # discipline as `RUN_HELPER_ALLOWLIST`: removal proofs and later lanes

@@ -78,6 +78,11 @@ DEFAULT_SPAN_MINUTES = 30
 MAX_SPAN_MINUTES = 8 * 60
 #: The characters of the calendar key (`cockpit_helpers.EVENT_KEY_LEN`).
 KEY_LEN = 32
+#: The series the read gives an event that is not recurring (rule R2 of #1814, decision 146b).
+SERIES_NONE = "none"
+#: Eighth check of #1814: words a read may put where it has no series id; read as unknown (no field), never
+#: as a series key every such event would share.
+SERIES_PLACEHOLDERS = frozenset({"null", "n/a", "na", "false", "unknown", "undefined", "nil", "-"})
 #: The fire a capture pass stages in.
 FIRE = "maintenance"
 
@@ -93,7 +98,7 @@ def event_key(value: Any) -> str:
 
 def none(reason: str) -> Dict[str, Any]:
     """A binding of none, saying why. Pure."""
-    return {"event_id": "", "key": "", "start": "", "calendar": "", "basis": BASIS_NONE,
+    return {"event_id": "", "key": "", "start": "", "end": "", "series": "", "calendar": "", "basis": BASIS_NONE,
             "reason": reason if reason in REASONS else "no_match"}
 
 
@@ -197,8 +202,21 @@ def _binding(ev: Dict[str, Any], basis: str) -> Dict[str, Any]:
     if basis == BASIS_TITLE_TIME and mark == "business":
         mark = ""  # title and time alone never earn the business mark
     eid = str(ev.get("id")).strip()
-    return {"event_id": eid[:512], "key": event_key(eid), "start": str(ev.get("start") or "")[:40],
-            "calendar": mark, "basis": basis, "reason": ""}
+    # rule R2 of #1814: the event's end (its window) and its series key. Sixth review (MUST 2), refined by
+    # decision 146b: the read says "none" for an event that is not recurring, and the binding records "none";
+    # a series id records its key; a read that did not say (the field absent or empty) records no series
+    # (unknown), which rule R2 treats as sharing (fail closed), so an unmarked recurring event never passes
+    # for a one-off
+    sid = str(ev.get("series_id") or "").strip()
+    out = {"event_id": eid[:512], "key": event_key(eid), "start": str(ev.get("start") or "")[:40],
+           "end": str(ev.get("end") or "")[:40], "calendar": mark, "basis": basis, "reason": ""}
+    if sid.lower() == SERIES_NONE:
+        out["series"] = SERIES_NONE
+    elif sid.lower() in SERIES_PLACEHOLDERS:
+        pass   # the read did not say: unknown
+    elif sid and event_key(sid):
+        out["series"] = event_key(sid)
+    return out
 
 
 def bind(meeting: Dict[str, Any], events: Optional[List[Dict[str, Any]]], *,

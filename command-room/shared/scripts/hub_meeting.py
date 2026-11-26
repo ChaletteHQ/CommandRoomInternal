@@ -67,6 +67,9 @@ WALLED_LINE = ("Someone on this meeting is off limits, so the answers and what i
                "your decisions were.")
 WALL_UNREAD_LINE = ("The off-limits list could not be read, so the answers and what is left were not saved; "
                     "your decisions were.")
+#: cr1#1858: an answer whose words name someone who cannot be named here (or whose words could not be checked)
+ANSWER_HELD_LINE = ("{n} named someone who cannot be named here, or could not be checked, so {it} saved as asked, "
+                    "without the answer.")
 PERSONAL_LINE = "A meeting on your personal calendar is not saved from the Hub; nothing was written."
 GONE_LINE = "That save is not on your book; nothing was written."
 UNDONE_LINE = "That save was already taken back; nothing was written."
@@ -284,20 +287,36 @@ def apply_one(workspace_root, c: Dict[str, Any], actor: str) -> Dict[str, Any]:
     saves = _saves(evs)
     done = next((e for e in saves if str(e["data"].get("hub_choice")) == choice_id), None)
     if done is None:
-        done = next((e for e in evs if isinstance(e, dict) and e.get("type") == WRAP_EVENT
+        done = next((e for e in evs if isinstance(e, dict) and e.get("type") in (WRAP_EVENT, APPLY_EVENT)
                      and str((e.get("data") or {}).get("hub_choice")) == choice_id), None)
     if done is not None:
         # cr1#1694, review: the same failed Undo press again answers as it did
         # the first time (error), so the page never reads it as a take-back
         failed = bool(done["data"].get("undoes_choice")) and _undo_failed(done["data"])
-        return {"outcome": "error" if failed else "applied", "line": str(done["data"].get("line") or ""), "replayed": True,
-                "seq": done.get("seq")}
+        # cr1#1787 part D: an Apply that could not make every choice answers as it did the first time
+        failed = failed or (done.get("type") == APPLY_EVENT and bool(done["data"].get("not_done")))
+        again = {"outcome": "error" if failed else "applied", "line": str(done["data"].get("line") or ""),
+                 "replayed": True, "seq": done.get("seq")}
+        # part D review (A, i): a replayed partial Apply carries the stored `not_done`, so the page
+        # re-chooses those choices instead of showing only the line; and says it partly landed
+        nd = done["data"].get("not_done") if done.get("type") == APPLY_EVENT else None
+        if isinstance(nd, list) and nd:
+            again["not_done"] = nd
+            again["light_line"] = light_line(again["line"])
+            if done["data"].get("wrote") or done["data"].get("wrong"):
+                again["partial"] = True
+        return again
     if verb == "save":
         return _save(root, c, inp, choice_id, actor, evs)
     if verb == "undo":
         return _undo(root, str(inp.get("press") or "").strip(), choice_id, actor, saves)
     if verb == "wrap":
         return _wrap(root, c, inp, choice_id, actor, evs)
+    if verb == "done":
+        # cr1#1787 part D: files the meeting away only; `wrap` stays for released pages
+        return _wrap(root, c, inp, choice_id, actor, evs, files_only=True)
+    if verb == "meetapply":
+        return _meetapply(root, c, inp, choice_id, actor, evs)
     if verb == "unwrap":
         return _unwrap(root, str(inp.get("press") or "").strip(), choice_id, actor, evs)
     if verb in ("skipdraft", "unskipdraft"):
@@ -337,6 +356,18 @@ def _save(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
                                  for a in _list(inp.get("answers"))
                                  if isinstance(a, dict) and _clean(a.get("q")) and _clean(a.get("said"))]
     asked_only = [_clean(q) for q in _list(inp.get("asked")) if _clean(q)]
+    # cr1#1858: the writer judges every answer's own words (the page checks full names and addresses; a first
+    # name alone is caught here). One that names someone hidden, or any when who is hidden cannot be read, is
+    # not kept: its question is saved as asked
+    held_answers = 0
+    if answers:
+        import followup_draft as fd
+
+        hw = fd.hidden_words(root)
+        clear = [a for a in answers if hw is not None and not fd.names_hidden([a["q"], a["said"]], hw)]
+        held_answers = len(answers) - len(clear)
+        asked_only += [a["q"] for a in answers if a not in clear and a["q"] not in asked_only]
+        answers = clear
     covered = [_clean(x) for x in _list(inp.get("covered")) if _clean(x)]
     asked_carry = [_clean(x) for x in _list(inp.get("carried")) if _clean(x)]
     # review round 2, should 4: with nobody on file no next brief reads a carry
@@ -419,6 +450,9 @@ def _save(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
                              else (NOBODY_CARRY_LINE if nobody and asked_carry else NO_CARRY_LINE))
     if kept:
         line += " " + NO_PERSON_LINE
+    if held_answers:
+        line += " " + ANSWER_HELD_LINE.format(n=_n(held_answers, "answer", "answers"),
+                                              it="its question was" if held_answers == 1 else "their questions were")
     if off is None:
         line += " " + WALL_UNREAD_LINE
     elif walled:
@@ -561,6 +595,47 @@ def carried_points(workspace_root, person_ids: Optional[List[str]] = None) -> Di
 # write back through that writer's own undo.
 
 WRAP_EVENT = "hub_meeting_wrapped"
+#: cr1#1787 part D: the meeting page's Apply (ruling 125g): Ignore and the star on
+#: heard commitments, one press (`meetapply`), one row naming what it wrote
+APPLY_EVENT = "hub_meeting_applied"
+#: Done (part D): the meeting is filed away; nothing is sent and nothing applied
+DONE_LINE = "{title} is filed away. Nothing was sent or changed."
+APPLY_LINE = "Applied on {title}: {what}."
+APPLY_NOTHING_LINE = "Nothing to apply on {title}."
+APPLY_NO_REF_LINE = "That meeting's write-up is not on your book, so nothing was changed."
+APPLY_HELD_LINE = ("I could not check the commitments from {title} just now, so nothing was changed. "
+                   "Try again after the next update.")
+#: the press's row would be refused by the book: checked before anything changes, so nothing did
+APPLY_UNWRITABLE_LINE = ("Your choices on {title} could not be recorded, so nothing was changed. "
+                         "Try again after the next update.")
+#: a step failed after the check (the rest landed); the row and the line name it
+# what happened and that the rest is still chosen, never an instruction to press (HUBUPDATE1); the page's own
+# words for this case match (Office 4, part D)
+APPLY_PART_LINE = "{n} of your choices could not be made. They are still chosen below, and Apply tries them again."
+APPLY_PART_ONE_LINE = "1 of your choices could not be made. It is still chosen below, and Apply tries it again."
+#: eighth check of #1814: the lights (the Update light, the Apply run's line) have nothing "below"
+APPLY_PART_LIGHT_LINE = "{n} of your choices could not be made."
+APPLY_PART_ONE_LIGHT_LINE = "1 of your choices could not be made."
+
+
+def light_line(line: Any) -> str:
+    """A meeting-page answer's line as the lights say it: the partial part in its short form. Pure."""
+    s = str(line or "")
+    m = re.search(r"(\d+) of your choices could not be made\. (?:They are|It is) still chosen below, and Apply tries "
+                  r"(?:them|it) again\.", s)
+    if not m:
+        return s
+    n = int(m.group(1))
+    short = APPLY_PART_ONE_LIGHT_LINE if n == 1 else APPLY_PART_LIGHT_LINE.format(n=n)
+    return (s[:m.start()] + short + s[m.end():]).strip()
+#: the row could not be written after the changes landed: said, with what landed
+APPLY_UNRECORDED_LINE = ("On {title}, {what} went through, but the record of it could not be written. "
+                         "Nothing else was changed.")
+#: a star on a heard commitment when Focus is not on this seat yet (cr1#1785)
+APPLY_NO_FOCUS_LINE = "Focus is not on this Hub yet, so it was tracked but not added to Focus."
+#: what an Ignore closes with (a reason; nothing is deleted)
+IGNORE_REASON = "Ignored on the meeting page"
+APPLY_ACTS = ("ignore", "star")
 FOLLOW_CHOICES = ("sent", "drafts", "none")
 PLACE_CHOICES = ("today", "week", "notmine")
 WRAP_CAP = 30
@@ -648,6 +723,18 @@ def _meeting_times(evs: List[dict]) -> Dict[str, _dt.datetime]:
     return out
 
 
+def _bound_event_ids(evs: List[dict]) -> Dict[str, set]:
+    """The calendar event each capture recorded (`calendar_binding.event_id`, cr1#1838) per pointer. Pure."""
+    out: Dict[str, set] = {}
+    for e in evs:
+        if isinstance(e, dict) and e.get("type") in ("meeting", "meeting_processed") and isinstance(e.get("data"), dict):
+            b = e["data"].get("calendar_binding")
+            k = _ref_key(e["data"].get("source_ref"))
+            if k and isinstance(b, dict) and str(b.get("event_id") or "").strip():
+                out.setdefault(k, set()).add(str(b["event_id"]).strip())
+    return out
+
+
 def claim_receipts(evs: List[dict], meetings: List[Dict[str, Any]]) -> Dict[int, str]:
     """READ. Which listed meeting each `meeting_processed` receipt is for
     (review of #1669, items 3 and 4): `{index in meetings: source_ref}`. A
@@ -661,10 +748,24 @@ def claim_receipts(evs: List[dict], meetings: List[Dict[str, Any]]) -> Dict[int,
     first claimed. A same-titled meeting days earlier is never claimed by a
     later one's notes. Pass only the meetings that get a wrap-up."""
     cands = []
+    held_ids: Dict[int, str] = {}   # decision 147d: an entry sent held (no title) is matched by id and start
     for i, m in enumerate(meetings):
         st = _moment(m.get("start"))
         if st is not None:
             cands.append((i, st, str(m.get("meeting_id") or ""), _norm(m.get("title"))))
+            if m.get("held") is True and str(m.get("meeting_id") or ""):
+                held_ids[i] = str(m.get("meeting_id"))
+    bound_ids = _bound_event_ids(evs) if held_ids else {}
+
+    def _held_named(i: int, key: str) -> bool:
+        """An entry sent held (decision 147d) is named by the calendar event its capture recorded. Tried
+        only after the pointer's id and the title (eighth check of #1814), so a meeting's notes are never
+        given to a walled sibling while the meeting itself can take them; the start is weighed by the caller."""
+        return i in held_ids and held_ids[i] in bound_ids.get(key, ())
+
+    def _nearest(fit: List[tuple]) -> Optional[int]:
+        """The nearest of `(distance in seconds, index)` fits, when within OCCURRENCE_SLACK_S."""
+        return fit[0][1] if fit and fit[0][0] <= OCCURRENCE_SLACK_S else None
     # round 3, item 5: the capture's own `meeting` row carries the meeting's
     # time; a receipt with one is placed by it, nearest start first
     held_at = _meeting_times(evs)
@@ -685,10 +786,13 @@ def claim_receipts(evs: List[dict], meetings: List[Dict[str, Any]]) -> Dict[int,
     for at, ref, title in sorted(timed, key=lambda r: r[0]):
         when = held_at[_ref_key(ref)]
         rid = ref.rsplit(":", 1)[-1]
-        fit = sorted((abs((st - when).total_seconds()), i) for i, st, mid, t in cands
-                     if i not in out and ((mid and rid == mid) or (title and t == title)))
-        if fit and fit[0][0] <= OCCURRENCE_SLACK_S:
-            out[fit[0][1]] = ref
+        pick = _nearest(sorted((abs((st - when).total_seconds()), i) for i, st, mid, t in cands
+                               if i not in out and ((mid and rid == mid) or (title and t == title))))
+        if pick is None:
+            pick = _nearest(sorted((abs((st - when).total_seconds()), i) for i, st, _mid, _t in cands
+                                   if i not in out and _held_named(i, _ref_key(ref))))
+        if pick is not None:
+            out[pick] = ref
             placed.add(_ref_key(ref))
     # the rest (no meeting row, or one far from every listed occurrence,
     # round 4 item 4): newest first, each by the nearest earlier free meeting
@@ -696,7 +800,9 @@ def claim_receipts(evs: List[dict], meetings: List[Dict[str, Any]]) -> Dict[int,
         rid = ref.rsplit(":", 1)[-1]
         by_id = sorted(((st, i) for i, st, mid, _t in cands if st <= at and mid and rid == mid), reverse=True)
         by_title = sorted(((st, i) for i, st, _mid, t in cands if st <= at and title and t == title), reverse=True)
-        for fit in (by_id, by_title):
+        by_held = sorted(((st, i) for i, st, _mid, _t in cands if st <= at and _held_named(i, _ref_key(ref))),
+                         reverse=True)
+        for fit in (by_id, by_title, by_held):
             free = [i for _st, i in fit if i not in out]
             if free:
                 out[free[0]] = ref
@@ -791,8 +897,67 @@ def personal_fence(workspace_root) -> Optional[Dict[str, Any]]:
         return None
     if fence is None or tie is None:
         return None
+    # part D review (SHOULD, privacy): every way an off-limits person is written, for a row's own words;
+    # None when it cannot be read (`wrap_for` then lists nothing and holds the meeting)
     return {"ids": {str(i) for i in fence["personal"]}, "off": {str(i) for i in fence["off"]},
-            "tie": set(tie), "is_personal": is_personal}
+            "tie": set(tie), "is_personal": is_personal, "words": _off_words(root, fence["off"])}
+
+
+def _off_words(root: Path, off: Any) -> Optional[Dict[str, Any]]:
+    """Every way the people off limits (`off`, ids) are written, in the shape
+    `followup_draft.names_hidden` reads (`{names, shown, emails}`): their names,
+    first names and aliases, the whole names of everyone else on file (set
+    aside first), and their addresses. Off limits only: a personal-tie person
+    stays listed on the wrap-up by its own rule (ruling 68). None when the
+    people on file cannot be read."""
+    try:
+        import followup_draft as fd
+        import hub_work
+        from personal_leak import people_records
+        from people_writer import get_person_emails
+
+        people = people_records(root)
+        if people is None:
+            return None
+        from account_scope_gate import off_limits_readable, off_limits_senders
+
+        # eighth check of #1814: an off-limits rule on an address with no person on file is screened too
+        if not off_limits_readable(root):
+            return None
+        rule_mails = {fd._plain(m).strip().casefold() for m in off_limits_senders(root) if str(m).strip()}
+        ids = {str(i) for i in off or ()}
+        names: set = set()
+        full: set = set()
+        shown: set = set()
+        mails: set = set()
+        for rec in people:
+            if not isinstance(rec, dict):
+                continue
+            if str(rec.get("id") or "") in ids:
+                names |= set(hub_work._name_forms(rec))
+                full |= set(hub_work._full_forms(rec))
+                mails |= {fd._plain(m).strip().casefold() for m in get_person_emails(rec) if str(m).strip()}
+            else:
+                shown |= set(hub_work._full_forms(rec))
+        # combined review of train/meeting-f (MUST): rule L of cr1#1846, the screen the drafts use, so a
+        # promise naming an off-limits person by last name alone ("Send Walbridge the notes") is held too
+        rule = fd.last_name_rule([r for r in people if isinstance(r, dict)], ids, fd._owner(root))
+    except Exception:  # noqa: BLE001 - unread: fail closed
+        return None
+    return {"names": {f for f in (fd._flat(n) for n in names) if f} | rule["last"],
+            "shown": {f for f in (fd._flat(n) for n in shown - full) if f}, "emails": mails | rule_mails,
+            "cased": rule["cased"], "whole": rule["whole"], "own": rule["own"], "shared": rule["shared"]}
+
+
+def _names_off(texts: List[Any], words: Dict[str, Any]) -> bool:
+    """A row's own words name someone off limits (`followup_draft.names_hidden`); True when that cannot be
+    told (fail closed)."""
+    try:
+        import followup_draft
+
+        return bool(followup_draft.names_hidden(texts, words))
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _followed_up(evs: List[dict], ref: str, index: Optional[Dict[str, List[dict]]] = None) -> bool:
@@ -805,18 +970,35 @@ def _followed_up(evs: List[dict], ref: str, index: Optional[Dict[str, List[dict]
     index = index if index is not None else index_by_ref(evs)
     mine = index.get(key) or []
     seqs = {e.get("seq") for e in mine if isinstance(e.get("seq"), int)}
+    ids: set = set()
     for e in mine + (index.get("") or []):
         if e.get("type") != "followup_pack_drafted":
             continue
         d = e.get("data") if isinstance(e.get("data"), dict) else {}
-        if _ref_key(d.get("source_ref")) == key:
-            return True
-        try:
-            if int(d.get("meeting_event_seq")) in seqs:
-                return True
-        except (TypeError, ValueError):
+        hit = _ref_key(d.get("source_ref")) == key
+        if not hit:
+            try:
+                hit = int(d.get("meeting_event_seq")) in seqs
+            except (TypeError, ValueError):
+                hit = False
+        if not hit:
             continue
-    return False
+        # review of #1814: a mark naming one draft (a v6.12 press) marks that
+        # email only; the meeting is followed up once every email is
+        if str(d.get("draft_id") or ""):
+            ids.add(str(d["draft_id"]))
+            continue
+        return True
+    if not ids:
+        return False
+    try:
+        import followup_draft
+
+        mine_drafts = [(eid, dd) for (k, eid), dd in followup_draft.drafts_by_key(evs).items() if k == key]
+        done = followup_draft.sent_emails(evs, index)
+    except Exception:  # noqa: BLE001 - the drafts unread: as before, the mark counts
+        return True
+    return bool(mine_drafts) and all((key, eid) in done for eid, _dd in mine_drafts)
 
 
 # cr1#1668: a past meeting's state on the list, in the order the list sorts by
@@ -869,7 +1051,8 @@ def _personal(ev: dict, fence: Dict[str, Any]) -> bool:
 def wrap_for(workspace_root, meeting: Dict[str, Any], evs: Optional[List[dict]] = None,
              owner_id: str = "", off: Optional[set] = None, *, ref: Optional[str] = None,
              open_rows: Optional[Dict[str, dict]] = None, tz: Any = None,
-             personal: Any = False, index: Optional[Dict[str, List[dict]]] = None) -> Dict[str, Any]:
+             personal: Any = False, index: Optional[Dict[str, List[dict]]] = None,
+             extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """READ. What the wrap-up page shows for one past meeting: `{processed,
     decided[{id, text}], mine[{id, title, due}], theirs[{id, title,
     pending}], wrapped, followed, state}`. `ref` is the processed meeting's
@@ -879,7 +1062,17 @@ def wrap_for(workspace_root, meeting: Dict[str, Any], evs: Optional[List[dict]] 
     the capture row: a promise handed to someone else is not his, a
     confirmed one is not pending. An item whose owner, counterparty or
     person is off limits, or in the personal lane, is left out (fail closed:
-    an unread wall leaves every promise and decision out). Never writes."""
+    an unread wall leaves every promise and decision out). Never writes.
+
+    cr1#1787 part D (ruling 128b, add-only): with `extras` (the feed's, read
+    once: `names` {person id: name}, `serves` {item id: priority title},
+    `soon` the people on a meeting in the next SOON_HOURS, None unread), each
+    promise row also carries `who_id` and `who` (the other side: whom the
+    owner owes, or who owes the owner; a person on file only, "" when there
+    is none), `priority` (the first priority it serves, "" for none),
+    `waiting` (the owner owes it to someone on file) and `soon` (that person
+    is on a meeting in the next SOON_HOURS). A meeting whose title names
+    someone off limits (`title_off`) gets none of them."""
     root = Path(str(workspace_root))
     evs = evs if evs is not None else _events(root)
     if ref is None:
@@ -917,7 +1110,11 @@ def wrap_for(workspace_root, meeting: Dict[str, Any], evs: Optional[List[dict]] 
         off = personal["off"]
     if open_rows is None:
         open_rows = open_projection(root)
-    if personal is None or off is None or open_rows is None:
+    # part D review (SHOULD, privacy): the words screen; a fence made by hand without it reads it here
+    words = None
+    if personal is not None and off is not None:
+        words = personal.get("words") if "words" in personal and off == personal.get("off") else _off_words(root, off)
+    if personal is None or off is None or open_rows is None or words is None:
         # the wall, the personal lane or the open list cannot be read: list
         # nothing, and say so: held, never "done" (ruling 66; round 3, items 1, 2)
         out["held"] = True
@@ -937,6 +1134,9 @@ def wrap_for(workspace_root, meeting: Dict[str, Any], evs: Optional[List[dict]] 
             if _personal(e, personal):
                 continue
             text = _clean(d.get("summary") or d.get("decision"))
+            # a decision whose own words name someone off limits is left out, as one naming them by id is
+            if _names_off([text, d.get("evidence")], words):
+                continue
             if text:
                 out["decided"].append({"id": str(d.get("id") or e.get("seq") or ""), "text": text})
             continue
@@ -945,6 +1145,10 @@ def wrap_for(workspace_root, meeting: Dict[str, Any], evs: Optional[List[dict]] 
         if not cid or cid in seen or now is None or _people_of(now) & off \
                 or cid in personal["ids"]:   # the lane exactly as the plate reads it (ruling 68)
             continue
+        # part D review (SHOULD, privacy): a promise whose own words name someone off limits ("Send <name>
+        # the notes", with no person id) is left out, as one naming them by id is
+        if _names_off([_commitment_field(now, "title"), d.get("title"), d.get("summary")], words):
+            continue
         seen.add(cid)
         nd = now.get("data") if isinstance(now.get("data"), dict) else {}
         whose = str(_commitment_field(now, "owner_id") or "")
@@ -952,6 +1156,8 @@ def wrap_for(workspace_root, meeting: Dict[str, Any], evs: Optional[List[dict]] 
             continue   # a "whose is this" row (one he disowned): neither his nor theirs to track (item 5)
         row = {"id": cid, "title": _clean(_commitment_field(now, "title")),
                "due": str(_commitment_field(now, "due") or "")[:10] or None}
+        if isinstance(extras, dict) and not meeting.get("title_off"):
+            row.update(_wrap_extras(now, cid, bool(owner_id and whose == owner_id), whose, owner_id, off, extras))
         if owner_id and whose == owner_id:
             out["mine"].append(row)
         else:
@@ -961,6 +1167,34 @@ def wrap_for(workspace_root, meeting: Dict[str, Any], evs: Optional[List[dict]] 
         out[k] = out[k][:WRAP_CAP]
     out["state"] = wrap_state(out)
     return out
+
+
+#: cr1#1787 part D (128b): "tied to a meeting in the next 48 hours".
+SOON_HOURS = 48
+
+
+def _wrap_extras(ev: dict, cid: str, mine: bool, whose: str, owner_id: str, off: set,
+                 extras: Dict[str, Any]) -> Dict[str, Any]:
+    """The five add-only fields of one wrap row (`wrap_for`). The other side
+    is a person on file by id only (never a typed name), and never the owner
+    or anyone off limits. Pure."""
+    from cru_match import _commitment_field
+
+    if mine:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        many = d.get("counterparty_ids", ev.get("counterparty_ids"))
+        other = str(_commitment_field(ev, "counterparty_id")
+                    or next((p for p in (many if isinstance(many, list) else []) if p), "") or "")
+    else:
+        other = whose
+    if not other or other == owner_id or other in off:
+        other = ""
+    names = extras.get("names") or {}
+    soon = extras.get("soon")
+    return {"who_id": other, "who": str(names.get(other) or "")[:120] if other else "",
+            "priority": str((extras.get("serves") or {}).get(cid) or "")[:200],
+            "waiting": bool(mine and other),
+            "soon": bool(other and isinstance(soon, (set, frozenset)) and other in soon)}
 
 
 def wrapped_for(events: List[dict], meeting_id: str, start: Any = "", tz: Any = None) -> Optional[Dict[str, Any]]:
@@ -1012,8 +1246,15 @@ def _claimed_for(evs: List[dict], stored: str, inp: dict, meeting_id: str, title
     occ = []
     for o in inp.get("occ")[:OCC_CAP]:
         if isinstance(o, dict) and _moment(o.get("start")) is not None:
-            occ.append({"meeting_id": _clean(o.get("meeting_id"), 512), "title": _clean(o.get("title"), TITLE_CAP),
-                        "start": _clean(o.get("start"), 40)})
+            # decision 147d as amended (part D review, MUST 3): a sibling whose title names someone off
+            # limits comes as {meeting_id, start, held: true}, with no title, so no off-limits title rides in
+            # the press; `claim_receipts` matches it by id and start. Every other entry keeps its title and
+            # the title-based claim, exactly as before (presses already on the page keep working).
+            ent = {"meeting_id": _clean(o.get("meeting_id"), 512), "title": _clean(o.get("title"), TITLE_CAP),
+                   "start": _clean(o.get("start"), 40)}
+            if o.get("held") is True:
+                ent.update(title="", held=True)
+            occ.append(ent)
     me = [i for i, o in enumerate(occ) if o["meeting_id"] == meeting_id and _same_start(o["start"], inp.get("start"))]
     if not me:
         occ.append({"meeting_id": meeting_id, "title": title, "start": _clean(inp.get("start"), 40)})
@@ -1026,7 +1267,11 @@ def _claimed_for(evs: List[dict], stored: str, inp: dict, meeting_id: str, title
     return bool(got) and _ref_key(got) == _ref_key(stored)
 
 
-def _wrap(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[dict]) -> Dict[str, Any]:
+def _wrap(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[dict],
+          files_only: bool = False) -> Dict[str, Any]:
+    """`wrap` files the meeting away and applies what the page chose; `done`
+    (`files_only`, cr1#1787 part D) only files it: nothing placed, tracked,
+    corrected or carried, nothing sent."""
     import commitment_state as cs
     import due_set
 
@@ -1070,7 +1315,7 @@ def _wrap(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
     today = cs._now_calendar_day(cs._now_iso(), workspace_path=str(root)) or _dt.date.today()
     wrote: List[Dict[str, Any]] = []
     placed = tracked = 0
-    place = inp.get("place") if isinstance(inp.get("place"), dict) else {}
+    place = inp.get("place") if isinstance(inp.get("place"), dict) and not files_only else {}
     for cid, how in list(place.items())[:WRAP_CAP]:
         cid, how = str(cid), str(how or "")
         if cid not in mine or how not in PLACE_CHOICES:
@@ -1097,7 +1342,7 @@ def _wrap(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
                     placed += 1
         except Exception:  # noqa: BLE001 - this one is not placed; the rest still are
             continue
-    for cid in [str(x) for x in _list(inp.get("track"))]:
+    for cid in ([] if files_only else [str(x) for x in _list(inp.get("track"))]):
         row = theirs.get(cid)
         if row is None:
             continue
@@ -1113,23 +1358,185 @@ def _wrap(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
             wrote.append({"kind": "track", "id": cid})
             tracked += 1
     decided = {r["id"]: r for r in view["decided"]}
-    wrong = [{"id": str(x), "text": decided[str(x)]["text"], "note": CORRECTION_LINE}
-             for x in _list(inp.get("wrong")) if str(x) in decided]
-    follow = str(inp.get("follow") or "")
+    wrong = [] if files_only else [{"id": str(x), "text": decided[str(x)]["text"], "note": CORRECTION_LINE}
+                                   for x in _list(inp.get("wrong")) if str(x) in decided]
+    follow = "" if files_only else str(inp.get("follow") or "")
     follow = follow if follow in FOLLOW_CHOICES else ""
-    carried = [_clean(x) for x in _list(inp.get("carried")) if _clean(x)]
+    carried = [] if files_only else [_clean(x) for x in _list(inp.get("carried")) if _clean(x)]
     what = ", ".join(x for x in (
         _n(placed, "promise placed", "promises placed"), _n(tracked, "of theirs tracked", "of theirs tracked"),
         _n(len(wrong), "decision marked not right", "decisions marked not right"),
         _n(len(carried), "point carried", "points carried")) if x)
-    line = WRAPPED_LINE.format(title=title, what=(what[0].upper() + what[1:] + ".") if what else WRAP_NOTHING)
+    line = (DONE_LINE.format(title=title) if files_only
+            else WRAPPED_LINE.format(title=title, what=(what[0].upper() + what[1:] + ".") if what else WRAP_NOTHING))
     people = [p for p in _attendees(evs, meeting_id) if off is not None and p not in off] if off is not None else []
     row = _append(root, {"type": WRAP_EVENT, "source_skill": SOURCE_SKILL, "person_ids": people, "data": {
         "hub_choice": choice_id, "meeting_id": meeting_id, "title": title, "start": _clean(inp.get("start"), 40),
-        "person_ids": people, "wrote": wrote, "wrong": wrong, "follow": follow, "carried": carried, "line": line}})
+        "person_ids": people, "wrote": wrote, "wrong": wrong, "follow": follow, "carried": carried, "line": line,
+        **({"done": True} if files_only else {})}})
     if not row:
         return {"outcome": "error", "line": UNDO_FAILED_LINE.format(title=title)}
     return {"outcome": "applied", "line": line, "seq": row.get("seq"), "meeting_id": meeting_id}
+
+
+def _wrong_said(evs: List[dict], stored: str, meeting_id: str) -> set:
+    """The decisions already marked not right for this write-up: on an Apply
+    row naming its ref, or on a standing wrap-up row of this meeting (one put
+    back does not count). Pure."""
+    rows = [e for e in evs if isinstance(e, dict) and isinstance(e.get("data"), dict)
+            and e.get("type") in (WRAP_EVENT, APPLY_EVENT)]
+    undone = {str(e["data"].get("undoes_choice")) for e in rows if e["data"].get("undoes_choice")}
+    out: set = set()
+    for e in rows:
+        d = e["data"]
+        if d.get("undoes_choice") or str(d.get("hub_choice")) in undone:
+            continue
+        mine = (_ref_key(str(d.get("ref") or "")) == _ref_key(stored)) if e["type"] == APPLY_EVENT \
+            else str(d.get("meeting_id")) == str(meeting_id)
+        if mine:
+            out |= {str(w.get("id")) for w in d.get("wrong") or [] if isinstance(w, dict) and w.get("id")}
+    return out
+
+
+def _meetapply(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[dict]) -> Dict[str, Any]:
+    """cr1#1787 part D: the meeting page's Apply (ruling 125g). Only what the
+    owner changed rides it: Ignore (closed with a reason, nothing deleted),
+    the star (tracked first, then added to Focus, in that order, 128j) and
+    "Not right" on a decision (`wrong`: a correction only, as `_wrap`
+    records it; the decision row stands; one already recorded for this
+    write-up is not recorded again). Track is already true: the write-up
+    tracks heard commitments itself (130b). Never sends anything. The press
+    names the write-up's ref, checked against the book; only that
+    write-up's own heard commitments and decisions are touched, under the
+    fence (a held meeting changes nothing).
+
+    All or nothing, in order: the row this press writes is checked against
+    the book's gate BEFORE anything is closed or tracked, so an unwritable
+    row changes nothing. A step that fails after that is named on the row
+    (`not_done`) and in the answer's line, never a silent half."""
+    import commitment_state as cs
+    from event_gate import gate_events
+
+    meeting_id = _clean(c.get("n"), 512)
+    if not meeting_id:
+        return {"outcome": "refused", "line": NO_MEETING_LINE}
+    if str(inp.get("calendar") or "") == "personal":
+        return {"outcome": "refused", "line": PERSONAL_LINE}
+    raw_title = _clean(inp.get("title") or c.get("title"), TITLE_CAP)
+    title = raw_title or "the meeting"
+    fence = personal_fence(root)
+    if fence is None:
+        return {"outcome": "refused", "line": APPLY_HELD_LINE.format(title=title)}
+    shown, stored = _clean(inp.get("ref"), 512), ""
+    for e in evs:
+        if shown and isinstance(e, dict) and e.get("type") == "meeting_processed":
+            d = e.get("data") if isinstance(e.get("data"), dict) else {}
+            ref = str(d.get("source_ref") or e.get("source_ref") or "")
+            if _ref_key(ref) == _ref_key(shown):
+                stored = ref
+                break
+    if not stored:
+        return {"outcome": "refused", "line": APPLY_NO_REF_LINE}
+    view = wrap_for(root, {"meeting_id": meeting_id, "title": raw_title, "start": inp.get("start")}, evs,
+                    owner_id=str(actor or ""), off=fence["off"], ref=stored, personal=fence)
+    if view.get("held"):
+        return {"outcome": "refused", "line": APPLY_HELD_LINE.format(title=title)}
+    heard = {r["id"]: r for r in view["mine"]}
+    heard.update({r["id"]: r for r in view["theirs"]})
+    # what this press will do, worked out before anything is written: only this write-up's own
+    # heard commitments and only the two changes, each once
+    steps: List[tuple] = []
+    for it in [x for x in _list(inp.get("items")) if isinstance(x, dict)][:WRAP_CAP]:
+        cid, act = str(it.get("id") or ""), str(it.get("act") or "")
+        if cid in heard and act in APPLY_ACTS and (cid, act) not in steps:
+            steps.append((cid, act))
+    decided = {r["id"]: r for r in view["decided"]}
+    said = _wrong_said(evs, stored, meeting_id)
+    wrong: List[Dict[str, Any]] = []
+    for x in _list(inp.get("wrong"))[:WRAP_CAP]:
+        x = str(x)
+        if x in decided and x not in said and all(w["id"] != x for w in wrong):
+            wrong.append({"id": x, "text": decided[x]["text"], "note": CORRECTION_LINE})
+
+    def row_of(wrote, not_done, line):
+        return {"type": APPLY_EVENT, "source_skill": SOURCE_SKILL, "person_ids": [], "data": {
+            "hub_choice": choice_id, "meeting_id": meeting_id, "ref": stored, "title": title, "wrote": wrote,
+            "wrong": wrong, "not_done": not_done, "line": line}}
+
+    # the gate, first: a row the book would refuse means nothing is changed at all
+    try:
+        gate_events([row_of([], [], APPLY_NOTHING_LINE.format(title=title))], holder="cockpit_helpers",
+                    events_jsonl_path=_events_path(root))
+    except Exception:  # noqa: BLE001 - nothing closed, nothing tracked, nothing written
+        return {"outcome": "refused", "line": APPLY_UNWRITABLE_LINE.format(title=title)}
+    wrote: List[Dict[str, Any]] = []
+    not_done: List[Dict[str, Any]] = []
+    ignored = starred = 0
+    no_focus = False
+    for cid, act in steps:
+        if act == "ignore":
+            try:
+                # PROV1: the close points at the write-up it was ignored from (the meeting's own notes)
+                res = cs.close_commitment(str(root), cid, resolved_by=str(actor or ""), evidence=IGNORE_REASON,
+                                          source_skill=SOURCE_SKILL, resolution="dropped", user_confirmed=True,
+                                          source_ref=stored)
+            except Exception:  # noqa: BLE001 - named below; the rest still are tried
+                res = None
+            if str((res or {}).get("status") or "") == "closed":
+                wrote.append({"kind": "ignore", "id": cid})
+                ignored += 1
+            else:
+                not_done.append({"id": cid, "act": "ignore"})
+            continue
+        # the star (128j): tracked first, then into Focus, in that order (Focus refuses an item not yet open)
+        if heard[cid].get("pending"):
+            from needs_review_queue import confirm_items
+            try:
+                res = confirm_items(str(root), [cid], source_skill=SOURCE_SKILL, confirm_weak_ids=[cid])
+            except Exception:  # noqa: BLE001
+                res = None
+            if int((res or {}).get("n_confirmed") or 0) != 1:
+                not_done.append({"id": cid, "act": "star"})
+                continue
+            wrote.append({"kind": "track", "id": cid})
+        try:
+            import hub_focus
+        except ImportError:
+            no_focus = True
+            continue
+        try:
+            got = hub_focus.add(str(root), cid, choice_id=f"{choice_id}:{cid}")
+        except Exception:  # noqa: BLE001
+            got = None
+        if str((got or {}).get("outcome") or "") in ("applied", "already"):
+            wrote.append({"kind": "focus", "id": cid})
+            starred += 1
+        else:
+            not_done.append({"id": cid, "act": "star"})
+    what = ", ".join(x for x in (_n(ignored, "ignored", "ignored"), _n(starred, "added to Focus", "added to Focus"),
+                                 _n(len(wrong), "decision marked not right", "decisions marked not right")) if x)
+    line = APPLY_LINE.format(title=title, what=what) if what else APPLY_NOTHING_LINE.format(title=title)
+    if no_focus:
+        line = (line + " " + APPLY_NO_FOCUS_LINE).strip()
+    if not_done:
+        line = (line + " " + (APPLY_PART_ONE_LINE if len(not_done) == 1
+                              else APPLY_PART_LINE.format(n=len(not_done)))).strip()
+    try:
+        row = _append(root, row_of(wrote, not_done, line))
+    except Exception:  # noqa: BLE001 - checked above; said, never silent
+        row = {}
+    if not row:
+        return {"outcome": "error", "line": APPLY_UNRECORDED_LINE.format(title=title, what=what or "nothing"),
+                "wrote": wrote, "not_done": not_done}
+    out = {"outcome": "error" if not_done else "applied", "line": line, "seq": row.get("seq"), "meeting_id": meeting_id}
+    if not_done:
+        out["not_done"] = not_done
+        if wrote or wrong:
+            # part D review (A, ii): some of it landed, so the Update counts it saved and says the line,
+            # never "1 of your 1 changes" could not be saved
+            out["partial"] = True
+        out["light_line"] = light_line(line)
+    return out
 
 
 def _unwrap(root: Path, press_id: str, undo_id: str, actor: str, evs: List[dict]) -> Dict[str, Any]:

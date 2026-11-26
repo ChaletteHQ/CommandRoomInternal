@@ -1218,7 +1218,9 @@ CHAT_KEEP_FIELDS = ("chat_or_channel_id", "message_id", "ts", "user_id",
 #: `capture_calendar_personal`; which of the two an event was staged in is
 #: its business or personal mark, set in code (`meeting_binding.READ_MARKS`),
 #: so a mark the run wrote on an event is cut here with everything else.
-CAPTURE_CALENDAR_KEEP_FIELDS = ("id", "title", "start", "end", "attendees")
+CAPTURE_CALENDAR_KEEP_FIELDS = ("id", "title", "start", "end", "attendees",
+                                # rule R2 of #1814: a recurring event's series id (the binding records its key)
+                                "series_id")
 #: The two staged kinds of the capture pass's calendar reads.
 CAPTURE_CALENDAR_KINDS = ("capture_calendar", "capture_calendar_personal")
 

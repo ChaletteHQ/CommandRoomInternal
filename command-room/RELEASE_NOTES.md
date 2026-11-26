@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.12.4 (2026-11-26)
+
+Open a meeting that has ended to wrap it up: keep or ignore its promises, star them into Focus, and choose who gets a follow-up email. Choices made on a meeting's own page now decide its follow-up, and a choice that cannot be matched to the meeting waits instead of guessing. The prep answer box no longer saves an answer that names someone off limits. After updating, say "update my hub" once and reload the Hub tab.
+
 ## v6.12.3 (2026-11-26)
 
 Open a meeting on Today to prepare it: its agenda, the goal to walk out with and a call guide you can edit, each edit with Undo. An off-limits list that cannot be read is now set aside, and you can restore it. On a Superhuman seat, Today can read your business calendar live once you say yes to one question. The Update keeps each document's version and spends fewer turns, and All open fits a phone's screen. After updating, say "update my hub" once and reload the Hub tab.

@@ -514,6 +514,8 @@
   .toast[hidden] { display: none; }
   .dcard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--card); padding: 12px; }
   .dcard .dhead { font-size: 13px; color: var(--ink-soft); }
+  .dcard.mdrow, .mlive .dcard.mdrow { margin-top: 8px; padding: 10px 12px; }
+  .mdfacts { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: 6px 0; font-size: 13px; color: var(--ink-soft); }
   .dcard .dbody { margin: 8px 0; background: var(--raise); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; font-size: 14px; color: var(--ink); white-space: pre-wrap; }
   .dcard .dfoot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .voicetag { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; padding: 3px 5px; line-height: 1; border: 1px solid var(--go); border-radius: var(--radius); color: var(--go-text); }
@@ -4246,8 +4248,9 @@
     var force = arguments[0] === true;  // the owner's own press on the view draws at once
     var body = $("todoBody"); if (!body) return;
     var view = $("fxview");
-    // .tside: the one-line row's rules the to-dos had (the right column's), until the Look styles To do
-    if (!view) { view = document.createElement("div"); view.setAttribute("id", "fxview"); view.setAttribute("class", "tside"); view.setAttribute("data-fx-drop", "todo"); body.insertBefore(view, body.firstChild); }
+    // .hhtodos: the one-line row's rules the to-dos had (the right column's), copied twin for twin.
+    // cr1#1859: never .tside, whose 741-1259px two-column rule split All open into half-width rows.
+    if (!view) { view = document.createElement("div"); view.setAttribute("id", "fxview"); view.setAttribute("class", "hhtodos"); view.setAttribute("data-fx-drop", "todo"); body.insertBefore(view, body.firstChild); }
     var st = fxState(), frows = fxFocusRows(), arows = fxAllRows();
     if (!st.restored && typeof heldGet === "function" && !fxMissing(S.focus)) {
       // should-fix 3: a Done note being typed comes back after a restart, in its box
@@ -6354,7 +6357,7 @@
     });
     return h;
   }
-  function edRedraw(kind) { if (kind === "person_edit") renderPeople(); else if (kind === "priority_edit") renderPriorities(); else if (kind === "commitment_edit") { renderPlate(); if (typeof renderFocus === "function") renderFocus(); } else renderProjects(); }
+  function edRedraw(kind) { if (kind === "person_edit") renderPeople(); else if (kind === "priority_edit") renderPriorities(); else if (kind === "commitment_edit") { renderPlate(); if (typeof renderFocus === "function") renderFocus(); if (S.wrapOpen && typeof renderWrapView === "function") renderWrapView(); } else renderProjects(); }
   // cr1#1383 slice 4: a Commitments row's Edit sits under its More. The open
   // box and a press waiting or standing show outside the fold.
   // cr1#1591: the row's other presses (`extra`) sit in the same More, first.
@@ -6680,10 +6683,22 @@
       if (typeof renderWeek === "function") renderWeek();
     }, function () { toHashing = false; });
   }
+  // the words (every run of one to TO_WIN) and the addresses a text is looked up by; cr1#1858: the answer box
+  // reads the same, and an address followed by "?" or "!" is read without them (fix check of #1788)
+  // second review of #1858 (MUST): every character an address cannot hold is cut from both ends of the token
+  // (brackets, bold marks, a trailing ellipsis, a dash running into the next word), so the address itself is
+  // looked up
+  function toLookups(t) {
+    var addrs = (String(t || "").match(/[^\s<>()"',;:]+@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g) || []).map(function (a) {
+      var m = a.match(/[A-Za-z0-9._%+'\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+/);
+      return (m ? m[0] : a).replace(/^[.'\-]+|[.'\-]+$/g, "").toLowerCase();
+    });
+    return { names: toWords(t), addrs: addrs };
+  }
   function toTitleWalled(title) {
     var t = String(title == null ? "" : title); if (!t.trim()) return false;
     var w = typeof liveWall === "function" ? liveWall() : null; if (!w || !w.ok) return true;
-    var names = toWords(t), addrs = (t.match(/[^\s<>()"',;:]+@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g) || []).map(function (a) { return a.replace(/[.?!]+$/, "").toLowerCase(); });
+    var lk = toLookups(t), names = lk.names, addrs = lk.addrs;
     var all = names.concat(addrs);
     if (all.some(function (v) { return !HASHES[normOf(v)]; })) { toHashThen(all); return true; }
     // a name with marks on file (an initial, "Jr.", brackets, a curly apostrophe, a long dash) is found by its word form (cr1#1845)
@@ -6755,8 +6770,9 @@
     if (r.kind === "process") { for (i = 0; i < all.length; i++) { m = all[i]; if (m && m.wrap && (typeof wrapKey === "function" ? wrapKey(m) : "") === r.wrap_key) return m; } }
     var at = Date.parse(r.start || String(r.wrap_key || "").slice(String(r.wrap_key || "").lastIndexOf("|") + 1));
     for (i = 0; i < all.length; i++) { m = all[i]; if (m && m.wrap && String(m.meeting_id || "") === String(r.meeting_id || "") && !isNaN(at) && Date.parse(m.start || "") === at) return m; }
-    // a start the run wrote with no zone reads in this browser's zone: then the meeting id and the write-up's receipt (fuDraft's join)
-    for (i = 0; r.ref && i < all.length; i++) { m = all[i]; if (m && m.wrap && m.wrap.ref && String(m.wrap.ref) === String(r.ref) && String(m.meeting_id || "") === String(r.meeting_id || "")) return m; }
+    // the write-up's receipt alone (cr1#1842, found by the walk of part C): a written-up draft names the meeting by
+    // the notes' id and the Today row by the calendar's, so the ids are never compared; a ref is one notes record
+    for (i = 0; r.ref && i < all.length; i++) { m = all[i]; if (m && m.wrap && m.wrap.ref && String(m.wrap.ref) === String(r.ref)) return m; }
     return null;
   }
   function sxTodayAll() { var t = S.today || {}; return (Array.isArray(t.past) ? t.past : []).concat(Array.isArray(t.meetings) ? t.meetings : []); }
@@ -10653,9 +10669,11 @@
   // wall read, or no way to hash, it files and the writer judges (it refuses such words too).
   function pxCheck(texts) {
     var w = typeof liveWall === "function" ? liveWall() : null;
-    if (!w || !w.ok || typeof toTitleWalled !== "function" || typeof hashAll !== "function" || typeof toWords !== "function") return Promise.resolve(false);
+    if (!w || !w.ok || typeof toTitleWalled !== "function" || typeof hashAll !== "function" || typeof toLookups !== "function") return Promise.resolve(false);
     var vals = [];
-    texts.forEach(function (t) { if (t) vals = vals.concat(toWords(t), (String(t).match(/[^\s<>()"',;:]+@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g) || []).map(function (a) { return a.replace(/[.?!]+$/, "").toLowerCase(); })); });
+    // cr1#1858 r2 (coordinator, meeting train): the words and addresses toTitleWalled looks up, from the one
+    // helper, so an address in brackets or bold marks is hashed as the address itself
+    texts.forEach(function (t) { if (t) { var lk = toLookups(t); vals = vals.concat(lk.names, lk.addrs); } });
     if (!vals.length) return Promise.resolve(false);
     return hashAll(vals).then(function () { return texts.some(function (t) { return !!t && toTitleWalled(t); }); }, function () { return false; });
   }
@@ -10818,14 +10836,49 @@
   function meetSavePress(m) { return (S.choices || []).filter(function (c) { return c.kind === "meeting" && c.action === "save" && String(c.n) === String(m.meeting_id) && String((c.input && c.input.start) || "") === String(m.start || "") && !(c.applied && c.result && c.result.outcome === "already"); }).sort(edNewest)[0] || null; }
   // The pick still among the item's options; anything else is dropped.
   function livePick(st, d) { var v = st.picks[hkey(d.q)]; return v && (d.opts || []).indexOf(v) >= 0 ? v : ""; }
+  // cr1#1858: an answer typed in the box enters the save only once the page has judged it: its words and
+  // addresses hashed, and none of them a full name or an address on the off-limits list (toTitleWalled, the
+  // check titles get). One the page cannot judge (no readable wall, a word not hashed yet, a view that cannot
+  // hash) is held out too: its question is saved as asked, and the answer stays in the box. A first name alone
+  // is the writer's to catch (hub_meeting's save screens every answer it is given).
+  var MEET_SAID_HELD_ONE = "1 answer is not saved: it names someone who cannot be named here, or it could not be checked. Its question is saved as asked.";
+  var MEET_SAID_CHECKING = "Checking your answers.";
+  var MEET_SAID_HELD_MANY = "{n} answers are not saved: they name someone who cannot be named here, or they could not be checked. Their questions are saved as asked.";
+  function liveSaidOf(st, q) { return String(st.said[hkey(q)] || "").replace(/\s+/g, " ").trim().slice(0, MEET_SAID_CAP); }
+  // Known limit (cr1#1858): the page screens against the off-limits list only, because the wall carries no
+  // personal-tie names. An answer naming a personal-tie person passes here, is filed, and is dropped by the
+  // writer (hub_meeting's save screens against hidden_words: off limits and personal ties); its question is
+  // saved as asked and the result line says so, after the press. The foot's line before the press covers
+  // off-limits names only.
+  function liveSaidOk(said) { return typeof toTitleWalled === "function" && !toTitleWalled(said); }
+  // second review of #1858 (SHOULD): while a typed word's hash is still being worked out the page cannot judge
+  // the answer yet, so the foot says it is checking, never that the answer is not saved
+  function liveSaidPending(m) {
+    var w = typeof liveWall === "function" ? liveWall() : null;
+    if (!w || !w.ok || typeof hasher !== "function" || !hasher()) return false;
+    return liveSaidVals(m).some(function (v) { return !HASHES[normOf(v)]; });
+  }
+  // the answers ticked and typed, each with the page's judgement of its words
+  function liveSaid(m) {
+    var P = m.prep_parts || {}, st = liveOf(m), out = [];
+    (P.ask || []).forEach(function (q) { var said = liveSaidOf(st, q); if (st.ask[hkey(q)] && said) out.push({ q: q, said: said }); });
+    return out;
+  }
+  // every value the typed answers are looked up by, to hash before the save is filed
+  function liveSaidVals(m) {
+    var vals = [];
+    liveSaid(m).forEach(function (a) { var lk = typeof toLookups === "function" ? toLookups(a.said) : { names: [], addrs: [] }; vals = vals.concat(lk.names, lk.addrs); });
+    return vals;
+  }
   // What the save carries, from the brief's parts and what is ticked.
   function liveInput(m) {
     var P = (typeof pxParts === "function" ? pxParts(m, true) : m.prep_parts) || {}, st = liveOf(m), inp = { title: m.title || "", start: m.start || "", calendar: m.calendar || "", decide: [], answers: [], asked: [], covered: [], carried: [] };
     if (Array.isArray(m.people)) inp.others = m.people.length;
     (P.decide || []).forEach(function (d) { var pk = livePick(st, d); if (pk) inp.decide.push({ q: d.q, pick: pk }); else inp.carried.push(d.q); });
     (P.ask || []).forEach(function (q) {
-      var k = hkey(q), said = String(st.said[k] || "").replace(/\s+/g, " ").trim().slice(0, MEET_SAID_CAP);
-      if (st.ask[k] && said) inp.answers.push({ q: q, said: said }); else if (st.ask[k]) inp.asked.push(q); else inp.carried.push(q);
+      var k = hkey(q), said = liveSaidOf(st, q);
+      // cr1#1858: an answer the page has not cleared is held out; its question is saved as asked
+      if (st.ask[k] && said && liveSaidOk(said)) inp.answers.push({ q: q, said: said }); else if (st.ask[k]) inp.asked.push(q); else inp.carried.push(q);
     });
     (P.cover || []).forEach(function (x) { if (st.cover[hkey(x)]) inp.covered.push(x); else inp.carried.push(x); });
     (P.you_owe || []).forEach(function (x) { if (st.you[hkey(x)]) inp.covered.push(x); });
@@ -10860,7 +10913,12 @@
     var nd = (P.decide || []).length, ticks = inp.covered.length + inp.asked.length;
     var line = "Saves " + inp.decide.length + " of " + nd + " decisions, " + ticks + " ticked " + (ticks === 1 ? "item" : "items") + " and " + inp.answers.length + (inp.answers.length === 1 ? " answer" : " answers") + ". What is left carries to the next brief.";
     var last = press ? (edUndone(press) ? edUndoOf(press) : press) : pu;
-    return (last ? resultTag(last) : "") + '<button class="act primary" data-msave="1">Meeting done, save this</button>' + infoTip("What the save does", esc(line)) + '<div class="frw mline">' + esc("Saves " + inp.decide.length + " of " + nd + " decisions.") + "</div>";
+    var held = liveSaid(m).length - inp.answers.length, heldLine = "";   // cr1#1858
+    if (liveSaidPending(m)) {
+      heldLine = '<div class="frw mline">' + esc(MEET_SAID_CHECKING) + "</div>";
+      hashAll(liveSaidVals(m)).then(function () { var f = $("meetlive") && $("meetlive").querySelector(".mfoot"); if (f && meetOpenNow() === m) f.innerHTML = liveFoot(m); }, function () {});
+    } else if (held > 0) heldLine = '<div class="frw mline">' + esc(held === 1 ? MEET_SAID_HELD_ONE : MEET_SAID_HELD_MANY.replace("{n}", held)) + "</div>";
+    return (last ? resultTag(last) : "") + '<button class="act primary" data-msave="1">Meeting done, save this</button>' + infoTip("What the save does", esc(line)) + '<div class="frw mline">' + esc("Saves " + inp.decide.length + " of " + nd + " decisions.") + "</div>" + heldLine;
   }
   function renderMeetLive(m) {
     var box = $("meetlive"); if (!box) return;
@@ -10949,7 +11007,11 @@
       var sk = "s|" + meetId(m);
       if (S.meetBusy[sk] || meetStanding(m)) return true;
       S.meetBusy[sk] = true;
-      saveChoice({ kind: "meeting", src: "cockpit", n: String(m.meeting_id || ""), action: "save", input: liveInput(m), title: m.title || "" }).then(free(sk), free(sk));
+      // cr1#1858: hash first, then judge: the input is built only once every typed word can be looked up
+      var vals = liveSaidVals(m), first = vals.length && typeof hashAll === "function" ? hashAll(vals).then(null, function () {}) : Promise.resolve();
+      first.then(function () {
+        return saveChoice({ kind: "meeting", src: "cockpit", n: String(m.meeting_id || ""), action: "save", input: liveInput(m), title: m.title || "" });
+      }).then(free(sk), free(sk));
       return true;
     }
     var un = ev.type === "click" && t.closest && t.closest("button[data-mundo]");
@@ -10998,7 +11060,7 @@
     if (p && (!p.applied || edLanded(p)) && (!u || newer(p, u))) return "done";
     if (u && W.wrapped) return !W.processed ? "unwritten" : (W.held ? "held" : (!W.followed ? "follow_up" : ((W.mine || []).length ? "promises" : "done")));
     // cr1#1745: a follow-up drafted after the meeting waits for one press
-    if (W.state === "follow_up" && W.draft === true && fuDraft(m) && !fuSkipped(m) && !fuPress(m)) return "follow_ready";
+    if (W.state === "follow_up" && W.draft === true && !fuSkipped(m) && fuDrafts(m).some(function (d) { return !fuPress(m, d); })) return "follow_ready";
     return PAST_STATES[W.state] ? W.state : (W.wrapped ? "done" : (W.processed ? "follow_up" : "unwritten"));
   }
   // ---- the follow-up drafted after the meeting (cr1#1745) --------------------
@@ -11019,17 +11081,29 @@
   var FU_DRAFTED_LINE = "In your Drafts. Nothing was sent.";
   var FU_NO_UNDO_LINE = "In your Drafts. To take it back, delete it there.";
   function fuState() { if (!S.fu) S.fu = { arm: "", armAt: 0, edit: {}, editing: "" }; return S.fu; }
-  function fuDraft(m) {
-    var f = S.followups, W = m && m.wrap; if (!f || f.ok !== true || !W || !W.ref) return null;
-    return (f.drafts || []).filter(function (d) { return String(d.meeting_id) === String(m.meeting_id) && String(d.ref) === String(W.ref); })[0] || null;
+  // cr1#1787 part C: every draft for this meeting, one block each, matched by the
+  // write-up's own ref alone (cr1#1842: the page's meeting id is the calendar's and
+  // a written-up draft's is the notes', so the two ids are never compared)
+  function fuDrafts(m) {
+    var f = S.followups, W = m && m.wrap; if (!f || f.ok !== true || !W || !W.ref) return [];
+    return (f.drafts || []).filter(function (d) { return d && String(d.ref) === String(W.ref); });
   }
-  function fuKey(m) { return String(m.meeting_id) + "|" + String((m.wrap || {}).ref || ""); }
-  // the newest draft or send press on this meeting's follow-up
-  function fuPress(m) {
-    var k = fuKey(m), best = null;
-    S.choices.forEach(function (c) { if (c.kind === "followup" && String(c.fu_key || "") === k && !c.undone && (!best || (c.created_at || "") > (best.created_at || ""))) best = c; });
+  function fuDraft(m) { return fuDrafts(m)[0] || null; }
+  var FU_DRAFT_ID_RE = /^fd_[0-9a-f]{20}$/;
+  // the meeting's key, and with a draft that draft's own
+  function fuKey(m, d) { return String(m.meeting_id) + "|" + String((m.wrap || {}).ref || "") + (d && d.draft_id ? "|" + String(d.draft_id) : ""); }
+  // the newest draft or send press on this draft: one naming it, or a press
+  // naming no draft (a page before part C), which was for the whole meeting
+  function fuPress(m, d) {
+    var whole = fuKey(m), did = d && d.draft_id ? String(d.draft_id) : "", best = null;
+    S.choices.forEach(function (c) {
+      if (c.kind !== "followup" || c.undone) return;
+      var mine = c.draft_id ? (!!did && String(c.draft_id) === did) : String(c.fu_key || "") === whole;
+      if (mine && (!best || (c.created_at || "") > (best.created_at || ""))) best = c;
+    });
     return best;
   }
+  function fuDraftByKey(m, k) { return fuDrafts(m).filter(function (d) { return fuKey(m, d) === k; })[0] || null; }
   // "Don't draft for meetings like this" and its Undo: this meeting's newest
   // press decides until the feed catches up, then the feed's own mark
   function fuSkipPress(m) {
@@ -11048,14 +11122,19 @@
     return W.draft === true ? '<button type="button" class="chip" data-fuskip="1">Don\'t draft for meetings like this</button>' : "";
   }
   function fuArmed(k) { var st = fuState(); return st.arm === k && Date.now() - st.armAt <= FU_SEND_ARM_MS; }
-  function fuText(m, d) { var e = fuState().edit[fuKey(m)]; return e != null ? e : String(d.body || ""); }
+  function fuText(m, d) { var e = fuState().edit[fuKey(m, d)]; return e != null ? e : String(d.body || ""); }
   function fuCanSend() { return !!(MAIL && MAIL.new_draft && MAIL.send && MAIL.provider !== "gmail" && mcp && db); }
   function fuCanDraft() { return !!(MAIL && MAIL.new_draft && mcp && db); }
   function fuHtml(m) {
-    var d = fuDraft(m); if (!d || fuSkipped(m)) return "";
-    var k = fuKey(m), st = fuState(), c = fuPress(m), sending = S.sending["fu:" + k];
+    // the planner's review of part C: a meeting whose title names someone off limits (title_off) offers no
+    // draft block here, whatever the wrap-up page around it does (#1833 refuses the whole page)
+    if (fuSkipped(m) || (m && m.title_off)) return "";
+    return fuDrafts(m).map(function (d) { return fuBlock(m, d); }).join("");
+  }
+  function fuBlock(m, d) {
+    var k = fuKey(m, d), st = fuState(), c = fuPress(m, d), sending = S.sending["fu:" + k];
     var to = (d.to || []).map(function (p) { return p.name || p.email; }).join(", ");
-    var h = '<div class="fudraft"><div class="frw">' + esc("To " + to + " · " + d.subject) + "</div>";
+    var h = '<div class="fudraft" data-fuid="' + esc(d.draft_id || "") + '"><div class="frw">' + esc("To " + to + " · " + d.subject) + "</div>";
     if (c) {
       var r = c.result || {}, line = r.line || (c.action === "send" ? FU_SENT_LINE : FU_DRAFTED_LINE);
       h += '<div class="quiet">' + esc(line) + "</div>";
@@ -11083,13 +11162,16 @@
   }
   function fuSendCall(id) { return mcp.callTool(MAIL.server, MAIL.send, MAIL.provider === "superhuman" ? { draft_id: id } : { messageId: id }); }
   function fuDiscardCall(id) { return mcp.callTool(MAIL.server, MAIL.discard, MAIL.provider === "superhuman" ? { draft_id: id } : { messageId: id }); }
-  function fuGo(m, verb) {
-    var d = fuDraft(m), k = fuKey(m); if (!d || fuSkipped(m)) return;
-    if (S.sending["fu:" + k] || fuPress(m)) return;   // one press a meeting: a second never makes a second draft
+  function fuGo(m, verb, d) {
+    d = d || fuDraft(m); if (!d || fuSkipped(m)) return;
+    var k = fuKey(m, d);
+    if (S.sending["fu:" + k] || fuPress(m, d)) return;   // one press a draft: a second never makes a second mailbox draft
     var draft = { to: (d.to || []).map(function (p) { return p.email; }).join(", "), cc: "", subject: d.subject, body: fuText(m, d) };
     S.sending["fu:" + k] = verb; fuState().arm = ""; renderWrapView();
     var row = { id: rid(), kind: "followup", src: "cr-followup", n: String(m.meeting_id), ref: String(m.wrap.ref), fu_key: k, action: verb,
       title: m.title || "", created_at: nowIso(), applied: true, applied_at: nowIso(), by_page: true, provider: MAIL.provider, draft: draft };
+    // part C: the press names the one draft it drafted or sent, so the book marks that draft, never the meeting's newest
+    if (FU_DRAFT_ID_RE.test(String(d.draft_id || ""))) row.draft_id = String(d.draft_id);
     var ref = db.collection("choices").doc(row.id);
     function land(outcome, line, err) {
       row.result = { outcome: outcome, line: line }; row.applied_at = nowIso();
@@ -11134,13 +11216,15 @@
     var m = S.wrapOpen ? wrapMeeting(S.wrapOpen) : null;
     if ((b = t.closest("button[data-fuundo]"))) { fuUndo(b.getAttribute("data-fuundo")); return true; }
     if (!m) return false;
-    var st = fuState(), k = fuKey(m);
-    if ((b = t.closest("button[data-fueditbtn]"))) { st.editing = st.editing === k ? "" : k; renderWrapView(); return true; }
-    if ((b = t.closest("button[data-fudraft]"))) { fuGo(m, "draft"); return true; }
+    var st = fuState(), k, d;
+    // part C: each block's buttons carry that draft's own key
+    if ((b = t.closest("button[data-fueditbtn]"))) { k = b.getAttribute("data-fueditbtn"); st.editing = st.editing === k ? "" : k; renderWrapView(); return true; }
+    if ((b = t.closest("button[data-fudraft]"))) { d = fuDraftByKey(m, b.getAttribute("data-fudraft")); if (d) fuGo(m, "draft", d); return true; }
     if ((b = t.closest("button[data-fusend]"))) {
+      k = b.getAttribute("data-fusend"); d = fuDraftByKey(m, k); if (!d) return true;
       // two presses, apart, as the Inbox's Send takes
       var now = Date.now();
-      if (fuArmed(k) && now - st.armAt >= FU_SEND_GAP_MS) { fuGo(m, "send"); return true; }
+      if (fuArmed(k) && now - st.armAt >= FU_SEND_GAP_MS) { fuGo(m, "send", d); return true; }
       st.arm = k; st.armAt = now; renderWrapView();
       // the armed state ends on its own: the button reads Send again
       clearTimeout(st.armTimer);
@@ -11187,10 +11271,20 @@
     // round 7: the listed meetings with a wrap-up, and the ones the cap hides (`past_hidden`,
     // bare), sharing its id or title: every sibling the feed's claim ran over
     var t = S.today || {}, nt = titleNorm(m.title), sib = function (o) { return o && o.start && (String(o.meeting_id) === String(m.meeting_id) || (nt && titleNorm(o.title) === nt)); };
+    // decision 147d, amended: only a walled sibling goes as {meeting_id, start, held: true}, with no title (the
+    // server's claim matches those by id and start): one the feed marks title_off, or one the cap hides whose
+    // title the feed blanked (#1833 blanks a walled title in `past_hidden`). A sibling matched by title carries
+    // this meeting's own title, which the press already carries; any other keeps its own, as before, so the
+    // server's claim among same-titled siblings still finds its notes
+    var held = function (o) { return { meeting_id: String(o.meeting_id || ""), start: o.start, held: true }; };
+    var one = function (o) {
+      return { meeting_id: String(o.meeting_id || ""), title: nt && titleNorm(o.title) === nt ? m.title || "" : o.title || "", start: o.start };
+    };
     var occ = (Array.isArray(t.past) ? t.past : []).concat(Array.isArray(t.meetings) ? t.meetings : [])
       .filter(function (o) { return o && o.wrap && sib(o); })
-      .concat((Array.isArray(t.past_hidden) ? t.past_hidden : []).filter(sib))
-      .map(function (o) { return { meeting_id: String(o.meeting_id || ""), title: o.title || "", start: o.start }; });
+      .map(function (o) { return o.title_off ? held(o) : one(o); })
+      .concat((Array.isArray(t.past_hidden) ? t.past_hidden : []).filter(sib)
+        .map(function (o) { return o.title_off || !String(o.title || "").trim() ? held(o) : one(o); }));
     return { title: m.title || "", start: m.start || "", next_start: m.next_start || "", ref: W.ref || "", occ: occ, follow: st.follow || "", place: place, track: track, wrong: wrong, carried: [] };
   }
   function wrapParts(m) {
@@ -11231,15 +11325,19 @@
     var h = '<div class="meethead"><div class="frw">Wrap-up</div><div class="mt1">' + esc(showTitle(m.title, { kind: "meeting" })) + '</div><div class="mwhen">' + esc(when) + "</div></div>";
     if (!W.processed) {
       h += '<div class="walk quiet">The notes are not written yet.</div><div class="parts">'
-        + (typeof jumpLink === "function" ? jumpLink(jumpText("wrap", m.title, fmtWhen(m.start)), "Write it up now", "primary") : "")
+        // part C, C3: Process only where the page's worker exists (behind its own guard); the v6.11 jump stays
+        + (typeof mxProcess === "function" && m.jk && !m.title_off ? '<button type="button" class="act primary" data-mxproc="1">Process</button>' : "")
+        + (typeof jumpLink === "function" ? jumpLink(jumpText("wrap", m.title, fmtWhen(m.start)), "Write it up now", typeof mxProcess === "function" && m.jk ? "" : "primary") : "")
         + '<button class="act" data-dowrap="none">Nothing to follow up</button></div>' + wrapAttached(m) + '<div class="mfoot">' + wrapFoot(m) + "</div>";
       h += typeof meetMake === "function" ? meetMake(m) : "";   // cr1#1658 change 8
       putHtml(body, h); if (typeof renderMeetAttach === "function") renderMeetAttach(); return;
     }
+    if (typeof mdCan === "function" && mdCan(m)) { mdView(m, body, h); return; }
     h += '<div class="chips wparts">' + wrapParts(m).map(function (x) { return '<span class="tag' + (x[2] ? " ok" : "") + '">' + (x[2] ? "&#10003; " : "") + esc(x[0] + ": " + x[1]) + "</span>"; }).join("") + "</div>";
-    var fu = fuHtml(m);
-    h += '<div class="mlive"><div><div class="ph">Follow-up</div>' + (fu || '<div class="parts">'
+    var fu = fuHtml(m), held = fuHeldHtml(m);
+    h += '<div class="mlive"><div><div class="ph">Follow-up</div>' + held + (fu || '<div class="parts">'
       + (typeof jumpLink === "function" ? jumpLink(jumpText("past", m.title, fmtWhen(m.start)), "Write the follow-up") : "") + "</div>")
+      + fpHtml(m)
       + '<div class="opts">'
       // cr1#1745: no draft for meetings like this one again, with its Undo
       + fuSkipHtml(m)
@@ -11264,9 +11362,139 @@
     h += wrapAttached(m) + '</div></div><div class="mfoot">' + wrapFoot(m) + "</div>" + (typeof meetMake === "function" ? meetMake(m) : "");   // cr1#1658 change 8
     putHtml(body, h);
     if (typeof renderMeetAttach === "function") renderMeetAttach();   // round 5, item 3: the block fills its place
+    fuOpenAt(body);
   }
-  function openWrap(id) { if (typeof wrapMeeting === "function" && typeof toOff === "function" && toOff(wrapMeeting(id))) { if (typeof toast === "function") toast(TO_HELD_LINE); return; } S.wrapOpen = id; renderTodayParts(); var b = $("wrapBack"); if (b) b.focus(); }
-  function closeWrap() { S.wrapOpen = null; var mid = $("todaymid"); if (mid) mid.hidden = false; renderTodayParts(); }
+  // part C: People's "Open draft" names a draft (S.wrapDraft); the page opens at
+  // that draft's block, then forgets it. Once the follow-ups feed is in and the
+  // draft is not there, it is forgotten too (it was drafted, sent or held since).
+  function fuOpenAt(body) {
+    var want = S.wrapDraft || S.wrapFocus; if (!want || !body) return;
+    var el = null;
+    Array.prototype.forEach.call(body.querySelectorAll("[data-fuid]"), function (x) { if (!el && x.getAttribute("data-fuid") === String(want)) el = x; });
+    var first = el ? el.querySelector("button") : null;
+    if (el && S.wrapDraft) {
+      S.wrapDraft = null; S.wrapLanded = true; S.wrapFocus = want;
+      if (el.scrollIntoView) el.scrollIntoView({ block: "center" });
+      if (first && first.focus) first.focus();
+      return;
+    }
+    if (el) {
+      // the walk of part C: a later redraw replaced the button the landing focused; it takes the focus
+      // back only while nothing else has it (the owner pressing anywhere else keeps theirs)
+      var act = typeof document !== "undefined" ? document.activeElement : null;
+      if (first && first.focus && (!act || act === document.body)) { first.focus(); S.wrapFocus = null; }   // once, then left
+      return;
+    }
+    if (S.wrapDraft && S.followups) S.wrapDraft = null;
+  }
+  // part C (GAP 2): a meeting whose follow-up the book held says so, in the
+  // book's own plain words (never a name); until a draft or a plan change ends it
+  function fuHeld(m) {
+    var f = S.followups, W = m && m.wrap; if (!f || f.ok !== true || !W || !W.ref) return null;
+    return (f.held || []).filter(function (x) { return x && String(x.ref) === String(W.ref) && x.line; })[0] || null;
+  }
+  function fuHeldHtml(m) { var x = m && m.title_off ? null : fuHeld(m); return x ? '<div class="quiet fuheld">' + esc(x.line) + "</div>" : ""; }
+
+  // ---- the follow-up plan editor (cr1#1787 part C, C2) ----------------------
+  // Who gets this meeting's follow-up: the written-up meeting's people from the
+  // follow-ups feed (walled there: nobody off limits or personally tied; a
+  // meeting whose title names someone off limits carries nobody and is not
+  // editable), less anyone the owner's plan took off. Each press names the
+  // meeting (its id), the calendar key (jk) and a start with its zone; a
+  // meeting with none of those offers no editor, so a press is never refused
+  // for it after the owner made it.
+  var FP_HEAD = "Who gets the follow-up";
+  var FP_NOTE = "Your choice goes to your book at the next update; the follow-up is written to match.";
+  var FP_ZONE_RE = /(Z|[+-]\d\d:?\d\d)$/;
+  // the meeting's calendar key: the row's own (jk), else hashed here from the calendar's
+  // event id (the row's `event_id`), the way the builder's key is (_join_keys, evKeyAll),
+  // never from the meeting id (the planner's review of part C)
+  var FP_KEYING = {};
+  function fpJk(m) {
+    if (m.jk) return String(m.jk);
+    var id = String(m.event_id || "");
+    if (!id) return "";
+    if (EVKEYS[id]) return EVKEYS[id];
+    if (!FP_KEYING[id] && typeof evKeyAll === "function") {
+      FP_KEYING[id] = true;
+      evKeyAll([id]).then(function () { renderWrapView(); }, function () {});
+    }
+    return "";
+  }
+  function fpMeeting(m) {
+    var f = S.followups, W = m && m.wrap; if (!f || f.ok !== true || !W || !W.ref) return null;
+    return (f.meetings || []).filter(function (x) { return x && String(x.ref) === String(W.ref); })[0] || null;
+  }
+  function fpPlan(m) {
+    var f = S.followups, jk = fpJk(m); if (!f || f.ok !== true || !jk) return null;
+    return (f.plans || []).filter(function (p) { return p && String(p.meeting_key || "") === jk; })[0] || null;
+  }
+  function fpCan(m) {
+    var x = fpMeeting(m);
+    return !!(x && x.editable === true && (x.people || []).length && fpJk(m) && m.meeting_id && FP_ZONE_RE.test(String(m.start || ""))
+      && !m.title_off && !m.solo && m.calendar !== "personal");
+  }
+  // this page's own presses on a person here, newest first, waiting or applied (not refused)
+  function fpPress(m, pid) {
+    var best = null;
+    (S.choices || []).forEach(function (c) {
+      if (c.kind !== "meetplan" || String(c.meeting_key || "") !== fpJk(m) || String(c.person_id || "") !== String(pid)) return;
+      if (c.applied && c.result && (c.result.outcome === "refused" || c.result.outcome === "error")) return;
+      if (!best || (c.created_at || "") > (best.created_at || "")) best = c;
+    });
+    return best;
+  }
+  function fpOut(m, pid) {
+    var c = fpPress(m, pid); if (c) return c.action === "remove";
+    var p = fpPlan(m); return !!(p && (p.removed || []).some(function (x) { return String(x) === String(pid); }));
+  }
+  function fpHtml(m) {
+    if (!fpCan(m)) return "";
+    var h = '<div class="ph">' + esc(FP_HEAD) + "</div>";
+    fpMeeting(m).people.forEach(function (p) {
+      var out = fpOut(m, p.id), c = fpPress(m, p.id), wait = c && !c.applied;
+      h += '<div class="mask"><span style="flex:1' + (out ? ";text-decoration:line-through" : "") + '">' + esc(p.name || "Someone on the meeting") + "</span>"
+        + (wait ? '<button type="button" class="chip" data-fpundo="' + esc(c.id) + '">Undo</button>'
+          : '<button type="button" class="chip" data-fpwho="' + esc(p.id) + '" data-fpdo="' + (out ? "add" : "remove") + '">' + (out ? "Put back" : "Leave out") + "</button>") + "</div>";
+    });
+    return h + '<div class="quiet">' + esc(FP_NOTE) + "</div>";
+  }
+  function onPlan(ev) {
+    if (ev.type !== "click") return false;
+    var t = ev.target, b, m = S.wrapOpen ? wrapMeeting(S.wrapOpen) : null; if (!m) return false;
+    if ((b = t.closest && t.closest("button[data-fpundo]"))) { undoChoice(b.getAttribute("data-fpundo")).then(function () { renderWrapView(); }); return true; }
+    if ((b = t.closest && t.closest("button[data-mxproc]"))) { if (typeof mxProcess === "function" && m.jk && !m.title_off) { mxProcess(m.jk); renderWrapView(); } return true; }
+    if (!(b = t.closest && t.closest("button[data-fpwho]"))) return false;
+    if (!fpCan(m)) return true;
+    var pid = b.getAttribute("data-fpwho"), act = b.getAttribute("data-fpdo") === "add" ? "add" : "remove";
+    if (!fpMeeting(m).people.some(function (p) { return String(p.id) === String(pid); })) return true;
+    var row = { kind: "meetplan", src: "cockpit", n: String(m.meeting_id), action: act, meeting_key: fpJk(m),
+      meeting_id: String(m.meeting_id), start: String(m.start), person_id: String(pid), title: m.title || "" };
+    // review 5 of #1814 (decision B): the press names the write-up it was made on, so the owner's choice is
+    // that write-up's own plan and ends any hold on it
+    if (m.wrap && m.wrap.ref) row.ref = String(m.wrap.ref);
+    // rule R2 (#1814): a press with the write-up's ref names the meeting by its notes' own id (the ref's
+    // tail), as the server's gate checks it; plus the series and the end. The series is the calendar's
+    // series key (`sk`, the same hash the binding records); "none" only when the row says the meeting is not
+    // recurring; otherwise it is left out, so the plan's series stays unknown (decision 146b, refined)
+    var tail = row.ref && row.ref.indexOf(":") >= 0 ? row.ref.slice(row.ref.lastIndexOf(":") + 1).trim() : "";
+    if (tail) row.meeting_id = tail;
+    if (m.sk) row.series = String(m.sk);
+    else if (m.recurring === false) row.series = "none";
+    if (m.end) row.end = String(m.end);
+    // Put back takes the owner's own Leave out back (its Undo), so the person rejoins the follow-up
+    // they were on; only a removal this page did not press is put back by an add
+    var prev = fpPress(m, pid);
+    if (act === "add" && prev && prev.applied && prev.action === "remove") { row.action = "undo"; row.back_of = String(prev.id); }
+    saveChoice(row).then(function () { renderWrapView(); });
+    return true;
+  }
+  // part C: Back takes the focus unless the page landed on People's named draft (fuOpenAt), which keeps it
+  function openWrap(id) { if (typeof wrapMeeting === "function" && typeof toOff === "function" && toOff(wrapMeeting(id))) { if (typeof toast === "function") toast(TO_HELD_LINE); return; } S.wrapLanded = false; S.wrapFocus = null; S.wrapOpen = id; renderTodayParts(); var b = $("wrapBack"); if (b && !S.wrapLanded) b.focus(); }
+  // Back drops only the choices not yet sent (held and in memory); a press's own marks stay on its row
+  function closeWrap() { var cm = S.wrapOpen && typeof mdKey === "function" ? wrapMeeting(S.wrapOpen) : null; if (cm && typeof heldDrop === "function") heldDrop(mdKey(cm) + ":done");
+    if (cm && S.mdLive && S.mdLive[mdKey(cm)]) S.mdLive[mdKey(cm)].acts = {};
+    S.wrapOpen = null; S.wrapFocus = null; var mid = $("todaymid"); if (mid) mid.hidden = false; renderTodayParts(); }
   function onWrap(ev) {
     var t = ev.target;
     var ow = t.closest && t.closest("button[data-wrap]"); if (ow && ev.type === "click") { openWrap(ow.getAttribute("data-wrap")); return true; }
@@ -11285,6 +11513,299 @@
     if (ev.type === "click" && (b = t.closest("button[data-unwrap]"))) { saveChoice({ kind: "meeting", src: "cockpit", n: String(m.meeting_id), action: "unwrap", input: { press: b.getAttribute("data-unwrap") }, title: m.title || "" }); return true; }
     return false;
   }
+  // ---- the meeting page's commitments, Apply and Done (cr1#1787 part D) ----
+  // After processing, every commitment heard on the meeting is one row: what
+  // it is, who owes whom, its date or "Add date", and the priority it serves
+  // (128b). The rows come walled from the feed (wrap_for: mine is what the
+  // owner owes, theirs what is owed to him; who, who_id, priority, waiting
+  // and soon are add-only, so a row from an older feed draws with no name and
+  // no priority and sorts last on what it lacks). Sorted: someone is waiting
+  // on it, due within 14 days, tied to a meeting in the next 48 hours, serves
+  // a priority; the top three, then "Show all N".
+  // Track is already true when the page opens: the write-up tracks every heard
+  // commitment itself (130b). Ignore and the star change nothing until Apply
+  // (ruling 125g), one `meetapply` press carrying only what the owner changed;
+  // the server tracks a starred one first, then adds it to Focus (128j).
+  // Apply never sends an email. "Add date" is the commitment's own Edit box,
+  // saved as its own press at once, as everywhere else on the page.
+  // Done files the meeting away (`done`): it sends nothing and applies nothing.
+  // Nothing is offered on a meeting whose title is held, a solo one or a
+  // personal one. Track or Ignore before Apply survives a restart (heldPut,
+  // kind word `done`, a meeting key with no name and no title in it); it is
+  // put back only once the feed and the off-limits list are in and the row is
+  // still there, and dropped on Apply, Done and closing the page.
+  var MD_SHOW = 3, MD_DUE_DAYS = 14;
+  var MD_NONE = "No commitments heard.";
+  var MD_NO_FU = "No follow-ups chosen.";
+  var MD_APPLY_NOTE = "Ignore, Focus and Not right wait here until you apply them. Applying sends nothing.";
+  var MD_DONE_NOTE = "Done files this meeting away. It sends nothing and changes nothing.";
+  var MD_HELD_DONE = "This can be filed away once its commitments can be checked; it stays in the queue until then.";
+  // an Apply that landed in part (the server's `error` with `not_done`): the page's own words, never the
+  // server's, and the choices that did not go through stay chosen so the next Apply carries them again
+  var MD_PART_ONE = "1 of your choices could not be made. It is still chosen below, and Apply tries it again.";
+  var MD_PART_N = "{n} of your choices could not be made. They are still chosen below, and Apply tries them again.";
+  var MD_NOT_DONE = "Not done yet";
+  var MD_GONE_ONE = "1 of your choices could not be made, and it is no longer chosen.";
+  var MD_GONE_N = "{n} of your choices could not be made, and they are no longer chosen.";
+  // both at once, one sentence (the fix check of 7f69f5f9f)
+  function mdMixLine(nd, gone) {
+    return (nd + gone) + " of your choices could not be made: " + nd + (nd === 1 ? " is still chosen below and Apply tries it again; " : " are still chosen below and Apply tries them again; ")
+      + gone + (gone === 1 ? " is no longer chosen." : " are no longer chosen.");
+  }
+  function mdCan(m) {
+    var W = m && m.wrap;
+    return !!(W && W.processed && W.ref && m.meeting_id && !m.title_off && !m.solo && m.calendar !== "personal");
+  }
+  // the meeting's key for what survives a restart: its id and start, marks made safe (never a name or a title)
+  function mdKey(m) {
+    return "mt|" + String(m.meeting_id || "").replace(/[^A-Za-z0-9_.@#-]/g, "_").slice(0, 100) + "|" + String(m.start || "").replace(/[^0-9TZ]/g, "");
+  }
+  function mdDueSoon(due) {
+    var d = String(due || "").slice(0, 10); if (!/^\d{4}-\d\d-\d\d$/.test(d)) return false;
+    var t = Date.parse(d + "T23:59:59Z"); return !isNaN(t) && t - Date.now() <= MD_DUE_DAYS * 86400000;
+  }
+  function mdRows(m) {
+    var W = m.wrap || {}, out = [];
+    (W.mine || []).forEach(function (r, i) { if (r && r.id) out.push({ r: r, mine: true, i: i }); });
+    (W.theirs || []).forEach(function (r, i) { if (r && r.id) out.push({ r: r, mine: false, i: 1000 + i }); });
+    out.forEach(function (x) { var r = x.r; x.k = [r.waiting === true ? 0 : 1, mdDueSoon(r.due) ? 0 : 1, r.soon === true ? 0 : 1, r.priority ? 0 : 1, x.i]; });
+    out.sort(function (a, b) { for (var j = 0; j < a.k.length; j++) if (a.k[j] !== b.k[j]) return a.k[j] - b.k[j]; return 0; });
+    return out;
+  }
+  // the off-limits list is in: a restore waits for it (a page with no wall reader has nothing to wait for)
+  function mdWallIn() { return typeof liveWall === "function" ? !!liveWall() : true; }
+  function mdState(m) {
+    var id = mdKey(m); S.mdLive = S.mdLive || {};
+    var st = S.mdLive[id] || (S.mdLive[id] = { acts: {}, all: false, back: false });
+    if (!st.back && mdWallIn() && typeof heldGet === "function") {
+      st.back = true;
+      var ids = {}; mdRows(m).forEach(function (x) { ids[x.r.id] = true; });
+      var kept = heldGet(id + ":done", function () { return mdCan(m); });
+      if (kept && kept.acts && typeof kept.acts === "object") {
+        Object.keys(kept.acts).forEach(function (cid) { var a = kept.acts[cid]; if (ids[cid] && (a === "ignore" || a === "star") && !st.acts[cid]) st.acts[cid] = a; });
+      }
+    }
+    // an Apply that landed in part, or was refused: what it could not do is chosen again, once per press, and
+    // only after the restore (so once the off-limits list is in). The "once" mark is on the press row itself,
+    // durable as fuUndo's marks are, so Back, a restart or the held store's age never chooses it again after
+    // the owner took it back (the second review of 5ec67f37e, MUST 1)
+    var back = st.back ? mdRetry(m) : null;
+    if (back && !back.p.rechosen && !(S.mdMarked && S.mdMarked[back.p.id])) {
+      var here = {}; mdRows(m).forEach(function (x) { here[x.r.id] = true; });
+      back.items.forEach(function (x) { if (x && here[x.id] && (x.act === "ignore" || x.act === "star") && !st.acts[x.id]) st.acts[x.id] = x.act; });
+      mdMark(back.p);
+      mdPut(m, st);
+    }
+    return st;
+  }
+  // the newest Apply when it could not do some or all of what it carried: `{p, items, part}`, else null.
+  // Landed in part: the server's `error` with `not_done`. Refused: nothing changed, every item it carried.
+  function mdRetry(m) {
+    var p = mdPresses(m, "meetapply")[0], o = p && p.applied && p.result ? p.result.outcome : "";
+    if (o === "error" && Array.isArray(p.result.not_done) && p.result.not_done.length) return { p: p, items: p.result.not_done, part: true };
+    if (o === "refused") return { p: p, items: (p.input && p.input.items) || [], part: false };
+    return null;
+  }
+  function mdPart(m) { var r = mdRetry(m); return r && r.part ? r.p : null; }
+  // the press row's own mark that its choices were chosen again, kept in the book's choices store
+  // kept in the page's memory too (the fix check of a2097e156): a store update that fails is dropped by the next
+  // snapshot, and this set is not, so the choice is never chosen again and again while the page is open
+  function mdMark(p) {
+    p.rechosen = true;
+    S.mdMarked = S.mdMarked || {}; S.mdMarked[p.id] = true;
+    if (typeof db !== "undefined" && db && db.collection) {
+      try { db.collection("choices").doc(p.id).update({ rechosen: true }).then(null, function () {}); } catch (e) { /* the page's own copy holds it */ }
+    }
+  }
+  function mdPut(m, st) {
+    // nothing is kept until the restore has run (once the off-limits list is in), so a press before it never
+    // overwrites what an earlier visit kept (the fix check of a2097e156)
+    if (!st.back) return;
+    var key = mdKey(m) + ":done";
+    if (Object.keys(st.acts).length) { if (typeof heldPut === "function") heldPut(key, { acts: st.acts }); }
+    else if (typeof heldDrop === "function") heldDrop(key);
+  }
+  function mdKeep(m) { mdPut(m, mdState(m)); }
+  function mdForget(m) { var st = mdState(m); st.acts = {}; if (typeof heldDrop === "function") heldDrop(mdKey(m) + ":done"); }
+  // this meeting's own presses, newest first
+  function mdPresses(m, action) {
+    return (S.choices || []).filter(function (c) {
+      return c && c.kind === "meeting" && c.action === action && String(c.n) === String(m.meeting_id)
+        && (action !== "done" || !c.input || !c.input.start || !m.start || c.input.start === m.start)
+        && (action !== "meetapply" || (c.input && String(c.input.ref || "") === String((m.wrap || {}).ref || "")));
+    }).sort(function (a, b) { return String(b.created_at || "") > String(a.created_at || "") ? 1 : -1; });
+  }
+  // a row's state: the owner's own change, else what a waiting Apply carries, else Track
+  function mdAct(m, cid) {
+    var st = mdState(m); if (st.acts[cid]) return st.acts[cid];
+    var p = mdPresses(m, "meetapply").filter(function (c) { return !c.applied; })[0];
+    var it = p && (p.input.items || []).filter(function (x) { return x && x.id === cid; })[0];
+    return it ? it.act : "track";
+  }
+  function mdOwes(x) {
+    var who = String(x.r.who || "");
+    if (x.mine) return who ? "You owe " + who : "Yours to do";
+    return who ? who + " owes you" : "Owed to you";
+  }
+  function mdDate(r) {
+    if (r.due) return '<span class="tag">' + esc("due " + fmtDate(String(r.due).slice(0, 10))) + "</span>";
+    if (typeof edHas === "function" && edHas(edKey("commitment_edit", r.id))) return edActs("commitment_edit", r.id, r.title || "", "");
+    return '<button type="button" class="act" data-edact="open" data-edkind="commitment_edit" data-edn="' + esc(r.id) + '" data-edval="' + esc(r.title || "")
+      + '" data-eddueval="" title="Give it a date; it is saved in about two minutes">Add date</button>';
+  }
+  function mdStar(m, cid, act) {
+    if (typeof fxStarBtn !== "function") return "";
+    var b = String(fxStarBtn("commitment", cid, "meeting") || "");
+    if (b.indexOf("data-fx-star") < 0) return b;   // already in Focus: its own pressed, disabled button
+    b = b.replace('<button type="button"', '<button type="button" data-mdstar="' + esc(cid) + '"');
+    return act === "star" ? b.replace('aria-pressed="false"', 'aria-pressed="true"') : b;
+  }
+  function mdNotDone(m, cid) {
+    var p = mdPart(m);
+    return !!p && p.result.not_done.some(function (x) { return x && x.id === cid; }) && !!mdState(m).acts[cid];
+  }
+  function mdRowHtml(m, x) {
+    var r = x.r, act = mdAct(m, r.id);
+    var chip = function (a, label) { return '<button type="button" class="chip" data-mdact="' + a + '" data-mdid="' + esc(r.id) + '" aria-pressed="' + ((act === a || (a === "track" && act === "star")) ? "true" : "false") + '">' + label + "</button>"; };
+    return '<div class="dcard mdrow" data-mdrow="' + esc(r.id) + '"><div' + (act === "ignore" ? ' style="text-decoration:line-through"' : "") + ">" + esc(showTitle(r.title)) + "</div>"
+      + '<div class="mdfacts"><span class="sub">' + esc(mdOwes(x)) + "</span>" + mdDate(r) + (r.priority ? '<span class="sub">' + esc("For " + r.priority) + "</span>" : "")
+      + (mdNotDone(m, r.id) ? '<span class="tag err">' + esc(MD_NOT_DONE) + "</span>" : "") + "</div>"
+      + '<div class="opts">' + chip("track", "Track") + chip("ignore", "Ignore") + mdStar(m, r.id, act) + "</div></div>";
+  }
+  function mdHtml(m) {
+    var W = m.wrap || {};
+    var h = '<div class="ph">Commitments heard</div>';
+    if (W.held) return h + '<div class="quiet">I could not check this meeting\'s commitments just now, so none are listed. It stays in the queue.</div>';
+    var rows = mdRows(m), st = mdState(m);
+    if (!rows.length) return h + '<div class="quiet">' + esc(MD_NONE) + "</div>" + (mdWrong(m).length ? mdApply(m, rows) : "");
+    (st.all ? rows : rows.slice(0, MD_SHOW)).forEach(function (x) { h += mdRowHtml(m, x); });
+    if (rows.length > MD_SHOW) h += '<button type="button" class="act" data-mdall="1">' + (st.all ? "Show fewer" : "Show all " + rows.length) + "</button>";
+    return h + mdApply(m, rows);
+  }
+  // only what the owner changed rides Apply: Ignore and the star
+  function mdItems(m, rows) {
+    var st = mdState(m), out = [];
+    (rows || mdRows(m)).forEach(function (x) { var a = st.acts[x.r.id]; if (a === "ignore" || a === "star") out.push({ id: x.r.id, act: a }); });
+    return out;
+  }
+  // the decisions the owner marked Not right (the wrap-up's own choice, kept in the page's store)
+  function mdWrong(m) {
+    var st = typeof wrapState === "function" ? wrapState(m) : null, W = m.wrap || {};
+    // one already carried by an Apply that waits or landed is not carried again
+    var sent = {};
+    // (an Apply that landed in part wrote its row, so its Not right is recorded too)
+    mdPresses(m, "meetapply").forEach(function (c) { if (!c.applied || edLanded(c) || c === mdPart(m)) ((c.input && c.input.wrong) || []).forEach(function (x) { sent[String(x)] = true; }); });
+    return st ? (W.decided || []).filter(function (d) { return d && st.wrong[d.id] && !sent[String(d.id)]; }).map(function (d) { return String(d.id); }) : [];
+  }
+  function mdApply(m, rows) {
+    var p = mdPresses(m, "meetapply")[0], tag = "";
+    // the fix check of a2097e156 (MUST A): "still chosen" only for what is still chosen; what Back or the held
+    // store's age dropped is said plainly, with nothing to press. Said once the restore has run.
+    var part = mdPart(m), st = mdState(m), nd = 0, gone = 0;
+    // still chosen is any choice on it now (a re-chosen Ignore switched to the star is still chosen)
+    if (part) part.result.not_done.forEach(function (x) { if (x && st.acts[x.id]) nd += 1; else gone += 1; });
+    if (p && !p.applied) tag = waitTag(p, "apply waiting") + undoBtn(p, "Take this back before it reaches your book");
+    else if (part && !st.back) tag = "";
+    else if (part) tag = '<span class="tag err">' + esc(nd && gone ? mdMixLine(nd, gone) : nd ? (nd === 1 ? MD_PART_ONE : MD_PART_N.replace("{n}", String(nd)))
+      : (gone === 1 ? MD_GONE_ONE : MD_GONE_N.replace("{n}", String(gone)))) + "</span>";
+    else if (p && p.applied) tag = resultTag(p);
+    var n = mdItems(m, rows).length + mdWrong(m).length;
+    return '<div class="parts mdapply">' + tag + '<button type="button" class="act primary" data-mdapply="1"' + (n ? "" : " disabled") + ">Apply</button></div>"
+      + '<div class="quiet">' + esc(MD_APPLY_NOTE) + "</div>";
+  }
+  // the Done bar: what processing did, and the press that files the meeting away
+  function mdDid(m) {
+    var W = m.wrap || {}, n = mdRows(m).length, d = (W.decided || []).length, f = typeof fuDrafts === "function" ? fuDrafts(m).length : 0;
+    var parts = [n === 1 ? "1 commitment heard" : n + " commitments heard"];
+    if (d) parts.push(d === 1 ? "1 decision" : d + " decisions");
+    if (f) parts.push(f === 1 ? "1 follow-up drafted" : f + " follow-ups drafted");
+    return "Written up: " + parts.join(", ") + ".";
+  }
+  function mdDone(m) {
+    var W = m.wrap || {}, p = mdPresses(m, "done")[0];
+    if (W.wrapped && W.wrapped.press) return '<div class="frw">&#10003; Filed away.</div><button class="act undo" data-unwrap="' + esc(W.wrapped.press) + '">Undo</button>';
+    if (p && !p.applied) return waitTag(p, "done waiting") + undoBtn(p, "Take this back before it reaches your book");
+    var said = p && p.applied && !edLanded(p) ? resultTag(p) : "";
+    if (W.held) return said + '<div class="frw">' + esc(MD_HELD_DONE) + "</div>";
+    return said + '<div class="frw">' + esc(mdDid(m)) + '</div><button type="button" class="act primary" data-mddone="1">Done</button><div class="quiet">' + esc(MD_DONE_NOTE) + "</div>";
+  }
+  function mdDoneInput(m) {
+    var inp = wrapInput(m);
+    ["place", "track", "wrong", "follow", "carried"].forEach(function (k) { delete inp[k]; });
+    return inp;
+  }
+  function mdOnClick(ev) {
+    var t = ev.target, b, m = S.wrapOpen ? wrapMeeting(S.wrapOpen) : null; if (!m || !mdCan(m) || !t || !t.closest) return false;
+    var st = mdState(m);
+    if ((b = t.closest("button[data-mdstar]"))) {
+      // the star waits for Apply here: Focus's own press never sees it
+      if (ev.stopPropagation) ev.stopPropagation();
+      var sid = b.getAttribute("data-mdstar");
+      if (st.acts[sid] === "star") delete st.acts[sid]; else st.acts[sid] = "star";
+      mdKeep(m); renderWrapView(); return true;
+    }
+    if ((b = t.closest("button[data-mdact]"))) {
+      var cid = b.getAttribute("data-mdid"), a = b.getAttribute("data-mdact");
+      if (!mdRows(m).some(function (x) { return x.r.id === cid; })) return true;
+      if (a === "ignore" && st.acts[cid] !== "ignore") st.acts[cid] = "ignore"; else delete st.acts[cid];
+      mdKeep(m); renderWrapView(); return true;
+    }
+    if ((b = t.closest("button[data-mdall]"))) { st.all = !st.all; renderWrapView(); return true; }
+    // one press at a time (MUST 4 of the review of 5ec67f37e): set before the save, as the prep page's S.meetBusy
+    S.mdBusy = S.mdBusy || {};
+    var bk = mdKey(m), free = function () { delete S.mdBusy[bk]; };
+    // the save, with the flag freed whatever happens, a save that throws at once included
+    var save = function (doc) {
+      var p; try { p = saveChoice(doc); } catch (e) { free(); renderWrapView(); return; }
+      Promise.resolve(p).then(function (c) { free(); if (c) mdForget(m); renderWrapView(); }, function () { free(); renderWrapView(); });
+    };
+    if ((b = t.closest("button[data-mdapply]"))) {
+      if (S.mdBusy[bk]) return true;
+      var items = mdItems(m), wrong = mdWrong(m); if (!items.length && !wrong.length) return true;
+      var ainp = { ref: String(m.wrap.ref), title: m.title || "", start: String(m.start || ""), calendar: String(m.calendar || ""), items: items };
+      if (wrong.length) ainp.wrong = wrong;
+      S.mdBusy[bk] = true;
+      save({ kind: "meeting", src: "cockpit", n: String(m.meeting_id), action: "meetapply", title: m.title || "", input: ainp });
+      return true;
+    }
+    if ((b = t.closest("button[data-mddone]"))) {
+      if (m.wrap.held || S.mdBusy[bk]) return true;
+      var dw = mdPresses(m, "done")[0]; if (dw && !dw.applied) return true;   // one waits already
+      S.mdBusy[bk] = true;
+      save({ kind: "meeting", src: "cockpit", n: String(m.meeting_id), action: "done", input: mdDoneInput(m), title: m.title || "" });
+      return true;
+    }
+    return false;
+  }
+  function mdListen(body) {
+    if (!body || body.__md || !body.addEventListener) return;
+    body.__md = true;
+    body.addEventListener("click", function (ev) { mdOnClick(ev); });
+  }
+  // the processed meeting's page, part D's way: the follow-ups (part C's blocks and plan), what was decided
+  // with Not right, the commitments heard with Apply, and the Done bar. The v6.11 places, ticks, follow-up
+  // chips and Wrapped up stay for every page part D does not take (renderWrapView's own path).
+  function mdView(m, body, h) {
+    var W = m.wrap || {}, fu = fuHtml(m), held = fuHeldHtml(m), st = wrapState(m);
+    h += '<div class="mlive"><div><div class="ph">Follow-up</div>' + held
+      + (!fu && !held && !fuSkipped(m) ? '<div class="quiet">' + esc(MD_NO_FU) + "</div>" : "")
+      + (fu || '<div class="parts">' + (typeof jumpLink === "function" ? jumpLink(jumpText("past", m.title, fmtWhen(m.start)), "Write the follow-up") : "") + "</div>")
+      + fpHtml(m) + '<div class="opts">' + fuSkipHtml(m) + "</div>";
+    if ((W.decided || []).length) {
+      // Not right: the owner's way to say the write-up got a decision wrong; it rides Apply (a correction only)
+      h += '<div class="ph">Decided</div>';
+      W.decided.forEach(function (d) {
+        var bad = !!st.wrong[d.id];
+        h += '<div class="mask"><span style="flex:1' + (bad ? ";text-decoration:line-through" : "") + '">' + esc(d.text) + '</span><button type="button" class="chip" data-wwrong="' + esc(d.id) + '">' + (bad ? "Put back" : "Not right") + "</button></div>";
+      });
+    }
+    h += "</div><div>" + mdHtml(m) + wrapAttached(m) + '</div></div><div class="mfoot">' + mdDone(m) + "</div>" + (typeof meetMake === "function" ? meetMake(m) : "");
+    putHtml(body, h);
+    mdListen(body);
+    if (typeof renderMeetAttach === "function") renderMeetAttach();
+    fuOpenAt(body);
+  }
+  // ---- end the meeting page's commitments
   // ---- Urgent (cr1#1786) ----
   // Immediate incoming communication (ruling 125k): `feed/urgent`, which every
   // Update re-ranks from the inbox part's store (127f), with three things laid
@@ -11905,6 +12426,7 @@
   $("tab-today").addEventListener("input", function (ev) { if (ev.target.closest && ev.target.closest("#wrapview")) onFollowup(ev); });
   $("tab-today").addEventListener("click", function (ev) {
     if (ev.target.closest && ev.target.closest("#meetlive") && onMeetLive(ev)) return;
+    if (ev.target.closest && ev.target.closest("#wrapview") && onPlan(ev)) return;   // cr1#1787 part C
     if (ev.target.closest && ev.target.closest("#wrapview") && onFollowup(ev)) return;   // cr1#1745
     if (ev.target.closest && (ev.target.closest("#wrapview") || ev.target.closest("button[data-wrap]")) && onWrap(ev)) return;
     var tv = ev.target.closest("button[data-tview]"); if (tv) { setTodayMid(tv.getAttribute("data-tview")); return; }

@@ -75,7 +75,9 @@ STATUS_OK = "ok"
 #: Rows that name an item without changing it: an undo marker, a Hub press.
 NOT_A_TOUCH = frozenset({"brain_change_undone", "hub_edit",
                          # cr1#1632 slice 3: the wrap-up row names what it placed
-                         "hub_meeting_wrapped"})
+                         "hub_meeting_wrapped",
+                         # cr1#1787 part D: the Apply row names what it closed, tracked or starred
+                         "hub_meeting_applied"})
 CHAT_SOURCE_SKILL = "apply-choices"
 CHAT_SURFACES = ("plate", "morning-brief")
 

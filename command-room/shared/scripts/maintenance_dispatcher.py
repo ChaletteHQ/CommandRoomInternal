@@ -4325,7 +4325,10 @@ def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
         "the seat has one, the personal calendar. STAGE each read as it came "
         "back, as its own JSON list, one object per event, each with `id`, "
         "`title`, `start` and `end` (each with its zone, as the read gave "
-        "it) and `attendees` (their addresses); anything else an object "
+        "it), `attendees` (their addresses) and `series_id`: for a recurring "
+        "event its series' id, as the read gave it, and for an event that is "
+        "not recurring the word `\"none\"` (leave it out only when the read "
+        "does not say which); anything else an object "
         "carries is dropped in code, and which read an event came from is "
         "its business or personal mark, set in code. Write each list to a "
         "file in this session's own scratch with your own file-writing tool, "
@@ -4370,26 +4373,57 @@ def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
         # kept in the book for the owner's one press on the Hub, never sent.
         "FOLLOW-UP (cr1#1745), for each meeting this pass processed that is "
         "on a business calendar, not a block of the owner's own time, and has "
-        "someone else on it: draft its follow-up email in the owner's voice "
-        "through email-writer's rules, exactly as the follow-up-ritual skill "
-        "composes one (the calibrated voice block, length, sign-off and review "
-        "rules; never composed any other way), to the people on the meeting "
-        "other than the owner, and keep it with:\n"
+        "someone else on it: first read which emails the owner's plan wants "
+        "(cr1#1787) with:\n"
+        + _m_line(pair, "run_helper",
+                  '{"args": {"meeting_id": "<its id>", "meeting_key": "<the '
+                  'meeting_key redrafts_due gave for a redraft, else empty>", '
+                  '"ref": "<the meeting_processed row\'s source_ref>", '
+                  '"start": "<its start, with its zone>", "workspace_root": '
+                  '"<WS>"}, "name": "followup_draft:drafts_wanted"}') +
+        "      `ok` false: draft nothing for that meeting (its plan could not "
+        "be read or matched); when it also says `held` true, record the hold "
+        "once with:\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"meeting_id": "<its id>", "meeting_key": "<as '
+                  'above>", "ref": "<the meeting_processed row\'s '
+                  'source_ref>", "start": "<its start, with its zone>", '
+                  '"workspace_root": "<WS>"}, "name": "followup_draft:record_held"}') +
+        "      Else, for each entry of its `emails`, draft "
+        "that email in the owner's voice through email-writer's rules, "
+        "exactly as the follow-up-ritual skill composes one (the calibrated "
+        "voice block, length, sign-off and review rules; never composed any "
+        "other way), to exactly its `to` people, of its `kind` (`own`: as "
+        "its `instruction` says), and keep it with:\n"
         + _m_line(pair, "run_writer",
                   '{"args": {"body": "<the email\'s words>", "calendar": '
-                  '"<the meeting\'s calendar>", "meeting_id": "<its id>", '
+                  '"<the meeting\'s calendar>", "email_id": "<the entry\'s '
+                  'email_id>", "kind": "<the entry\'s kind>", "meeting_id": '
+                  '"<its id>", "meeting_key": "<as above>", '
                   '"recurring": <true when the calendar says it recurs, else '
                   'false>, "ref": "<the meeting_processed row\'s source_ref>", '
                   '"solo": <true when nobody else is on it, else false>, '
-                  '"start": "<its start>", "subject": "<the subject>", '
-                  '"title": "<its title>", "to_person_ids": [<the person ids '
-                  'it goes to>], "workspace_root": "<WS>"}, "name": '
+                  '"start": "<its start, with its zone>", "subject": "<the '
+                  'subject>", "title": "<its title>", "to_person_ids": [<the '
+                  'entry\'s to>], "workspace_root": "<WS>"}, "name": '
                   '"followup_draft:record_draft"}') +
         "      That only keeps the words in the book: nothing is called on "
         "the mailbox, no mailbox draft is made and nothing is sent; the owner's "
-        "press on the Hub's wrap-up page does that. A refused answer (a "
-        "personal or solo meeting, a skip rule, someone off limits or on the "
-        "personal side) is final for that meeting: note nothing and go on. "
+        "press on the Hub's wrap-up page does that. A refused or held answer "
+        "(a personal or solo meeting, a skip rule, someone off limits or on "
+        "the personal side, a plan that could not be matched) is final for "
+        "that email this pass: note nothing and go on. "
+        # review 2 of #1814: a plan changed after its follow-up was drafted
+        "REDRAFTS: then read the follow-ups the owner's plan changed after "
+        "they were drafted, and the meetings held earlier whose hold has "
+        "since ended (review 4 of #1814), with:\n"
+        + _m_line(pair, "run_helper",
+                  '{"args": {"workspace_root": "<WS>"}, "name": '
+                  '"followup_draft:redrafts_due"}') +
+        "      For each of its `meetings` (at most three), read that "
+        "meeting's notes once by its `ref`, and draft and keep each of its "
+        "`emails` exactly as above, with that meeting's `ref`, `meeting_id`, "
+        "`meeting_key`, `start` and `title`. "
         "Then the pass's ONE "
         "receipt (a pack_run under meeting-capture, never under "
         "past-meetings), whatever it got through:\n"
@@ -4399,7 +4433,9 @@ def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
                   'when a meetings read answered, even with no meeting, else '
                   '[]>, "fetch_blocked": <null, or why the first meetings '
                   'read errored>, "maintenance_window": '
-                  '<the plan\'s maintenance_window>, "n_meetings": <n>, '
+                  '<the plan\'s maintenance_window>, "followup_rules": <{"ref": n, "none": n, '
+                  '"bound-unrelated": n, "bound-one": n, "held": n}: how many of this pass\'s '
+                  'drafts_wanted answers named each `rule`, numbers only>, "n_meetings": <n>, '
                   '"n_processed": <n>, "n_skipped": <n>, "read_complete": '
                   '<false when a meetings read stopped before the end of the '
                   'page, else true>, "window": <the plan\'s>, '

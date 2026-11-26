@@ -452,6 +452,21 @@ def capture_read_outcome(workspace_root, *, n_meetings=None,
     return None, (reason or None), unread
 
 
+#: Rule R2 of #1814: the rules a write-up's follow-up is decided by (`hub_meetplan.resolve`).
+FOLLOWUP_RULES = ("ref", "none", "bound-unrelated", "bound-one", "held")
+
+
+def followup_rule_counts(value: object) -> dict:
+    """Only the five rule words, each a whole number of 0 or more; anything else is dropped. Pure."""
+    out: dict = {}
+    if isinstance(value, dict):
+        for k in FOLLOWUP_RULES:
+            v = value.get(k)
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                out[k] = v
+    return out
+
+
 def log_capture_pass_receipt(workspace_root, *,
                              # SPEC_NIGHTM3_LANES §5 P-2, fix pass 1 (review
                              # H-2): NOT `"scheduled"`. A literal default is
@@ -475,6 +490,7 @@ def log_capture_pass_receipt(workspace_root, *,
                              capture_leg_start: Optional[str] = None,
                              connectors_read=None,
                              fetch_blocked: Optional[str] = None,
+                             followup_rules: Optional[dict] = None,
                              now=None) -> dict:
     """THE receipt for one incremental capture pass. A `pack_run` under task
     id `meeting-capture` — never under `past-meetings` (see the module
@@ -549,6 +565,11 @@ def log_capture_pass_receipt(workspace_root, *,
         "n_processed": int(n_processed or 0),
         "n_skipped": int(n_skipped or 0),
     }
+    # rule R2 of #1814: how many write-ups each rule decided this pass, numbers only, so one real
+    # morning shows whether the capture's binding keys and Today's keys meet
+    rules = followup_rule_counts(followup_rules)
+    if rules:
+        data["followup_rules"] = rules
     if isinstance(window, dict):
         if window.get("start") is not None:
             data["window_start"] = window.get("start")

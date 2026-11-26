@@ -207,6 +207,8 @@ MAIL_SURFACE = "cockpit-mail"
 #: cr1#1020 slice 3: the People tab's presses (`people_view`).
 PERSON_VERBS = frozenset({"star", "unstar"})
 PEOPLE_SURFACE = "cockpit-people"
+#: cr1#1787: the meeting page's follow-up plan writes its audit rows under this.
+MEETPLAN_SURFACE = "cockpit-meetplan"
 #: cr1#1788: the Prep page's edits (agenda, Goal, call guide) write their audit rows under this.
 PREPEDIT_SURFACE = "cockpit-prepedit"
 #: cr1#1785: Focus, the list the owner picks, writes its audit rows under this.
@@ -1051,6 +1053,11 @@ def _calendar_of(m: Dict[str, Any], one_account: bool) -> str:
     return cal if one_account else ""
 
 
+#: Words a calendar read may put where an event has no series (rule R2 of #1814): "none" (decision 146b) and the
+#: placeholders meeting_binding.SERIES_PLACEHOLDERS reads as unknown (eighth check). Kept equal to those by test.
+_NO_SERIES_WORDS = frozenset({"none", "null", "n/a", "na", "false", "unknown", "undefined", "nil", "-"})
+
+
 def _join_keys(m: Dict[str, Any], stamp: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     """`{jk, sk}` for one event of the run's calendar read, each only when
     the read gave its id: `jk` from `event_id`, `sk` from `series_id` (the
@@ -1068,7 +1075,11 @@ def _join_keys(m: Dict[str, Any], stamp: Optional[Dict[str, Any]] = None) -> Dic
     jk = event_key(m.get("event_id"))
     if jk:
         out["jk"] = jk
-    sk = event_key(m.get("series_id"))
+    # rule R2 of #1814 (decision 146b): a read may say "none" for an event that is not recurring; that is
+    # no series, never a series named "none"
+    sid = m.get("series_id")
+    # eighth check of #1814: placeholders ("null", "n/a", "false", "unknown") are no series either
+    sk = "" if str(sid or "").strip().lower() in _NO_SERIES_WORDS else event_key(sid)
     if sk:
         out["sk"] = sk
     kind = str((stamp or {}).get("kind") or "")
@@ -2800,6 +2811,64 @@ def _meeting_extras(m: Dict[str, Any], wall: Optional[Dict[str, Any]]) -> Dict[s
     return out
 
 
+def _wrap_extras_reads(workspace_root, meetings: Optional[List[Dict[str, Any]]], now: _dt.datetime,
+                       wall: Optional[Dict[str, Any]], off: Optional[set]) -> Dict[str, Any]:
+    """cr1#1787 part D (ruling 128b): what the wrap rows' added fields read,
+    once per feed (`hub_meeting.wrap_for`'s `extras`). `names` {person id:
+    name} (nobody off limits), `serves` {item id: the first confirmed
+    priority it stands behind, `_priority_items`, by its statement}, `soon`
+    the people on file, by their address, on a business meeting starting
+    within `hub_meeting.SOON_HOURS` (None when the wall cannot be read: no
+    row is then said to be soon). Never raises, never writes."""
+    import hub_meeting
+
+    off = set(off or ())
+    out: Dict[str, Any] = {"names": {}, "serves": {}, "soon": None}
+    try:
+        out["names"] = {k: v for k, v in _person_names(workspace_root).items() if k not in off and v}
+    except Exception:  # noqa: BLE001 - nobody named
+        pass
+    try:
+        import thread_cards as tc
+
+        conf = tc.priorities_view(Path(str(workspace_root)), _iso(now)).get("confirmed") or []
+        items = _priority_items(Path(str(workspace_root)), _iso(now), conf) or {}
+        for p in conf:
+            words = str(p.get("statement") or "").strip()
+            for cid in sorted(items.get(str(p.get("id") or "")) or ()):
+                if words:
+                    out["serves"].setdefault(cid, words)
+    except Exception:  # noqa: BLE001 - no priority named
+        out["serves"] = {}
+    if wall is None:
+        return out
+    try:
+        from entities_io import entities_collection, read_entities_json
+
+        ent = read_entities_json(Path(str(workspace_root)) / "_hq" / "data" / "entities.json")
+        by: Dict[str, str] = {}
+        for p in entities_collection(ent, "people"):
+            if isinstance(p, dict) and p.get("id") and str(p["id"]) not in off:
+                addrs = [p.get("email")] + list(p.get("emails") or []) if isinstance(p.get("emails"), list) else [p.get("email")]
+                for a in addrs:
+                    if _low(a):
+                        by.setdefault(_low(a), str(p["id"]))
+        until = now + _dt.timedelta(hours=hub_meeting.SOON_HOURS)
+        soon: set = set()
+        for m in meetings or []:
+            if not isinstance(m, dict) or str(m.get("calendar") or "").lower() == "personal":
+                continue
+            st = _parse(m.get("start"))
+            if st is None or not (now <= st <= until):
+                continue
+            for a in m.get("attendees") or []:
+                e = _low(a.get("email")) if isinstance(a, dict) else ""
+                if e and e not in wall["addrs"] and e in by:
+                    soon.add(by[e])
+        out["soon"] = soon
+    except Exception:  # noqa: BLE001 - unread: no row is said to be soon
+        out["soon"] = None
+    return out
 #: The invite's own text a meeting row carries for the Prep page (cr1#1788).
 INVITE_TEXT_CAP = 2000
 #: cr1#1788 review: only this many of Today's next meetings carry it, once
@@ -3833,6 +3902,11 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
                                            long=all_day or end - start >= _dt.timedelta(hours=WEEK_AWAY_TIMED_HOURS))
                     if away_kind:
                         gone["away"] = away_kind   # "own" or "other", as a current row carries it
+                    # cr1#1787 (the fix check of a2097e156, add-only): whether the calendar
+                    # says it repeats, as a current row carries it, so the meeting page's
+                    # plan press can call a one-off "none"; absent when the read did not say
+                    if isinstance(m.get("recurring"), bool) and gone.get("calendar") != "personal":
+                        gone["recurring"] = m["recurring"]
                     past.append(gone)
                 continue
             if start > horizon:
@@ -3958,10 +4032,12 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
                     nxt[r["meeting_id"]] = r["start"]
             # item 3: each receipt claimed by the one listed meeting it followed
             claims = hub_meeting.claim_receipts(_evs, ended_all)
+            # cr1#1787 part D (128b): who, the priority served and the next 48 hours, read once
+            _extras = _wrap_extras_reads(workspace_root, meetings, now, wall, _off) if ended_all else None
             for i, r in enumerate(ended_all):
                 r["wrap"] = hub_meeting.wrap_for(workspace_root, r, _evs, owner_id=_owner, off=_off,
                                                  ref=claims.get(i, ""), open_rows=_open, tz=_tz,
-                                                 personal=_pers, index=_idx)
+                                                 personal=_pers, index=_idx, extras=_extras)
     except Exception:  # noqa: BLE001 - an unread log leaves the page as unsaved
         pass
     try:
@@ -8739,6 +8815,9 @@ def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, 
             # cr1#1745: the meeting's processed ref, so the record marks it followed up
             entry["followup_for"] = str(c.get("ref") or "")[:400]
             entry["followup_meeting"] = str(c.get("n") or "")[:200]
+            # cr1#1787: a v6.12 page names the one draft it drafted or sent
+            if re.match(r"^fd_[0-9a-f]{20}$", str(c.get("draft_id") or "")):
+                entry["followup_draft_id"] = str(c["draft_id"])
         if _record_claim_live(c, now):
             held.append(cid)
             entries.append(entry)
@@ -8873,7 +8952,8 @@ def record_page_sends(workspace_root, entries: Optional[List[Dict[str, Any]]] = 
                 drafted = res.get("event_seq")
             r["drafted_seq"] = drafted
             if e.get("followup_for"):
-                _followup_mark(workspace_root, e["followup_for"], cid, drafted, verb)
+                _followup_mark(workspace_root, e["followup_for"], cid, drafted, verb,
+                               draft_id=str(e.get("followup_draft_id") or ""))
             if verb == "send":
                 sent = on_book["sent"]
                 if sent is None:
@@ -8926,7 +9006,21 @@ def _followup_kept(workspace_root, entry: Dict[str, Any], draft: Dict[str, Any])
         evs = [x for x in load_events_owner_scoped(str(workspace_root))[0] if isinstance(x, dict)]
         ref = str(entry.get("followup_for") or "")
         kept = followup_draft.drafts_by_ref(evs).get(hub_meeting._ref_key(ref)) if ref else None
-        if not kept or str(kept.get("meeting_id") or "") != str(entry.get("followup_meeting") or ""):
+        did = str(entry.get("followup_draft_id") or "")
+        if did and ref:
+            # cr1#1787: a press naming its draft is that draft's own, not the meeting's newest
+            # review 4 of #1814 (should-fix): every draft row for the meeting, not only the newest per email,
+            # so a press on an older draft (one the page still showed) is found
+            from event_seq import event_seq as _eseq
+
+            kept = next((dict(e["data"], seq=_eseq(e)) for e in evs
+                         if e.get("type") == followup_draft.EVENT and isinstance(e.get("data"), dict)
+                         and hub_meeting._ref_key(e["data"].get("ref")) == hub_meeting._ref_key(ref)
+                         and followup_draft.draft_id_of(ref, e["data"].get("email_id"), _eseq(e)) == did), None)
+        # review 3 of #1814 (real shapes): the ref names the occurrence. The page's meeting id is the
+        # calendar's and a written-up draft's is the notes' own, so the two ids are not compared: a
+        # page's record of a real draft was refused for that alone
+        if not kept:
             return False
         people = followup_draft._people(Path(str(workspace_root)))
         own = {str(m).strip().lower() for pid in kept.get("to_person_ids") or []
@@ -8938,11 +9032,13 @@ def _followup_kept(workspace_root, entry: Dict[str, Any], draft: Dict[str, Any])
         return False
 
 
-def _followup_mark(workspace_root, ref: str, cid: str, drafted_seq: Any, verb: str) -> None:
+def _followup_mark(workspace_root, ref: str, cid: str, drafted_seq: Any, verb: str, draft_id: str = "") -> None:
     """cr1#1745: a follow-up drafted or sent from the wrap-up page marks its
     meeting followed up, as the follow-up ritual's own pack does: one
     `followup_pack_drafted` row naming the meeting's ref and the page's
-    choice, written once however many runs record the press."""
+    choice, written once however many runs record the press. cr1#1787: a
+    press that named its draft marks that draft (`draft_id`), so the
+    meeting's other chosen emails stay waiting."""
     from event_gate import append_event
 
     events_path = Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl"
@@ -8956,8 +9052,9 @@ def _followup_mark(workspace_root, ref: str, cid: str, drafted_seq: Any, verb: s
     except Exception:  # noqa: BLE001 - the book unread: nothing is marked; the next run tries again
         return
     append_event(events_path, {"type": "followup_pack_drafted", "source_skill": "follow-up-ritual",
-                               "data": {"source_ref": ref, PAGE_CHOICE_KEY: cid, "draft_event_seq": drafted_seq,
-                                        "how": "sent" if verb == "send" else "drafted", "sent_from": "hub"}},
+                               "data": dict({"source_ref": ref, PAGE_CHOICE_KEY: cid, "draft_event_seq": drafted_seq,
+                                             "how": "sent" if verb == "send" else "drafted", "sent_from": "hub"},
+                                            **({"draft_id": draft_id} if draft_id else {}))},
                  holder="cockpit_helpers")
 
 
@@ -9204,6 +9301,7 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
     mail: List[Dict[str, Any]] = []
     people: List[Dict[str, Any]] = []
     stillyours: List[Dict[str, Any]] = []
+    meetplan: List[Dict[str, Any]] = []
     prepedit: List[Dict[str, Any]] = []
     focus: List[Dict[str, Any]] = []
     refused: List[Dict[str, Any]] = []
@@ -9372,6 +9470,35 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             if verb == "undo" and isinstance(raw.get("undo"), list):
                 row["undo"] = [t for t in raw["undo"][:still_yours.UNDO_TOKEN_CAP] if isinstance(t, dict)]
             stillyours.append(row)
+        elif kind == "meetplan":
+            # cr1#1787: the meeting page's follow-up choices before processing
+            # (who gets which email, and its kind), for `hub_meetplan`, which
+            # writes its own store and never the book.
+            import hub_meetplan
+
+            if verb not in hub_meetplan.VERBS:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            typed = raw.get("input") if isinstance(raw.get("input"), dict) else {}
+
+            def _f(name, cap):
+                v = raw.get(name) if raw.get(name) not in (None, "") else typed.get(name)
+                return str(v or "")[:cap] if isinstance(v, (str, int)) and not isinstance(v, bool) else ""
+
+            meetplan.append({"id": cid, "action": verb, "meeting_key": _f("meeting_key", 64),
+                             "meeting_id": _f("meeting_id", 200) or _f("n", 200),
+                             # review of #1814: the occurrence a plan is for (its start)
+                             "start": _f("start", 40),
+                             # review 5 of #1814 (decision B): the write-up the press was made on
+                             "ref": _f("ref", 400),
+                             # rule R2 of #1814: the occurrence's series key (or "none") and its end
+                             "series": _f("series", 40), "end": _f("end", 40),
+                             "person_id": _f("person_id", 80), "email_id": _f("email_id", 40),
+                             "kind": _f("email_kind", 20), "instruction": _f("instruction", hub_meetplan.INSTRUCTION_CAP),
+                             "back_of": _f("back_of", 160),
+                             # when it was pressed: one Update's plan presses apply in that order
+                             "created_at": str(raw.get("created_at") or "")[:40]})
         elif kind == "prepedit":
             # cr1#1788: the Prep page's edits (agenda, Goal, a call-guide add or
             # remove), for `hub_prep_edit`, which writes its own store
@@ -9466,10 +9593,11 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
                             "reason": "unknown_kind"})
     return {"commitment": commitment, "inbox": inbox, "hub": hub, "review": review, "week": week,
             "settings": settings, "mail": mail, "people": people, "stillyours": stillyours,
+            "meetplan": meetplan,
             "prepedit": prepedit, "focus": focus, "refused": refused, "skipped": skipped,
             "n_waiting": (len(commitment) + len(inbox) + len(hub) + len(review) + len(week)
-                          + len(settings) + len(mail) + len(people) + len(stillyours) + len(prepedit)
-                          + len(focus)),
+                          + len(settings) + len(mail) + len(people) + len(stillyours) + len(meetplan)
+                          + len(prepedit) + len(focus)),
             "n_refused": len(refused)}
 
 
@@ -9529,6 +9657,37 @@ def apply_people_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
             ev["data"]["surface"] = PEOPLE_SURFACE
             append_event(Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl", ev, holder="cockpit_helpers")
         except Exception as exc:  # noqa: BLE001 - the stars landed; the answer says the audit did not
+            out["audit_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def _apply_meetplan(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
+                    now_iso=None, resolved_by: str = "") -> Dict[str, Any]:
+    """WRITE. The meeting page's follow-up choices (cr1#1787): a person put
+    on an email, taken off the follow-up, or an email's kind, in
+    `_hq/data/hub-meetplan.json` through `hub_meetplan.apply_choices`, then
+    one `apply_choices_applied` audit row. `choices` are `plan_apply`'s
+    `meetplan` list. Nothing is drafted or sent here; the automatic write-up
+    reads the store before it drafts. `resolved_by` is taken for the save's
+    one call shape and not used."""
+    import hub_meetplan
+    from apply_audit import build_apply_choices_applied_event
+    from event_gate import append_event
+
+    out = hub_meetplan.apply_choices(workspace_root, choices, now_iso=_iso(_now(now_iso)))
+    status = {"applied": "updated", "already": "already_resolved", "refused": "refused"}
+    by_id = {c.get("id"): c for c in choices or [] if isinstance(c, dict)}
+    audit = [{"n": (by_id.get(r.get("id")) or {}).get("meeting_key") or (by_id.get(r.get("id")) or {}).get("meeting_id")
+              or r.get("id"),
+              "action": "followup plan " + str((by_id.get(r.get("id")) or {}).get("action") or ""),
+              "handler_result": {"status": status.get(r.get("outcome"), "error")}, "said": r.get("outcome")}
+             for r in out.get("results") or []]
+    if audit:
+        try:
+            ev = build_apply_choices_applied_event(source=COMMITMENT_SRC, actions=audit)
+            ev["data"]["surface"] = MEETPLAN_SURFACE
+            append_event(Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl", ev, holder="cockpit_helpers")
+        except Exception as exc:  # noqa: BLE001 - the store landed; the answer says the audit did not
             out["audit_error"] = f"{type(exc).__name__}: {exc}"
     return out
 
@@ -10347,7 +10506,8 @@ LATER_CAP = 40
 EDIT_KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit", "meeting_edit")
 #: cr1#1632 slice 1: a meeting's live prep page, saved or taken back.
 MEETING_VERBS = frozenset({"save", "undo", "wrap", "unwrap",   # slice 3: wrap, unwrap
-                           "skipdraft", "unskipdraft"})  # cr1#1745: "Don't draft for meetings like this" and its Undo
+                           "skipdraft", "unskipdraft",  # cr1#1745: "Don't draft for meetings like this" and its Undo
+                           "done", "meetapply"})  # cr1#1787 part D: Done (files only) and Apply (Ignore, the star)
 EDIT_VERBS = frozenset({"add", "rename", "set", "undo"})  # set: cr1#1433
 #: cr1#1383 slice 4: a commitment's wording is edited (`rename`) or that edit
 #: taken back; a commitment is never added here. cr1#1383 Add context: a
@@ -13915,6 +14075,8 @@ APPLY_FEEDS = {"hub": ("feed/mine",), "review": ("feed/review",),
                "people": ("feed/people",),
                # review round 2 of #1742: a Still yours? press refreshes its own list
                "stillyours": ("feed/stillyours",),
+               # cr1#1787: a follow-up plan press refreshes the follow-ups
+               "meetplan": ("feed/followups", "feed/pfollow"),
                # cr1#1788: a Prep page edit refreshes the prep edits
                "prepedit": ("feed/prepx",),
                # cr1#1785: a Focus press refreshes Focus
@@ -13984,6 +14146,9 @@ UPDATE_NARROW: Dict[str, Tuple[str, ...]] = {
     **{"prepedit:" + v: ("feed/prepx",) for v in ("agenda", "goal", "add", "remove", "undo")},
     # what is attached to a meeting is carried on the Today lists' feed
     "hub:meeting_edit:attach": ("feed/mine",),
+    # cr1#1787: the follow-up plan is its own store; the follow-ups feed reads it
+    # People's follow-ups (feed/pfollow, cr1#1786) read the plan too: a plan press redraws both
+    **{"meetplan:" + v: ("feed/followups", "feed/pfollow") for v in ("add", "remove", "kind", "undo")},
     # cr1#1785: Focus is its own document; an item's record is never written
     **{"focus:" + v: ("feed/focus",) for v in ("add", "remove", "order", "undo")},
 }
@@ -14010,6 +14175,7 @@ def update_press_space() -> List[str]:
     """READ/COMPUTE. Every list-and-verb key a press can land under, from the
     verb sets `plan_apply` itself reads, so a suite can hold every one of
     them to the table (fix check of round 1 of #1768)."""
+    import hub_meetplan
     import hub_prep_edit
     import hub_focus
     import hub_tidy
@@ -14018,6 +14184,7 @@ def update_press_space() -> List[str]:
     keys = {"commitment:" + v for v in COMMITMENT_VERBS}
     keys |= {"focus:" + v for v in hub_focus.VERBS}
     keys |= {"people:" + v for v in PERSON_VERBS}
+    keys |= {"meetplan:" + v for v in hub_meetplan.VERBS}
     keys |= {"prepedit:" + v for v in hub_prep_edit.VERBS}
     keys |= {"mail:" + v for v in MAILRULE_VERBS | INBOX_RULE_VERBS}
     keys |= {"review:" + v for v in REVIEW_VERBS} | {"review:learned_rule:" + v for v in REVIEW_VERBS}
@@ -14153,13 +14320,17 @@ def apply_start(workspace_root, waiting: Optional[List[Any]] = None,
             "line": CLAIM_MORE_LINE.format(n=n_more) if n_more else ""}
 
 
-def _apply_line(applied: int, refused: int, failed: List[str], recorded: int, more: str) -> str:
+def _apply_line(applied: int, refused: int, failed: List[str], recorded: int, more: str,
+                partial: Optional[List[str]] = None) -> str:
     line = f"Applied {applied}, refused {refused}"
     if failed:
         line += f", failed {len(failed)}"
     if recorded:
         line += f", recorded {recorded} from the page"
     line += f": {failed[0]}" if failed else "."
+    # part D review (A, ii): a press that partly landed counts as applied and says its own line
+    if partial and not failed:
+        line += " " + partial[0]
     return (line + (" " + more if more else "")).strip()
 
 
@@ -14243,7 +14414,7 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
     writers = (("commitment", apply_commitment_choices), ("review", apply_review_choices),
                ("week", apply_week_choices), ("settings", apply_settings_choices),
                ("mail", apply_mail_choices), ("people", apply_people_choices),
-               ("stillyours", _apply_still_yours), ("prepedit", _apply_prepedit))
+               ("stillyours", _apply_still_yours), ("meetplan", _apply_meetplan), ("prepedit", _apply_prepedit))
     hub_rows = [r for r in plan.get("hub") or [] if str(r.get("kind") or "") != "miss"]
     miss_ids = [str(r.get("id")) for r in plan.get("hub") or [] if str(r.get("kind") or "") == "miss"]
     inbox_ids = [str(r.get("id")) for r in plan.get("inbox") or [] if r.get("id")]
@@ -14336,6 +14507,7 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
     writes: List[Dict[str, Any]] = []
     applied = refused = recorded = 0
     failed: List[str] = []
+    partial: List[str] = []
     feeds: List[str] = []
     touched: List[str] = []
     touch_all = False
@@ -14348,7 +14520,10 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
         doc = docs.get(did) or {}
         writes.append(_pinned(did, {"result": res, "applied": True, "applied_at": now_s},
                               doc.get("_version")))
-        if out == "error":
+        if out == "error" and res.get("partial") is True:
+            # part D review (A, ii): it landed, in part; the light's short words (eighth check)
+            partial.append(str(res.get("light_line") or res.get("line") or ""))
+        if out == "error" and res.get("partial") is not True:
             failed.append(str(res.get("line") or ROW_ERROR_LINE))
         elif out == "refused":
             refused += 1
@@ -14383,7 +14558,7 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
             failed.append(str(x.get("line") or ROW_ERROR_LINE))
             writes.append(_pinned(did, {"book_record_line": str(x.get("line") or "")}, doc.get("_version")))
     more = CLAIM_MORE_LINE.format(n=int(n_more)) if int(n_more or 0) > 0 else ""
-    line = _apply_line(applied, refused, failed, recorded, more)
+    line = _apply_line(applied, refused, failed, recorded, more, partial)
     counts = _apply_counts(applied, refused, len(failed), recorded)
     updating = str(task or "") == "update"
     # cr1#1722: the Update's own rebuild does the feeds, so only a connector
@@ -14405,6 +14580,7 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
         # the table keys of the presses that landed (HUBUPDATE1 holds each narrow one to a comparison)
         answer["keys"] = sorted(set(pkeys))
         answer["first_failed"] = failed[0] if failed else ""
+        answer["first_partial"] = partial[0] if partial else ""
     return answer
 
 
@@ -16497,6 +16673,9 @@ def _update_light_words(man: Dict[str, Any], state: str, line: str) -> Tuple[str
     head = ""
     if landed or sv["refused"]:
         head = f"Saved {landed}" + (f", refused {sv['refused']}" if sv["refused"] else "") + "."
+    if raw.get("first_partial"):
+        # part D review (A, ii): a press that partly landed says what happened, never "1 of your 1"
+        head = (head + " " + str(raw["first_partial"])).strip()
     if sv["n_more"]:
         head = (head + " " + CLAIM_MORE_LINE.format(n=sv["n_more"])).strip()
     words = (head + " " + str(line or "")).strip()
@@ -16563,6 +16742,7 @@ def update_save(workspace_root, waiting: Optional[List[Any]] = None,
     state = kept or {"run_id": str(run_id or ""), "scope": "all"}
     saved = dict(ans.get("counts") or {})
     saved["first_failed"] = str(ans.get("first_failed") or (ans.get("line") if ans.get("ok") is False else "") or "")
+    saved["first_partial"] = str(ans.get("first_partial") or "")
     saved["n_more"] = int(n_more or 0)
     if ans.get("ok") is False:
         saved["failed"] = max(1, int(saved.get("failed") or 0))
@@ -16713,7 +16893,11 @@ def update_build(workspace_root, *, run_id: str = "", stage: str = "", token: st
     saved = dict(state.get("saved") or {})
     for res in (results or {}).values():
         out = (res or {}).get("outcome") if isinstance(res, dict) else None
-        if out == "error":
+        if out == "error" and res.get("partial") is True:
+            # part D review (A, ii): it landed in part: saved, with its own line
+            saved["applied"] = int(saved.get("applied") or 0) + 1
+            saved["first_partial"] = str(saved.get("first_partial") or res.get("light_line") or res.get("line") or "")
+        elif out == "error":
             saved["failed"] = int(saved.get("failed") or 0) + 1
             saved["first_failed"] = str(saved.get("first_failed") or res.get("line") or ROW_ERROR_LINE)
         elif out == "refused":
@@ -17841,6 +18025,7 @@ def _unpack_refresh_cli(argv: List[str]) -> int:
 
 
 __all__ = [
+    "MEETPLAN_SURFACE",
     "PREPEDIT_SURFACE", "feed_prepx",
     "TASK_ID", "SOURCE_SKILL", "LEGS", "STATUS_STATES", "COMMITMENT_VERBS",
     "INBOX_VERBS", "INBOX_WIRE_ACTION", "CHOICE_EXPIRY_DAYS",

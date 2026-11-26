@@ -334,6 +334,8 @@ TASKS: Dict[str, Dict[str, Any]] = {
                          "eod_helpers:reconcile_sent_staged", "eod_helpers:run_shadow_lane",
                          "eod_helpers:clear_fire_staging", "eod_incremental:log_capture_pass_receipt",
                          "meeting_capture:route_meeting_captures", "followup_draft:record_draft",
+                         "followup_draft:drafts_wanted", "followup_draft:redrafts_due",
+                         "followup_draft:record_held",
                          "inbound_mail_leg:plan_inbound_mail",
                          "chat_reconcile:plan_chat_scan", "reconcile_sent_commitments:plan_sent_window")),
             # Review round 3 of #1613: past-meetings Phases 3 to 4.8, run by the
