@@ -718,6 +718,9 @@ RUN_WRITER_ALLOWLIST = frozenset({
     # the owner's words at set-up or by one sentence in chat
     "connector_config:set_connector_settings",
     "release_actions.connector_display_name_repin_v1:connector_display_name_repin_v1",
+    # cr1#1877 slice 0: the connector job record's one writer, and its migration
+    "connector_config:set_connector_job",
+    "release_actions.connector_jobs_draft_v1:connector_jobs_draft_v1",
     # the fire-delivery setting (I-12 (8)): `publish my scheduled pages`
     "fire_delivery:set_artifact_publish",
     "fire_delivery:record_artifact_url",

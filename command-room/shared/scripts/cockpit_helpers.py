@@ -67,10 +67,11 @@ import json
 import os
 import re
 import secrets
-import unicodedata
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import wall_text  # cr1#1779: the one wall fold
 
 TASK_ID = "cockpit"  # the one-task shape of #614; kept so its receipts parse forever
 SOURCE_SKILL = "cockpit"
@@ -2707,7 +2708,10 @@ def _meeting_wall(workspace_root) -> Optional[Dict[str, Any]]:
         if max(len(addrs), len(names)) > hub_live.LIST_CAP:
             return None
         own = {_low(a) for a in inbox_helpers.own_addresses(str(workspace_root)) if a}
-        return {"addrs": {_low(a) for a in addrs}, "names": {_low(n) for n in names}, "own": own}
+        # cr1#1779: each as written (lower case) and as the one wall fold reads it
+        return {"addrs": {_low(a) for a in addrs} | {wall_text.fold(a) for a in addrs},
+                "names": {_low(n) for n in names} | {wall_text.fold(n) for n in names},
+                "own": own | {wall_text.fold(a) for a in own}}
     except Exception:  # noqa: BLE001 - fail closed: nobody is named
         return None
 
@@ -2792,9 +2796,12 @@ def _meeting_extras(m: Dict[str, Any], wall: Optional[Dict[str, Any]]) -> Dict[s
         name = " ".join(str(a.get("name") or "").split())[:80]
         if email and not re.match(r"^[^@\s<>\"',;]+@[^@\s<>\"',;]+\.[^@\s<>\"',;]+$", email):
             email = ""
-        if a.get("self") is True or (email and email in wall["own"]):
+        # cr1#1779: the address and the name are read through the one wall fold as well,
+        # so an accent or a character that prints nothing does not slip either past the wall
+        if a.get("self") is True or (email and (email in wall["own"] or wall_text.fold(email) in wall["own"])):
             continue
-        if (email and email in wall["addrs"]) or (name and _low(name) in wall["names"]):
+        if (email and (email in wall["addrs"] or wall_text.fold(email) in wall["addrs"])) \
+                or (name and (_low(name) in wall["names"] or wall_text.fold(name) in wall["names"])):
             left_out = True
             continue
         if not email and anyone_off:
@@ -3035,16 +3042,10 @@ def _title_names_off(title: Any, wall: Optional[Dict[str, Any]]) -> bool:
     cannot be read."""
     if wall is None:
         return True
-    def fold(t: Any) -> str:
-        # cr1#1845: accents folded off their letters and characters that print nothing taken out,
-        # as hub_live._norm and the page's normOf read a name
-        t = unicodedata.normalize("NFKD", str(t or ""))
-        return "".join(c for c in t if unicodedata.category(c)[0] != "M" and unicodedata.category(c) != "Cf").lower()
-
-    def words(t: Any) -> str:
-        # for a name: every mark, a full stop and "@" included, separates words
-        return " ".join(re.sub(r"[^\w]+", " ", fold(t)).split())
-
+    # cr1#1845, cr1#1779: accents folded off their letters and characters that print nothing taken
+    # out, by the one wall fold (as hub_live._norm and the page's normOf read a name); for a name,
+    # every mark, a full stop and "@" included, separates words
+    fold, words = wall_text.fold, wall_text.words
     named = " " + words(title) + " "
     addressed = " ".join(re.sub(r"[^\w@.]+", " ", fold(title)).split())
     return any((" " + words(n) + " ") in named for n in (wall.get("names") or ()) if words(n)) \
@@ -3547,6 +3548,12 @@ def _plan_moves(events: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
 
 def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. `_feed_board_build`, every item's words then held where they name someone hidden (cr1#1867,
+    owner ruling 149a: `_hold_feed`)."""
+    return _hold_feed(workspace_root, _feed_board_build(workspace_root, now_iso=now_iso))
+
+
+def _feed_board_build(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     """READ. The Week view's board (cr1#1017, option D): the next seven days,
     today first, each with its due items as cards, and under the board one
     lane per confirmed priority (ruling B2: suggested ones are not on it)
@@ -4933,6 +4940,12 @@ def _feed_no_home(root: Path, now_iso: str) -> Dict[str, Any]:
 
 
 def feed_projects(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. `_feed_projects_build`, every item's words then held where they name someone hidden (cr1#1867,
+    owner ruling 149a: `_hold_feed`)."""
+    return _hold_feed(workspace_root, _feed_projects_build(workspace_root, now_iso=now_iso))
+
+
+def _feed_projects_build(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     """READ. The Work streams tab and the Priorities tab (option D's List
     view, cr1#1013 part 2), built only from the now layer: the thread,
     work-stream and priority cards (`thread_cards`) and the open list, never
@@ -5440,6 +5453,12 @@ def _review_chat_line(item: Dict[str, Any], verbs: List[str]) -> str:
 
 
 def feed_review(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. `_feed_review_build`, every item's words then held where they name someone hidden (cr1#1867,
+    owner ruling 149a: `_hold_feed`)."""
+    return _hold_feed(workspace_root, _feed_review_build(workspace_root, now_iso=now_iso))
+
+
+def _feed_review_build(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     """READ. The Review tab (cr1#779): the open queue the Staff Meeting reads
     (`brain_proposals.load_open_proposals`), most consequential first, each row
     with its evidence, the verbs the Hub can answer it with, when it expires
@@ -6566,6 +6585,21 @@ def _month_done(workspace_root, events: List[Dict[str, Any]], now: _dt.datetime)
 
 
 def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_iso=None) -> Dict[str, Any]:
+    """READ. `_feed_week_build`, every item's words then held where they name someone hidden (cr1#1867,
+    owner ruling 149a: `_hold_feed`), and the recap's own lines judged too (`_hold_recap`): they are words
+    alone, with no row to hold."""
+    doc = _hold_feed(workspace_root, _feed_week_build(workspace_root, sections=sections, now_iso=now_iso))
+    return _hold_recap(doc, _promise_screen(workspace_root))
+
+
+def _week_hw(workspace_root, memo: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """cr1#1867: the drafts' screen for the Week build, read once per build (`_promise_screen`)."""
+    if "hw" not in memo:
+        memo["hw"] = _promise_screen(workspace_root)
+    return memo["hw"]
+
+
+def _feed_week_build(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_iso=None) -> Dict[str, Any]:
     """READ. The Done tab (cr1#780): every batch the system settled this week
     (`brain_undo.recent_auto_batches`), each named in its own words, with a way
     back where one is registered; each piece of work that went dormant and
@@ -6587,6 +6621,7 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
     import lifecycle_pass as lp
     from entities_io import entities_collection, read_entities_json
 
+    _wk_memo: Dict[str, Any] = {}   # cr1#1867: the hidden-words screen, read once, only if a line is judged
     now = _now(now_iso)
     iso_now = _iso(now)
     since = now - _dt.timedelta(days=WEEK_DAYS)
@@ -6643,7 +6678,9 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
                              or titled.get(str(d.get("commitment_id") or d.get("id")
                                                or d.get("target_id"))) or "")
                     if title and title not in items:
-                        items.append(str(title)[:160])
+                        # cr1#1867 (the fix check of 4e310f355): judged whole, before the cut
+                        items.append(HELD_ITEM_WORDS if _fd_title_hidden(str(title), _week_hw(workspace_root, _wk_memo))
+                                     else str(title)[:160])
             # cr1#1368: every change in it the owner's own act, so it was not
             # decided for them. A batch with no change rows of its own (a run
             # of groups, a sent-mail audit) stays under `decided`, as before.
@@ -6684,13 +6721,15 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
     except (FileNotFoundError, ValueError, OSError):
         errors.append("dormant")
     sec = sections if isinstance(sections, dict) else {}
-    recap = {"changes": [str(x)[:300] for x in (sec.get("change_lines") or [])][:20],
+    recap = {"changes": [_held_line(str(x), _week_hw(workspace_root, _wk_memo))[:300] for x in (sec.get("change_lines") or [])][:20],
              # The recap's own lines, as lines: its heading and list marks are
              # for a document, and the page draws its own.
-             "decided_lines": [ln.strip().lstrip("-* ").strip()[:300] for ln in str(sec.get("decided_for_you") or "").splitlines()
+             # cr1#1867 (the fix check of 4e310f355): each line judged whole, before the cut
+             "decided_lines": [_held_line(ln.strip().lstrip("-* ").strip(), _week_hw(workspace_root, _wk_memo))[:300]
+                               for ln in str(sec.get("decided_for_you") or "").splitlines()
                                if ln.strip() and not ln.strip().startswith("#")][:20],
              "still_waiting": str(sec.get("still_waiting") or "")[:600],
-             "objectives": [str(x)[:200] for x in (sec.get("objective_rows") or [])][:12],
+             "objectives": [_held_line(str(x), _week_hw(workspace_root, _wk_memo))[:200] for x in (sec.get("objective_rows") or [])][:12],
              "open_proposals": sec.get("open_proposals")}
     empty = not (decided or yours or dormant or archived or recap["changes"] or recap["decided_lines"])
     month: Optional[Dict[str, Any]] = None
@@ -7249,7 +7288,8 @@ def feed_stillyours(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     count, `stale` when built on an earlier day. Never builds it."""
     import still_yours
 
-    return still_yours.feed(workspace_root, now_iso)
+    # the review of 1c79405c2 (MUST 5): its rows' words, held where they name someone hidden (cr1#1867)
+    return _hold_feed(workspace_root, still_yours.feed(workspace_root, now_iso))
 
 
 #: cr1#1812 (ruling 135a): the page's own drafts. The press kind and its one
@@ -7961,6 +8001,266 @@ def _fd_title_hidden(title: Any, hw: Optional[Dict[str, Any]]) -> bool:
         return True
 
 
+#: cr1#1867 (owner ruling 149a, HOLD): a promise or to-do whose own words name someone hidden keeps its row (so it
+#: can still be done, put off or moved), but its words never leave the builder: `title` (or `statement`, or a
+#: reminder's `summary`) is sent as "" with `title_held: true`, and every offer built from the words (a chase, a
+#: draft, a list draft) is taken off it. Counts are unchanged. Waiting-on-others rows keep #1862's drop.
+TITLES_HELD_UNREAD = "unread"
+#: What a held row loses: anything built from its words.
+HELD_OFFER_KEYS: Tuple[str, ...] = ("chase", "chase_draft", "chase_note", "draft", "draft_offer")
+#: The fields that carry an item's own words, per row.
+HELD_TEXT_KEYS: Tuple[str, ...] = ("title", "statement", "summary")
+#: A dict is an item row (not a thread card or a person) when it carries one of these with its words.
+HELD_ROW_MARKS: Tuple[str, ...] = ("id", "due", "direction", "lane", "horizon", "back", "ts", "seq", "cid")
+#: The People tab's list draft for a person, when one of the items it lists is held.
+PEOPLE_LIST_HELD_LINE = "One of these items names someone who cannot be named here, so no list is drafted."
+#: What a held item's words read as, where a list carries words alone (the week's batch `items`).
+HELD_ITEM_WORDS = "An item"
+#: What a held meeting's words read as (a Record prep item): the page's own word for a walled meeting (decision 152d).
+HELD_MEETING_WORDS = "A meeting"
+#: Decision 152j: the private mark `_hide_people_in_rows` leaves on a row whose who it judged by id and kept, the
+#: one case where the hold keeps that who in the row's context; `_hold_row` takes it off.
+WHO_BY_ID_MARK = "_who_by_id"
+#: The fields a row may carry its source in, judged as its context is (the review rows' `line` and `evidence`).
+HELD_SOURCE_KEYS: Tuple[str, ...] = ("line", "evidence")
+#: A press's line on an item whose words are held, when its own line would still name someone.
+HELD_PRESS_LINE = "Saved. The item's words are held here."
+#: A press's line on an item whose words are held, when the press saved nothing new (it was already so, or it
+#: was refused) and its own line would name someone (the fix check of 4e310f355: WAIT_SAME_ACK echoes typed words).
+HELD_PRESS_UNCHANGED_LINE = "Nothing new was saved. The item's words are held here."
+#: A recap line's tail as the wrap writes it: one of its doors, then the date (`change_feed.NAMED_ACT_LINE`).
+_RECAP_TAIL_RE = re.compile(r"^(?P<door>[a-z][a-z '-]{2,40}), (?:[A-Z][a-z]{2,8}\.? \d{1,2}(?:, \d{4})?|\d{4}-\d{2}-\d{2})$")
+#: The plate's own date shape at the end of a context part or reason, "(Nov 3)": taken off before the words are
+#: judged, so a date is never matched word by word (#1733).
+_HELD_DAY_RE = re.compile(r"\s*\((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,\s*\d{4})?\)")
+#: The plate's other date shape, "due May 12", anchored where the plate writes a date (#1849's rule: before ")",
+#: ",", " —" or the end), so "May 2 calls pending" is not taken for a date and a last name May is still judged.
+_HELD_DATE_RE = re.compile(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}(?=\)|,| \u2014|$)")
+_BOOK_TITLES_CACHE: Dict[str, Any] = {}
+
+
+def _promise_screen(workspace_root, hp: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """cr1#1867: the drafts' screen for item words (`_title_screen`), with the hidden-people read made here when
+    the caller has none; None when it cannot be read (then every item's words are held)."""
+    try:
+        hp = _hidden_people(workspace_root) if hp is None else hp
+    except Exception:  # noqa: BLE001 - fail closed
+        return None
+    return _title_screen(workspace_root, hp)
+
+
+def _book_titles(workspace_root) -> Dict[str, str]:
+    """cr1#1867: `{commitment id: its words as the book holds them}` over the open items, read once per events
+    file as it stands (a feed's cut of a title can drop or end on a name; both are judged). `{}` when unread."""
+    try:
+        from cru_match import _commitment_id, load_open_commitments
+
+        ep = Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl"
+        st = ep.stat() if ep.exists() else None
+        key = f"{ep}|{st.st_mtime_ns if st else 0}|{st.st_size if st else 0}"
+        if key not in _BOOK_TITLES_CACHE:
+            _BOOK_TITLES_CACHE.clear()
+            out: Dict[str, str] = {}
+            for ev in (load_open_commitments(ep) if st else []):
+                d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+                words = d.get("title") or d.get("summary")
+                if words:
+                    out[str(_commitment_id(ev))] = str(words)
+            _BOOK_TITLES_CACHE[key] = out
+        return _BOOK_TITLES_CACHE[key]
+    except Exception:  # noqa: BLE001 - the shown words are judged alone
+        return {}
+
+
+def _held_part(part: Any, hw: Optional[Dict[str, Any]]) -> bool:
+    """cr1#1867: one context part or reason names someone hidden, its date shape taken off first; with `hw`
+    None every part with words is held."""
+    text = _HELD_DATE_RE.sub(" ", _HELD_DAY_RE.sub(" ", str(part or ""))).strip()
+    return bool(text) and _fd_title_hidden(text, hw)
+
+
+def _hold_row(r: Dict[str, Any], hw: Optional[Dict[str, Any]], book: Optional[Dict[str, str]] = None) -> bool:
+    """cr1#1867: one item row, in place. Its words (as shown, and as the book holds them) are judged by the
+    drafts' screen in title mode; held words go out as "" with `title_held: true`, and every offer built from
+    them is taken off. Its context parts and its origin line are judged too, held or not: a part that names
+    someone hidden is left out, a line that does is blanked. True when its words were held."""
+    held = False
+    # decision 152j: set only by `_hide_people_in_rows` on a row whose who it cleared by id; taken off here, always
+    who_by_id = r.pop(WHO_BY_ID_MARK, None) is True
+    full = (book or {}).get(str(r.get("id"))) if r.get("id") is not None else None
+    # owner ruling 153: a reminder made from an item ("Remind me") is held with the item it names
+    if not full and isinstance(r.get("ref"), str) and r.get("ref"):
+        full = (book or {}).get(r["ref"])
+        # decision 152f: a reminder saved held ("An item", from an item) stays held once its item closes
+        if r.get("summary") == HELD_ITEM_WORDS and r.get("title_held") is not False:
+            r["title_held"] = True
+    for k in HELD_TEXT_KEYS:
+        v = r.get(k)
+        if isinstance(v, str) and v and (_fd_title_hidden(v, hw) or (full and _fd_title_hidden(full, hw))):
+            # decision 152d: a meeting (a Record prep item) reads as the page reads a walled one
+            r[k] = HELD_MEETING_WORDS if r.get("kind") == "prep" else ""
+            held = True
+    if held or r.get("title_held") is True:
+        r["title_held"] = True
+        for k in HELD_OFFER_KEYS:
+            r.pop(k, None)
+    ctx = r.get("context")
+    if isinstance(ctx, str) and ctx:
+        parts = ctx.split(" · ")
+        # the row's own person (`who`) was judged by id before this (#1733 round 3): a visible twin who shares a
+        # hidden person's name keeps it, so the part that is exactly that name is not judged again by its words
+        own = str(r.get("who") or "").strip() if who_by_id and hw is not None else ""
+        keep = [p for p in parts if (own and p.strip() == own) or not _held_part(p, hw)]
+        if len(keep) != len(parts):
+            r["context"] = " · ".join(keep)
+    o = r.get("origin")
+    if isinstance(o, dict) and o.get("line") and _held_part(o.get("line"), hw):
+        r["origin"] = dict(o, line="", paraphrase=False)
+    # the review of 1c79405c2 (MUST 2): a row's own source words (review rows carry `line` and `evidence`, and
+    # `data.evidence`): blanked when they name someone hidden, and `line` whenever the row's words are held
+    for holder in (r, r.get("data") if isinstance(r.get("data"), dict) else None):
+        if not isinstance(holder, dict):
+            continue
+        for k in HELD_SOURCE_KEYS:
+            v = holder.get(k)
+            if isinstance(v, str) and v and (_held_part(v, hw) or (k == "line" and r.get("title_held") is True)):
+                holder[k] = ""
+    return held
+
+
+def _hold_tree(obj: Any, hw: Optional[Dict[str, Any]], book: Optional[Dict[str, str]] = None) -> int:
+    """cr1#1867: every item row in `obj` (a feed, a list, a row), in place: a dict with words in one of
+    `HELD_TEXT_KEYS` and one of `HELD_ROW_MARKS` is an item row; everything else is walked into. How many rows
+    were held."""
+    n = 0
+    if isinstance(obj, list):
+        for x in obj:
+            n += _hold_tree(x, hw, book)
+    elif isinstance(obj, dict):
+        # the review of 1c79405c2 (MUST 1): words carried as plain strings in an `items` list
+        its = obj.get("items")
+        if isinstance(its, list):
+            for i, v in enumerate(its):
+                if isinstance(v, str) and v and _fd_title_hidden(v, hw):
+                    its[i] = HELD_ITEM_WORDS
+                    n += 1
+        if any(isinstance(obj.get(k), str) for k in HELD_TEXT_KEYS) and any(k in obj for k in HELD_ROW_MARKS):
+            n += 1 if _hold_row(obj, hw, book) else 0
+        for k, v in obj.items():
+            if k != "origin" and isinstance(v, (dict, list)):
+                n += _hold_tree(v, hw, book)
+    return n
+
+
+def _titles_flag(doc: Any, hw: Optional[Dict[str, Any]]) -> None:
+    """cr1#1867 (add-only, on that path only): who is hidden could not be read, so every item's words are held,
+    and the page says why."""
+    if hw is None and isinstance(doc, dict):
+        doc["titles_held"] = TITLES_HELD_UNREAD
+
+
+def _fixed_lines() -> set:
+    """Decision 152f: this module's fixed press lines (`*_LINE` constants with no place for words), the lines
+    that carry no item's words and no owner's typed words."""
+    return {v for k, v in globals().items() if k.endswith("_LINE") and isinstance(v, str) and v and "{" not in v}
+
+
+def _reminder_ref_held(workspace_root, ref: Optional[str], text: str, memo: Dict[str, Any]) -> bool:
+    """Owner ruling 153 (cr1#1867): a reminder made from an open item (`ref` is its id) whose words, as the book
+    holds them or as the press sends them, name someone hidden. False when who is hidden cannot be read (the
+    words are kept, and the feed holds them as it shows them) and for a ref that is no item."""
+    if not ref or str(ref).startswith(("mail:", "meeting:", "person:")):
+        return False
+    if "hw" not in memo:
+        memo["hw"] = _promise_screen(workspace_root)
+        memo["book"] = _book_titles(workspace_root)
+    hw, book = memo["hw"], memo["book"]
+    full = str(book.get(str(ref)) or "")
+    if hw is None:
+        return False
+    # decision 152f: the typed words are judged whatever the ref's state (closed, or no words in the book)
+    return _fd_title_hidden(text, hw) or bool(full and _fd_title_hidden(full, hw))
+
+
+def _held_press_line(workspace_root, r: Dict[str, Any], cid: str, c: Dict[str, Any], memo: Dict[str, Any]) -> None:
+    """cr1#1867 (the review of 1c79405c2, MUST 3): a press's line (a Later's or a Waiting's acknowledgement echoes
+    the item's words, and the line is kept on the choice) never names someone hidden: the item's words are
+    taken out of it ("the item"), and a line that still names someone is a neutral one. In place."""
+    line = r.get("line")
+    if not isinstance(line, str) or not line:
+        return
+    if "hw" not in memo:
+        memo["hw"] = _promise_screen(workspace_root)
+        memo["book"] = _book_titles(workspace_root)
+    hw, book = memo["hw"], memo["book"]
+    full = str(book.get(cid) or "")
+    shown = str(c.get("title") or "")
+    if not ((full and _fd_title_hidden(full, hw)) or _held_part(line, hw)):
+        return
+    for t in sorted({full, full[:240], full[:200], full[:160], full[:80], shown} - {""}, key=len, reverse=True):
+        line = line.replace(t, "the item")
+    # a press that was not applied never says "Saved": with who is hidden unread every line would count as naming
+    # someone, so its own (fixed) refusal words pass (HUBWORK1: an unreadable rules store's refusal); read, a line
+    # that still names someone (WAIT_SAME_ACK echoes the owner's typed words) is a neutral one
+    if r.get("outcome") != "applied":
+        if hw is None:
+            # decision 152f: unread, only a fixed wording passes (it holds no item's or typed words)
+            r["line"] = line if line in _fixed_lines() else HELD_PRESS_UNCHANGED_LINE
+        else:
+            r["line"] = line if not _held_part(line, hw) else HELD_PRESS_UNCHANGED_LINE
+        return
+    r["line"] = HELD_PRESS_LINE if _held_part(line, hw) else line
+
+
+def _hold_feed(workspace_root, doc: Any, hp: Optional[Dict[str, Any]] = None) -> Any:
+    """cr1#1867: a whole feed document, every item's words judged (`_hold_tree`) against the screen read once,
+    with the book's own words beside the shown ones. The document, changed in place."""
+    hw = _promise_screen(workspace_root, hp)
+    _hold_tree(doc, hw, _book_titles(workspace_root))
+    _titles_flag(doc, hw)
+    return doc
+
+
+def _held_line(line: Any, hw: Optional[Dict[str, Any]]) -> Any:
+    """cr1#1867 (the fix check of 6526015f0): one recap line, as words alone. A line that names someone hidden
+    reads "An item", keeping its door and date ("An item — the quiet lane, Nov 20") when they name no one;
+    any other line as it is."""
+    if not isinstance(line, str) or not line or not _held_part(line, hw):
+        return line
+    _head, sep, rest = line.rpartition(" — ")
+    # the tail kept is only the wrap's own "<door>, <date>", one of its doors: a title with its own " — " would
+    # otherwise keep its last words (the fix check of 4e310f355)
+    m = _RECAP_TAIL_RE.match(rest) if sep else None
+    if m and m.group("door") in _recap_doors() and not _held_part(rest, hw):
+        return f"{HELD_ITEM_WORDS} — {rest}"
+    return HELD_ITEM_WORDS
+
+
+def _recap_doors() -> set:
+    """The doors the wrap names an act by (`change_feed.NAMED_ACT_DOORS`); none when it cannot be read."""
+    try:
+        import change_feed
+
+        return set(change_feed.NAMED_ACT_DOORS.values())
+    except Exception:  # noqa: BLE001 - no door kept
+        return set()
+
+
+def _hold_recap(doc: Any, hw: Optional[Dict[str, Any]]) -> Any:
+    """cr1#1867 (the fix check of 6526015f0, MUST): the Week recap's lines (`changes`, `decided_lines`,
+    `objectives`, `still_waiting`) are strings, so `_hold_tree` never reaches them; each is judged with
+    `_held_part` and a held one says "An item" (`_held_line`). The document, changed in place."""
+    recap = doc.get("recap") if isinstance(doc, dict) else None
+    if not isinstance(recap, dict):
+        return doc
+    for k in ("changes", "decided_lines", "objectives"):
+        if isinstance(recap.get(k), list):
+            recap[k] = [_held_line(x, hw) for x in recap[k]]
+    if isinstance(recap.get("still_waiting"), str) and recap["still_waiting"] and _held_part(recap["still_waiting"], hw):
+        recap["still_waiting"] = ""
+    return doc
+
+
 def _chase_offers(workspace_root, opens: List[Dict[str, Any]], origins: Dict[str, Any],
                   now: _dt.datetime, hp: Optional[Dict[str, Any]] = None,
                   hw: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
@@ -8443,6 +8743,12 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     # (their who and the name part of their context), in every list they ride
     for lst in (feed["rows"], feed.get("late_rows") or [], focus, lead, chase, schedule):
         _hide_people_in_rows(lst, _hp)
+    # cr1#1867 (149a, HOLD): every item's words on the plate, in every list they ride (the Work tab's piles,
+    # Later, the goal lines, the lead), judged with the book's words beside the shown ones
+    _hold_tree(feed, _hw, _full)
+    for lst in (focus, lead, chase, schedule):
+        _hold_tree(lst, _hw, _full)
+    _titles_flag(feed, _hw)
     # review of #1733 round 3: who_id served the scrub only; it never ships (the
     # heavy plate came to 217,954 bytes with it, over REFRESH_DOC_LIMIT)
     for lst in (feed["rows"], feed.get("late_rows") or [], focus, lead, chase, schedule):
@@ -8536,6 +8842,12 @@ def _hidden_people(workspace_root) -> Dict[str, Any]:
         return {"unread": True, "ids": frozenset(), "names": frozenset(), "all_names": frozenset()}
 
 
+#: cr1#1849 (fix check of f5bb014d6, A): the plate's own date shape in a context part ("due May 12", "(Nov 3)").
+# Anchored where the plate writes a date (light check of 758cfc903, MUST): before ")", ",", " —" or the end, so
+# "Ms. May 2 messages" or "May 2 calls pending" is not taken for a date and a surname May is still checked
+_PLATE_DATE_RE = re.compile(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}(?=\)|,| \u2014|$)")
+
+
 def _hide_people_in_rows(rows, hp: Dict[str, Any]) -> None:
     """cr1#1721 (review of #1733): a plate row names nobody `hp` hides. Its
     `who` is judged by the row's person id where it has one, and by its words
@@ -8574,8 +8886,19 @@ def _hide_people_in_rows(rows, hp: Dict[str, Any]) -> None:
             # a row judged by id and not hidden keeps its own who in context, even
             # when a hidden person shares the whole name (round 3, the twin case)
             mine = bool(wid) and not hid and not unread
+            if mine and who:
+                # decision 152j: the hold (cr1#1867) may keep this who in context only on this word; it never ships
+                r[WHO_BY_ID_MARK] = True
+            # cr1#1849 (decision 147o, item 3): a part naming a hidden person by last name is dropped too, name-slot
+            # style (an ordinary-word surname when capitalised); the row's own who, judged by id, stays
             keep = [x for x in parts if not ((hid and said and x.strip().lower() == said)
-                                             or (x.strip().lower() in whole and not (mine and x.strip().lower() == said)))]
+                                             or ((x.strip().lower() in whole or hub_work._fold(x) in hub_work._folded(whole)
+                                                  # review of 1b67db848 (MUST 1), as fixed by the check of
+                                                  # f5bb014d6 (A): only the plate's own date ("May 12") is
+                                                  # taken out before the surname check, so "due May 12" stays
+                                                  # and "Walbridge's reply (Nov 3)" does not
+                                                  or hub_work.surname_is_hidden(_PLATE_DATE_RE.sub(" ", x), hp))
+                                                 and not (mine and x.strip().lower() == said)))]
             if len(keep) != len(parts):
                 r["context"] = " · ".join(keep)
                 veiled = True
@@ -9027,6 +9350,44 @@ def _record_claim_live(choice: Dict[str, Any], now: _dt.datetime) -> bool:
     return bool(choice.get("record_claimed_by")) and at is not None and (now - at) < _dt.timedelta(minutes=PAGE_RECORD_CLAIM_MINUTES)
 
 
+def _page_record_is_cal(c: Dict[str, Any]) -> bool:
+    """cr1#1539: a meeting booked, moved or cancelled on the page (it goes to
+    `calendar`, for `record_calendar_changes`, under the same claim). Pure."""
+    verb = str(c.get("action") or "").strip().lower()
+    res = c.get("result") if isinstance(c.get("result"), dict) else {}
+    return (str(c.get("kind") or "") == CAL_RECORD_KIND and verb in CAL_RECORD_VERBS
+            and res.get("outcome") in PAGE_RECORD_OUTCOMES)
+
+
+def _page_record_due(c: Dict[str, Any]) -> bool:
+    """cr1#1886 (decision 152a): True for exactly the page rows the book still
+    owes a record, the rows `plan_page_records` records and `plan_prune_choices`
+    therefore keeps, whatever their age: made on the page (`by_page`), not yet
+    recorded (`book_recorded`), and a send or draft of a kind the book records
+    with its result `applied`, or a calendar change (cr1#1539). A follow-up
+    taken back with Undo is no draft (cr1#1745); a list or a meeting note is
+    only ever a draft (cr1#1539). One rule, read by both, so they cannot drift.
+    Pure."""
+    if not c.get("by_page") or c.get("book_recorded"):
+        return False
+    # cr1#1745 (review round 1, item 3): a follow-up draft the owner took
+    # back with Undo is no draft: nothing is recorded for it, and its
+    # meeting is not marked followed up
+    if str(c.get("kind") or "") == "followup" and c.get("undone"):
+        return False
+    if _page_record_is_cal(c):
+        return True
+    verb = str(c.get("action") or "").strip().lower()
+    res = c.get("result") if isinstance(c.get("result"), dict) else {}
+    if str(c.get("kind") or "") not in PAGE_RECORD_KINDS or verb not in PAGE_RECORD_VERBS or res.get("outcome") not in PAGE_RECORD_OUTCOMES:
+        return False
+    # A list is only ever a draft: the owner sends it from their own mail,
+    # and so is a note about a meeting (cr1#1539).
+    if str(c.get("kind") or "") in ("list", "calnote") and verb != "draft":
+        return False
+    return True
+
+
 def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, *,
                       run_id: str = "", now_iso=None) -> Dict[str, Any]:
     """READ/COMPUTE. The page's own sends and drafts that have no book record
@@ -9057,25 +9418,11 @@ def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, 
         if not c:
             continue
         cid = str(c.get("id") or "").strip()
-        if not cid or cid in seen or not c.get("by_page") or c.get("book_recorded"):
-            continue
-        # cr1#1745 (review round 1, item 3): a follow-up draft the owner took
-        # back with Undo is no draft: nothing is recorded for it, and its
-        # meeting is not marked followed up
-        if str(c.get("kind") or "") == "followup" and c.get("undone"):
+        # cr1#1886: one rule for the page rows the book still owes (shared with the prune)
+        if not cid or cid in seen or not _page_record_due(c):
             continue
         verb = str(c.get("action") or "").strip().lower()
-        res = c.get("result") if isinstance(c.get("result"), dict) else {}
-        # cr1#1539: a meeting booked, moved or cancelled on the page goes to
-        # `calendar`, for `record_calendar_changes`, under the same claim.
-        is_cal = (str(c.get("kind") or "") == CAL_RECORD_KIND and verb in CAL_RECORD_VERBS
-                  and res.get("outcome") in PAGE_RECORD_OUTCOMES)
-        if not is_cal and (str(c.get("kind") or "") not in PAGE_RECORD_KINDS or verb not in PAGE_RECORD_VERBS or res.get("outcome") not in PAGE_RECORD_OUTCOMES):
-            continue
-        # A list is only ever a draft: the owner sends it from their own mail,
-        # and so is a note about a meeting (cr1#1539).
-        if str(c.get("kind") or "") in ("list", "calnote") and verb != "draft":
-            continue
+        is_cal = _page_record_is_cal(c)
         seen.add(cid)
         if _record_claim_live(c, now) and str(c.get("record_claimed_by")) != rid_:
             taken.append(cid)
@@ -10121,7 +10468,7 @@ def feed_focus(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     for r in rows:
         if isinstance(r, dict):
             r.pop("who_id", None)
-    return feed
+    return _hold_feed(workspace_root, feed, hp)   # cr1#1867
 
 
 def _focus_projects(workspace_root, now) -> Tuple[Dict[str, str], Dict[str, str], set, bool]:
@@ -10185,7 +10532,7 @@ def feed_allopen(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     for r in kept:
         r.pop("who_id", None)
     doc["rows"] = kept
-    return doc
+    return _hold_feed(workspace_root, doc, hp)   # cr1#1867: a held row's words never reach the search
 
 
 #: Review round 1 of #1823 (should-fix 4): the to-do landed but its Focus pick did not.
@@ -10205,7 +10552,36 @@ def feed_people(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     hp = _hidden_people(workspace_root)
     feed = people_view.people(workspace_root, now_iso=_iso(_now(now_iso)),
                               hidden_ids=None if hp.get("unread") else set(hp.get("ids") or ()))
-    return _fit_people(_with_words(workspace_root, _hide_people_in_feed(feed, hp)))
+    return _fit_people(_with_words(workspace_root, _hold_people(workspace_root, _hide_people_in_feed(feed, hp), hp)))
+
+
+def _hold_people(workspace_root, feed: Any, hp: Dict[str, Any]) -> Any:
+    """cr1#1867: the People tab's open items and next steps (`_hold_feed`), and each person's list draft,
+    whose words list every open item that way: one that names someone hidden (or any, when that cannot be
+    read) is offered as a note instead, so nothing is drafted from it."""
+    if not isinstance(feed, dict):
+        return feed
+    _hold_feed(workspace_root, feed, hp)
+    hw = _promise_screen(workspace_root, hp)
+    try:
+        import followup_draft as fd
+    except Exception:  # noqa: BLE001
+        fd = None
+    for row in feed.get("people") or []:
+        lists = row.get("lists") if isinstance(row, dict) else None
+        if not isinstance(lists, dict):
+            continue
+        for direction, offer in list(lists.items()):
+            if not isinstance(offer, dict) or not (offer.get("subject") or offer.get("body")):
+                continue
+            try:
+                # the review of 1c79405c2 (MUST 4): title mode, so an ordinary-word last name in capitals holds
+                named = hw is None or fd is None or _fd_title_hidden(offer.get("subject"), hw) or _fd_title_hidden(offer.get("body"), hw)
+            except Exception:  # noqa: BLE001
+                named = True
+            if named:
+                lists[direction] = {"note": PEOPLE_LIST_HELD_LINE, "n": offer.get("n")}
+    return feed
 
 
 #: cr1#1738: what the People tab says when the fence cannot be read.
@@ -10980,6 +11356,12 @@ def _reminder_rank(r: Dict[str, Any], today: _dt.date) -> tuple:
 
 
 def feed_mine(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. `_feed_mine_build`, every item's words then held where they name someone hidden (cr1#1867,
+    owner ruling 149a: `_hold_feed`)."""
+    return _hold_feed(workspace_root, _feed_mine_build(workspace_root, now_iso=now_iso))
+
+
+def _feed_mine_build(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     """READ. The Today page's two lists: the owner's active reminders
     (`reminders.load_active_reminders`, the same fold the morning brief pins
     from, personal ones included: the page is the owner's own), what is due
@@ -12500,6 +12882,7 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
     now = _now(now_iso)
     root = Path(str(workspace_root))
     events_path = root / "_hq" / "data" / "events.jsonl"
+    _rem_memo: Dict[str, Any] = {}   # owner ruling 153: the screen and the book, read once, only if needed
     written = _hub_writes_in_book(root)
     answered = _miss_written(root) if any(str(c.get("kind") or "").strip().lower() == "miss" for c in rows) else {}
     active = None
@@ -12551,6 +12934,9 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                     continue
                 undated = inp.get("undated") is True and not str(inp.get("when") or "").strip()
                 when, why = (None, None) if undated else _hub_day_checked(inp.get("when"), now, root)
+                # owner ruling 153 (cr1#1867): "Remind me" on an item whose words are held keeps none of them
+                if text and _reminder_ref_held(root, ref, text, _rem_memo):
+                    text = HELD_ITEM_WORDS
                 if not text:
                     r.update(outcome="error", line=REMINDER_NEEDS_TEXT_LINE)
                 elif undated:
@@ -12699,7 +13085,11 @@ def plan_prune_choices(workspace_root=None, choices: Optional[List[Any]] = None,
     line}`, ready to send as ONE ArtifactData `batch`. A waiting choice is
     never pruned (the apply leg refuses an expired one with its line and
     marks it applied, and this prunes it a week later); nor is a claimed
-    one, whatever its age."""
+    one, whatever its age; nor (cr1#1886, decision 152a) a page row the book
+    still owes a record (`_page_record_due`), however old: it is pruned on
+    the same rule once it is recorded. A page row the book will never record
+    (refused, an undone follow-up, a kind it does not record) keeps the
+    7-day rule, so the store does not grow."""
     now = _now(now_iso)
     cutoff = now - _dt.timedelta(days=CHOICE_EXPIRY_DAYS)
     deletes: List[str] = []
@@ -12715,6 +13105,9 @@ def plan_prune_choices(workspace_root=None, choices: Optional[List[Any]] = None,
         if not (c.get("applied") is True or c.get("applied_at")):
             continue
         if _claim_live(c, now):
+            continue
+        # cr1#1886: never before the book has its record (the record step runs after this prune)
+        if _page_record_due(c):
             continue
         at = _parse(c.get("applied_at")) or _parse(c.get("created_at"))
         if at is None or at >= cutoff:
@@ -14020,6 +14413,7 @@ def _apply_commitment_choices_run(workspace_root, choices, *, resolved_by, now_i
             # the next pile row is judged against the book as these writes left it
             pile_memo.pop("sets", None)
 
+    _held_memo: Dict[str, Any] = {}
     for c in sorted(rows, key=lambda c: (order.get(str(c.get("action") or ""), 2),
                                          str(c.get("created_at") or ""))):
         cid = str(c.get("commitment_id") or "").strip()
@@ -14403,6 +14797,7 @@ def _apply_commitment_choices_run(workspace_root, choices, *, resolved_by, now_i
                         r["seq"] = _mark["seq"]
                 except Exception:  # noqa: BLE001 - the write landed; the Undo falls back to the surface check
                     pass
+        _held_press_line(workspace_root, r, cid, c, _held_memo)   # cr1#1867, the review of 1c79405c2 (MUST 3)
         results.append(r)
         # cr1#1378: the row's own answer goes with it, so the audit can never
         # say ok over a row this writer answered as an error.

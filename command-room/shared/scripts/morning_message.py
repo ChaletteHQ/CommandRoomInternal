@@ -67,6 +67,8 @@ SKIP_LINES = {
     "not_the_owner": "The message was not addressed to your business email, so nothing was sent.",
     "not_the_plan": "The message changed after it was planned, so nothing was sent.",
     "not_the_morning_message": "That was not the morning message, so nothing was sent.",
+    # cr1#1877: the work mail job is refused; the refusal's own line is said instead of this one
+    "refused": "Your work mail connector is not set to send, so nothing was sent.",
 }
 
 
@@ -308,9 +310,13 @@ def owner_address(workspace_root, entities: Optional[dict] = None) -> Dict[str, 
     if not sendable:
         return {"ok": False, "reason": "read_only"}
     try:
-        declared = (cc.declared_backend("email", workspace_root, entities=ent) or {}).get("server_id")
+        row = cc.declared_backend("email", workspace_root, entities=ent, purpose="write")
     except Exception:  # noqa: BLE001
-        declared = None
+        row = None
+    if cc.is_refused(row):
+        # cr1#1877: a refused work mail sends nothing, never through another binding
+        return {"ok": False, "reason": "refused", "line": row.get("line")}
+    declared = (row or {}).get("server_id")
     b = next((x for x in sendable if declared and x["server_id"] == declared), sendable[0])
     return {"ok": True, "address": address, "server_id": str(b["server_id"]), "provider": b.get("provider")}
 
@@ -571,6 +577,9 @@ def plan_send(workspace_root, *, now_iso=None, meetings: Optional[List[Dict[str,
                 return skip("no_hub")
             own = owner_address(root)
             if not own.get("ok"):
+                if own.get("reason") == "refused":
+                    # cr1#1877: the refusal's own line, said as it is
+                    return dict(skip("refused"), line=str(own.get("line") or SKIP_LINES["refused"]))
                 return skip(own.get("reason") or "no_owner_address")
             tz = ch._workspace_tz(root)
             plate = ch.feed_plate(root, now_iso=now_iso)
@@ -637,6 +646,8 @@ def record(workspace_root, plan: Optional[Dict[str, Any]], *, sent: bool, via: O
     else:
         why = reason or plan.get("reason") or "send_failed"
         data = {"day": day, "reason": why if why in SKIP_LINES else "send_failed"}
+        if data["reason"] == "refused" and plan.get("line"):
+            data["line"] = str(plan.get("line"))[:300]   # cr1#1877: the refusal's own line
         etype = SKIPPED_TYPE
     append_event(root / "_hq" / "data" / "events.jsonl",
                  {"type": etype, "source_skill": SOURCE_SKILL,

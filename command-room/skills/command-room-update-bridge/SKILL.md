@@ -410,6 +410,14 @@ WORKSPACE_MIGRATIONS = [
     apply_once: false                                          // NOT once-ever, unlike the two above: connection ids change again whenever a connector is removed and re-added, and the module's own `nothing_to_do` status IS the idempotency gate — a re-run on a settled workspace writes nothing and says nothing
   },
   {
+    id: "connector_jobs_draft_v1",                             // cr1#1877 slice 0 (owner rulings 150, 151a, 151c). Read the id from `release_actions.connector_jobs_draft_v1.MIGRATION_ID`
+    target_file: null,                                         // NOT a file migration: the target is each declared connector row's `job` block, written only through `connector_config.draft_from_seat`
+    marker: null,                                              // no marker: a row that already carries a block is left alone, so the module's own empty `drafted` IS the idempotency gate
+    type: "auto_apply",                                        // APPLIED, then NARRATED in one line: a draft changes nothing a run does (151a), it only lets the Hub ask the owner to confirm
+    blocking: false,
+    apply_once: false                                          // a declared row added later gets its draft on the next update
+  },
+  {
     id: "discuss_list_retired_v1",                              // cr1#552 (the owner's ruling 2026-11-06, option A1): the retired discuss-later list is emptied on update. Read the id from `release_actions.discuss_list_retired_v1.MIGRATION_ID`
     target_file: "[WORKSPACE_ROOT]/_hq/data/events.jsonl",    // additive only: one `note` or one My Plate `commitment` per open item, each pointing back at the item it moved, then one applied row
     marker: null,                                              // no marker: the gate is the module's own `plan`: `nothing_open` on the overwhelming majority of seats, `pending` only where a discuss item is still open
@@ -1239,6 +1247,16 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"d
 It replaces that one line's text with the module's `RULED_LINE`, byte-identical to the template's (`- Project notes: [Project folder]/SESSION_NOTES_<folder name>.md`), keeps the line's own ending and every other byte of the file, re-reads the file, and logs one `workspace_migration_applied` row with `migration_id: "claude_md_notes_line_v1"`. A `ran: false` answer (`already_present`, `no_notes_line`, `several_notes_lines`, `adjudicated`) means nothing was written and nothing is said. Do not edit CLAUDE.md by hand beside it and do not compose the row yourself.
 
 **Say nothing in the update summary:** the owner's notes files are not renamed or moved; the line only stops naming the old spelling.
+
+### Migration: `connector_jobs_draft_v1` (cr1#1877 slice 0, owner rulings 150, 151a and 151c: each declared connector carried over as a draft job)
+
+**Trigger gate:** none beyond the module itself. A declared row that already carries a `job` block is left alone, so on a seat that ran it before the module answers an empty `drafted` and writes nothing. When the Hub has a page database, first `get` `config/live_sources` with the artifact database tool (the same read Hub set-up makes) and pass the document as read, or null; pass the Hub address recorded in the folder, or null. Never read a connector here.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"detector_context": {"from_version": "<from_version>", "to_version": "<to_version>", "live_sources": <config/live_sources as read, or null>, "hub_address": "<the recorded Hub address, or null>"}, "events_jsonl_path": "<WS>/_hq/data/events.jsonl", "workspace_root": "<WS>"}, "name": "release_actions.connector_jobs_draft_v1:connector_jobs_draft_v1"}'
+```
+
+Say its `summary_line` once when it is not empty. A draft changes nothing any run does: it only lets the Hub ask the owner to confirm each connector. Client seats keep their drafts until each client's own setup call.
 
 ### Migration: `discuss_list_retired_v1` (cr1#552, the owner's ruling 2026-11-06, option A1: the retired discuss-later list is emptied on update, each open item becoming a note on its person or project, or a My Plate task)
 

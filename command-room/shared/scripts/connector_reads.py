@@ -48,6 +48,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import wall_text  # noqa: E402 - cr1#1779: the one wall fold
+
 PURPOSES = ("open", "close", "people", "projects")
 
 #: THE READER MAP (cr1#667 review, guard G84): every Maintenance job that
@@ -91,6 +95,10 @@ SKIP_REACHABILITY = "reachability"
 #: The owner said the source is personal (cr1#1163): never read, for any
 #: purpose, on any fire, and never named as a gap (like a dial turned off).
 SKIP_PERSONAL = "personal"
+#: cr1#1877: the job record refuses this connector (skipped, not confirmed,
+#: a foreign run, an unreadable setup). Never read, and never replaced by a
+#: search for another.
+SKIP_REFUSED = "refused"
 SCOPE_COMPUTER = "computer"
 SCOPE_CONTAINER = "container"
 
@@ -153,6 +161,18 @@ def _with_skip(rec: Dict[str, Any], purpose: str, cloud: bool) -> Dict[str, Any]
     return out
 
 
+def _refused_skip(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """A refused job as a skip record: its category, kind and line, and no
+    server, provider or label to route on (cr1#1877)."""
+    return {"category": rec.get("category"), "kind": rec.get("kind"), "refused": True,
+            "reachable_hint": None, "skip_kind": SKIP_REFUSED, "skip_reason": rec.get("line")}
+
+
+def _routing(records) -> List[Dict[str, Any]]:
+    cc = _cc()
+    return [r for r in records if not cc.is_refused(r)]
+
+
 def for_job(workspace_root, kind: str, *, purpose: str,
             env: Optional[dict] = None) -> List[Dict[str, Any]]:
     """Every declared connector of `kind`, each with its effective settings
@@ -165,11 +185,12 @@ def for_job(workspace_root, kind: str, *, purpose: str,
     want = str(kind or "").strip().lower()
     cc = _cc()
     try:
-        records = cc.declared_connector_settings(workspace_root)
+        records = cc.job_settings_all(workspace_root)
     except Exception:  # noqa: BLE001 - a reader never raises
         return []
     cloud = cloud_fire(env)
-    return [_with_skip(r, purpose, cloud) for r in records if r.get("kind") == want]
+    return [(_refused_skip(r) if cc.is_refused(r) else _with_skip(r, purpose, cloud))
+            for r in records if r.get("kind") == want]
 
 
 def for_category(workspace_root, category: str, *, purpose: str,
@@ -181,11 +202,13 @@ def for_category(workspace_root, category: str, *, purpose: str,
         raise ValueError(f"purpose must be one of {PURPOSES}, got {purpose!r}")
     cc = _cc()
     try:
-        rec = cc.connector_settings(category, workspace_root)
+        rec = cc.job_settings(category, workspace_root)
     except Exception:  # noqa: BLE001
         return None
     if rec is None:
         return None
+    if cc.is_refused(rec):
+        return _refused_skip(rec)
     return _with_skip(rec, purpose, cloud_fire(env))
 
 
@@ -241,7 +264,7 @@ def unreachable_declared(workspace_root, env: Optional[dict] = None) -> List[str
         return []
     cc = _cc()
     try:
-        records = cc.declared_connector_settings(workspace_root)
+        records = _routing(cc.job_settings_all(workspace_root))
     except Exception:  # noqa: BLE001
         return []
     return sorted({str(r["category"]) for r in records
@@ -268,7 +291,7 @@ def job_connectors(workspace_root, job_id: str) -> List[str]:
         return []
     cc = _cc()
     try:
-        records = cc.declared_connector_settings(workspace_root)
+        records = _routing(cc.job_settings_all(workspace_root))
     except Exception:  # noqa: BLE001 - a reader never raises
         return []
     return sorted({str(r["category"]) for r in records
@@ -329,7 +352,7 @@ def _labels(workspace_root, categories) -> List[str]:
     cc = _cc()
     try:
         declared = {r.get("category"): r.get("label")
-                    for r in cc.declared_connector_settings(workspace_root)}
+                    for r in _routing(cc.job_settings_all(workspace_root))}
     except Exception:  # noqa: BLE001 - a reader never raises
         declared = {}
     out: List[str] = []
@@ -469,11 +492,12 @@ def chat_mail_allowed(wall: Optional[Dict[str, Any]], *, account: Optional[str],
     if not isinstance(wall, dict) or not account:
         return True
     from email.utils import parseaddr
-    a = (parseaddr(str(account))[1] or str(account)).strip().lower()
-    s = (parseaddr(str(sender or ""))[1] or str(sender or "")).strip().lower()
+    # review of cr1#1779: the mailbox and the kept senders read through the one wall fold, both sides
+    a = wall_text.fold(parseaddr(str(account))[1] or str(account))
+    s = wall_text.fold(parseaddr(str(sender or ""))[1] or str(sender or ""))
     for m in wall.get("mailboxes") or []:
-        if m.get("address") == a:
-            return bool(s) and s in (m.get("except_senders") or [])
+        if wall_text.fold(m.get("address")) == a:
+            return bool(s) and s in {wall_text.fold(x) for x in m.get("except_senders") or []}
     return True
 
 

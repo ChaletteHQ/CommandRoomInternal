@@ -147,7 +147,7 @@ def catchup_window(workspace_root: str, *, task_id: str = TASK_ID,
     if read and isinstance(out, dict):
         out["connector_read"] = _jsonable(read)
         out["commitment_capture_skip_reason"] = read.get("skip_reason")
-        if read.get("skip_kind") == "personal":
+        if read.get("skip_kind") in ("personal", "refused"):   # cr1#1877: a refused job reads nothing
             out["meetings_skip_reason"] = read.get("skip_reason")
             for a, b in (("start", "end"), ("start_aware", "end_aware")):
                 if b in out:
@@ -195,7 +195,7 @@ def _capture_connector_fields(read: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if kind == "reachability":
         out["meetings_unreachable_reason"] = read.get("skip_reason")
         out["commitment_capture_skip_reason"] = None
-    elif kind != "personal":
+    elif kind not in ("personal", "refused"):   # cr1#1877: never a search for another
         out["connector_queries"] = [read.get("label") or read.get("category")
                                     or "meetings"]
     return out

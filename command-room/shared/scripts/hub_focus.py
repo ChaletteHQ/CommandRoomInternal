@@ -577,6 +577,27 @@ def apply_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None
 ALL_OPEN_CAP = 500
 
 
+def other_side(row: Dict[str, Any]) -> List[str]:
+    """cr1#1887 (decision 152b): the person ids on the other side of an
+    open-list row, in order, for who a Focus or All open row names: the
+    holder (`owner_id`) on a row owed to the owner (`owed_to_you`), else the
+    row's counterparties (`you_owe`, `unowned`, or an `owed_to_you` row with
+    no holder). The open list's directions are `you_owe`, `owed_to_you` and
+    `unowned` (`open_list.DIRECTIONS`); there is no `they_owe`. Pure."""
+    holder = str(row.get("owner_id") or "").strip()
+    if str(row.get("direction") or "") == "owed_to_you" and holder:
+        return [holder]
+    return [str(p) for p in row.get("counterparty_ids") or [] if str(p)]
+
+
+def _tied_ids(row: Dict[str, Any]) -> set:
+    """cr1#1887: every person an open-list row is tied to, the holder and
+    every counterparty, whatever its direction: what the hidden filter
+    checks. On the owner's own row the holder is the owner, never hidden."""
+    return ({str(row.get("owner_id") or "").strip()}
+            | {str(p) for p in row.get("counterparty_ids") or [] if str(p)}) - {""}
+
+
 def all_open(workspace_root, *, now_iso: Optional[str] = None,
              names: Optional[Dict[str, str]] = None,
              threads: Optional[Dict[str, str]] = None,
@@ -604,12 +625,12 @@ def all_open(workspace_root, *, now_iso: Optional[str] = None,
                 str(r.get("id")))
 
     hidden = {str(i) for i in hidden_ids or ()}
-    listable = [r for r in book.values()
-                if not (hidden & {str(p) for p in r.get("counterparty_ids") or [] if str(p)})]
+    # cr1#1887: the holder too, so an item a hidden person owes the owner is left out
+    listable = [r for r in book.values() if not (hidden & _tied_ids(r))]
     rows = []
     for r in sorted(listable, key=rank)[:ALL_OPEN_CAP]:
-        parties = [str(p) for p in r.get("counterparty_ids") or [] if str(p)]
-        who_id = parties[0] if parties else ""
+        # cr1#1887: the other side, the holder on a row owed to the owner
+        who_id = (other_side(r) or [""])[0]
         due = str(r.get("due") or "")
         rows.append({"id": str(r["id"]), "title": _title(r), "due": due, "late": bool(due) and due < today,
                      "due_today": due == today, "who": names.get(who_id, "") if who_id else "", "who_id": who_id,
@@ -653,8 +674,8 @@ def feed(workspace_root, *, now_iso: Optional[str] = None,
     rows = []
     for c in ordered[:FEED_CAP]:
         r = book[c]
-        parties = [str(p) for p in r.get("counterparty_ids") or [] if str(p)]
-        who_id = parties[0] if parties else ""
+        # cr1#1887: the other side, the holder on a row owed to the owner
+        who_id = (other_side(r) or [""])[0]
         rows.append({"id": c, "title": _title(r), "due": str(r.get("due") or ""),
                      "due_today": str(r.get("due") or "") == today, "picked": c in pick_rank,
                      # ruling 130a: an item past its day is tagged Late on the page

@@ -217,7 +217,11 @@ def hidden_people(workspace_root) -> Dict[str, Any]:
     name it knows (`all_names`)."""
     root = Path(str(workspace_root))
     shut = {"unread": True, "ids": frozenset(), "names": frozenset(), "all_names": frozenset(),
-            "full_names": frozenset(), "all_full": frozenset(), "shown_full": frozenset()}
+            "full_names": frozenset(), "all_full": frozenset(), "shown_full": frozenset(),
+            # cr1#1849: last names (rule L of #1846), kept apart from `names`, which the drafts' screen and the
+            # page's voice hashes read
+            "last": frozenset(), "cased": frozenset(), "shared": frozenset(), "own": frozenset(),
+            "all_last": frozenset(), "all_cased": frozenset()}
     try:
         import hub_meeting
         from personal_leak import people_records
@@ -241,12 +245,25 @@ def hidden_people(workspace_root) -> Dict[str, Any]:
             everyone_full |= _full_forms(rec)
     shut["all_names"] = frozenset(everyone)
     shut["all_full"] = frozenset(everyone_full)
+    # cr1#1849: everyone's last names but the owner's own, for a fence that cannot be read (every name hidden)
+    try:
+        import followup_draft as fd
+
+        recs = [r for r in people or [] if isinstance(r, dict)]
+        every = fd.last_name_rule(recs, {str(r.get("id") or "") for r in recs} - {owner}, owner)
+        shut["all_last"], shut["all_cased"] = frozenset(every["last"]), frozenset(every["cased"])
+        # review of 1b67db848 (SHOULD): the owner's whole names are set aside on an unread fence too
+        shut["own"] = frozenset(every["own"])
+    except Exception:  # noqa: BLE001 - rule L unread: every whole name's last word stands in for it (fail closed)
+        fd = None
+        shut["all_last"] = _fallback_last(everyone_full)
     if people is None or ties is None or wall is None:
         return shut
     ids = (frozenset(str(i) for i in ties) | frozenset(str(i) for i in (wall.get("off") or ()))) - {owner}
     names: set = set()
     full: set = set()
     shown: set = set()
+    named: set = set()
     for rec in people:
         if not isinstance(rec, dict) or str(rec.get("id") or "") == owner:
             continue
@@ -255,29 +272,193 @@ def hidden_people(workspace_root) -> Dict[str, Any]:
             full |= _full_forms(rec)
         else:
             shown |= _full_forms(rec)
+            # light check of 758cfc903 (SHOULD 1): the record's own name fields, never an alias
+            named |= {v for v in (str(rec.get(k) or "").strip().lower() for k in ("canonical_name", "name"))
+                      if len(v) >= HIDDEN_NAME_MIN}
+    if fd is None:
+        return shut   # rule L could not be read: fail closed, as an unread fence
+    try:
+        import followup_draft as fd_read
+
+        rule = fd_read.last_name_rule([r for r in people if isinstance(r, dict)], ids, owner)
+    except Exception:  # noqa: BLE001 - rule L unread on the read path: fail closed, as an unread fence
+        return shut
     return {"unread": False, "ids": ids, "names": frozenset(names), "all_names": frozenset(everyone),
             "full_names": frozenset(full), "all_full": frozenset(everyone_full),
             # review of #1733 round 2, item 3: someone on file who is not hidden
-            "shown_full": frozenset(shown - full)}
+            "shown_full": frozenset(shown - full),
+            # light check of 758cfc903 (SHOULD 1): which of shown_full are a record's own name, not an alias
+            "shown_named": frozenset(named - full),
+            # cr1#1849 (decision 147o): the hidden people's last names, the ordinary-word ones apart (`cased`),
+            # those a visible person shares (`shared`, hidden all the same: decision A) and the owner's whole
+            # names (`own`, set aside first). Internal only: never written to a feed, page or book
+            "last": frozenset(rule["last"]), "cased": frozenset(rule["cased"]), "shared": frozenset(rule["shared"]),
+            "own": frozenset(rule["own"]), "all_last": shut["all_last"], "all_cased": shut["all_cased"]}
 
 
 def name_is_hidden(text, hp: Dict[str, Any]) -> bool:
     """True when `text` names someone `hidden_people` hides: the whole text,
     or any word of it, is one of their names (a first name alone counts). On
-    an unread fence every known name is hidden."""
+    an unread fence every known name is hidden. Both sides are also matched
+    folded (cr1#1849, the normaliser shared with #1779: accents, zero-width
+    and format characters and every mark dropped, `followup_draft._flat`), so
+    "Jose" is "José", "Sen" is "Señ" and an alias stored "Gen." is "Gen"."""
     value = str(text or "").strip().lower()
     if not value:
         return False
+    flat = _fold(value)
     # review of #1733 round 2, item 3: the whole name of someone on file who
     # is not hidden ("Bo Sample") is theirs, never a hidden person's alias
-    if not hp.get("unread") and value in (hp.get("shown_full") or frozenset()):
-        return False
+    # fix check of f5bb014d6 (C): only a whole name of two or more words that are not titles is set aside here,
+    # so a visible one-word alias ("Rio") never shields a hidden person's first name
+    if not hp.get("unread") and flat and flat in _wholes(hp.get("shown_full") or frozenset(),
+                                                         hp.get("shown_named") or frozenset()):
+        # review of 1b67db848 (MUST 2): a visible one-word alias ("Lee") is not a whole name to set aside, so
+        # the text still meets the surname check, which sets aside whole names of two words or more only
+        return surname_is_hidden(text, hp)
     names = hp.get("all_names") if hp.get("unread") else hp.get("names")
     names = names or frozenset()
     if value in names:
         return True
     words = [w.strip(".,;:()'\"") for w in value.replace("-", " ").split()]
-    return any(w in names for w in words if len(w) >= HIDDEN_NAME_MIN)
+    if any(w in names for w in words if len(w) >= HIDDEN_NAME_MIN):
+        return True
+    # cr1#1849 (#1779's normaliser): the same match, both sides folded
+    fnames = _folded(names)
+    if flat and (flat in fnames or any(w in fnames for w in flat.split() if len(w) >= HIDDEN_NAME_MIN)):
+        return True
+    return surname_is_hidden(text, hp)
+
+
+def _fold(text: Any) -> str:
+    """`followup_draft._flat`: letters and digits only, accents and zero-width characters gone, folded. "" when
+    it cannot be read."""
+    try:
+        import followup_draft as fd
+
+        return fd._flat(text)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+#: The suffixes a fallback last name drops (rule L's own list, kept here for when rule L cannot be read).
+_FALLBACK_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv", "v", "esq"})
+
+
+def _plain_fold(text: Any) -> str:
+    """Letters and digits only, accents and format characters gone, folded: `followup_draft._flat`'s rule, here
+    without it, for the fallback that runs when rule L could not be read."""
+    import wall_text  # train H (1849 x 1779): the one wall fold; it does not need followup_draft, so it holds when rule L is what broke
+
+    t = wall_text.strip(text)
+    return " ".join("".join(c if c.isalnum() else " " for c in t.casefold()).split())
+
+
+def _fallback_last(names: Any) -> frozenset:
+    """Rule L could not be read: each whole name's last word, folded, its bracket and closing suffix dropped
+    (fix check of f5bb014d6, SHOULD 1), from names of two words or more. Fail closed, never empty for a name."""
+    out = set()
+    for n in names or ():
+        words = _plain_fold(str(n).split("(", 1)[0]).split()
+        while words and words[-1] in _FALLBACK_SUFFIXES:
+            words = words[:-1]
+        if len(words) >= 2 and len(words[-1]) >= HIDDEN_NAME_MIN:
+            out.add(words[-1])
+    return frozenset(out)
+
+
+_WHOLES: Dict[int, Any] = {}
+
+
+def _wholes(names: Any, named: Any = frozenset()) -> frozenset:
+    """The whole names of `names` that may be set aside, folded after the bracket is cut (`followup_draft._cut`)
+    and with leading titles taken off while two words remain ("Dr. Mo Tarrow" is "mo tarrow", light check of
+    758cfc903, SHOULD 2). A record's own name field (`named`) counts with two or more words ("Gen Quorr"); an
+    alias needs two or more words that are not titles (`followup_draft.NAME_TITLES`), so "Mr. Walbridge" is one
+    (fix check of f5bb014d6, B; SHOULD 1). Kept per pair of sets for the run."""
+    key = (id(names), id(named))
+    got = _WHOLES.get(key)
+    if got is not None and got[0] is names and got[1] is named:
+        return got[2]
+    try:
+        import followup_draft as fd
+
+        out = set()
+        for n in names or ():
+            words = fd._flat(fd._cut(n)).split()
+            while len(words) > 2 and words[0] in fd.NAME_TITLES:
+                words = words[1:]
+            if n in named:
+                ok = len(words) >= 2
+            else:
+                ok = len([w for w in words if w not in fd.NAME_TITLES]) >= 2
+            if ok:
+                out.add(" ".join(words))
+        out = frozenset(out)
+    except Exception:  # noqa: BLE001 - nothing can be set aside: every name is matched (the closed side)
+        out = frozenset()
+    if len(_WHOLES) > 64:
+        _WHOLES.clear()
+    _WHOLES[key] = (names, named, out)
+    return out
+
+
+_FOLDED: Dict[int, Any] = {}
+
+
+def _folded(names: Any) -> frozenset:
+    """Every name of `names` folded (`_fold`), kept per set for the run (one hidden_people read serves many rows).
+    Never empty for a name that folds to nothing: such a name is simply not matched folded (it still is raw)."""
+    key = id(names)
+    got = _FOLDED.get(key)
+    if got is not None and got[0] is names:
+        return got[1]
+    out = frozenset(f for f in (_fold(n) for n in names or ()) if f)
+    if len(_FOLDED) > 64:
+        _FOLDED.clear()
+    _FOLDED[key] = (names, out)
+    return out
+
+
+def surname_is_hidden(text, hp: Dict[str, Any]) -> bool:
+    """cr1#1849 (decision 147o): True when `text`, a name slot (a row's who, a
+    source line's who, one part of a context label), names a hidden person by
+    last name (rule L of #1846, `followup_draft.last_name_rule`). The whole
+    names of visible people and of the owner are set aside first, so "Bo
+    Walbridge" is never hidden by the surname a hidden Pat Walbridge has; a
+    bare surname a visible person shares is hidden all the same (decision A).
+    An ordinary-word last name ("Baker") hides when written capitalised, at
+    any position: a name slot opens no sentence. On an unread fence every
+    known last name hides. Fails closed when the words cannot be read."""
+    unread = bool(hp.get("unread"))
+    last = hp.get("all_last") if unread else hp.get("last")
+    cased = hp.get("all_cased") if unread else hp.get("cased")
+    if not last and not cased:
+        return False
+    try:
+        import re
+
+        import followup_draft as fd
+
+        raw = fd._plain(str(text or ""))
+        own = hp.get("own") or frozenset()
+        keep = set(_wholes(own, own)) | (set() if unread else set(_wholes(hp.get("shown_full") or frozenset(),
+                                                                         hp.get("shown_named") or frozenset())))
+        # review of 1b67db848 (MUST 2): only a whole name of two words or more is set aside; a one-word alias
+        # ("Lee", "Berg", "Walbridge") never shields a hidden person's surname
+        # fix check of f5bb014d6 (B): a whole name counts after its bracket is cut and without its titles, so
+        # "Mr. Walbridge" is one word and never sets a hidden surname aside; "Cy Vane (Example Co)" is two
+        for whole in sorted(keep, key=len, reverse=True):
+            parts = [re.escape(w) for w in whole.split()]
+            raw = re.sub(r"(?i)(?<!\w)" + r"\W+".join(parts) + r"(?!\w)", " ", raw)
+        flat = " " + fd._flat(raw) + " "
+        if any((" " + n + " ") in flat for n in last or ()):
+            return True
+        # review of 1b67db848 (MUST 3): a capital first, then any case ("Brown", "BROWN", "BROWN'S"); "brown" shows
+        return any(re.search(r"(?<!\w)" + re.escape(str(w)[:1].upper()) + "(?i:" + re.escape(str(w)[1:]) + r")(?!\w)", raw)
+                   for w in cased or () if str(w))
+    except Exception:  # noqa: BLE001 - fail closed
+        return True
 
 def _rules_readable(root: Path) -> bool:
     """Whether the mail rules store, where onboarding's off-limits answers

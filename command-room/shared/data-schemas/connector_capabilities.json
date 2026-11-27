@@ -7,7 +7,7 @@
   "kinds": {
     "mail": {"categories": ["email"], "grain": "labels or folders",
              "dials": {"open_commitments": true, "close_commitments": true, "close_mode": "close", "update_people": true, "update_projects": true}},
-    "calendar": {"categories": ["calendar"], "grain": "calendars",
+    "calendar": {"categories": ["calendar", "personal_calendar"], "grain": "calendars",
                  "dials": {"open_commitments": true, "close_commitments": true, "close_mode": "close", "update_people": true, "update_projects": true}},
     "chat": {"categories": ["chat"], "grain": "channels",
              "dials": {"open_commitments": true, "close_commitments": true, "close_mode": "close", "update_people": true, "update_projects": true}},

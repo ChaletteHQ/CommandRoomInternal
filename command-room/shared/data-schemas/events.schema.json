@@ -104,6 +104,8 @@
         "connector_read",
         "connector_detected",
         "connector_backend_changed",
+        "connector_job_set",
+        "connector_job_drafted",
         "fire_delivery_changed",
         "fire_delivery_flag",
         "deliverable_landed",

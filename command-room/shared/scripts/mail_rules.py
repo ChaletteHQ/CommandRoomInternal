@@ -42,6 +42,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+import wall_text  # cr1#1779: the one wall fold
+
 try:
     from atomic_write import acquire_write_lock, atomic_write_json, release_write_lock
 except Exception:  # pragma: no cover
@@ -211,8 +213,10 @@ def _clean(text: Any, cap: int) -> str:
 
 def address_of(text: Any) -> str:
     """The bare address in `Name <name@example.com>` or a bare address, lower-cased; empty when
-    there is none."""
-    s = str(text or "")
+    there is none. cr1#1779: read through the one wall fold's `strip` first,
+    so a mark or a character that prints nothing inside an address does not
+    make it a different address."""
+    s = wall_text.strip(text)
     m = re.search(r"<([^<>@\s]+@[^<>\s]+)>", s)
     addr = m.group(1) if m else s.strip()
     addr = addr.strip().strip("<>").lower()
@@ -223,7 +227,7 @@ def domain_of(text: Any) -> str:
     addr = address_of(text)
     if addr:
         return addr.rsplit("@", 1)[1]
-    d = str(text or "").strip().lower().lstrip("@").rstrip(".")
+    d = wall_text.strip(text).strip().lower().lstrip("@").rstrip(".")
     return d if re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", d) else ""
 
 
@@ -255,6 +259,27 @@ def _norm_value(match: str, value: Any) -> tuple:
         return (" ".join(words), None) if words else ("", SHORT_SUBJECT_LINE)
     kind = raw.lower().replace("-", "_").replace(" ", "_")
     return (kind, None) if kind in KINDS else ("", BAD_KIND_LINE.format(kinds=", ".join(KINDS)))
+
+
+def stored_value(rule: Dict[str, Any]) -> str:
+    """A rule's value as a match reads it now (review of cr1#1779, MUST): a
+    sender or a domain stored before the one wall fold holds its raw value
+    ("zo\u00eb@example.com"), which `address_of` now reads folded; read through
+    the same function, a rule stored either way matches the same mail."""
+    match, value = rule.get("match"), str(rule.get("value") or "")
+    if match == "sender":
+        return address_of(value) or value.strip().lower()
+    if match == "domain":
+        return domain_of(value) or value.strip().lower()
+    return value
+
+
+def _same_rule(rule: Dict[str, Any], mode: str, match: str, value: str) -> bool:
+    """Whether `rule` is the rule (mode, match, value): by id, or, for a rule
+    stored before the one wall fold, by its value read now."""
+    if rule.get("id") == rule_id(mode, match, value):
+        return True
+    return rule.get("mode") == mode and rule.get("match") == match and stored_value(rule) == value
 
 
 def rule_id(mode: str, match: str, value: str) -> str:
@@ -294,7 +319,7 @@ def item_facts(item: Dict[str, Any]) -> Dict[str, Any]:
     """What a rule can match on one inbox thread, from the fields the inbox
     fetch carries. Nothing else of the thread is read."""
     sender = address_of(item.get("sender_email") or item.get("sender") or item.get("from") or "")
-    domain = str(item.get("domain") or "").strip().lower() or (sender.rsplit("@", 1)[1] if sender else "")
+    domain = wall_text.fold(item.get("domain")) or (sender.rsplit("@", 1)[1] if sender else "")
     return {"sender": sender, "domain": domain,
             "subject": set(subject_words(item.get("subject") or "")),
             "kind": str(item.get("noise_class") or "").strip().lower().replace("-", "_"),
@@ -303,7 +328,7 @@ def item_facts(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _matches(rule: Dict[str, Any], facts: Dict[str, Any]) -> bool:
-    match, value = rule.get("match"), str(rule.get("value") or "")
+    match, value = rule.get("match"), stored_value(rule)
     if not value:
         return False
     if match == "sender":
@@ -869,8 +894,10 @@ def add_rule(workspace_root, *, mode: str, match: str, value: Any, note: Any = "
         if prior is not None and prior.get("id") == rid:
             return {"outcome": "already", "line": ALREADY_LINE, "rule": prior, "replayed": True}, False
         live = active_rules(store)
-        if any(r.get("id") == rid for r in live):
-            held = next(r for r in live if r.get("id") == rid)
+        # review of cr1#1779: a rule stored with its raw value before the one
+        # wall fold is the same rule, never a second one
+        if any(_same_rule(r, mode, match, value) for r in live):
+            held = next(r for r in live if _same_rule(r, mode, match, value))
             if off_limits and not held.get("off_limits"):
                 held["off_limits"] = True
                 return {"outcome": "applied", "line": ADDED_LINE.format(plain=plain(held)),
@@ -878,10 +905,10 @@ def add_rule(workspace_root, *, mode: str, match: str, value: Any, note: Any = "
             return {"outcome": "already", "line": ALREADY_LINE, "rule": held}, False
         if len(live) >= RULES_CAP:
             return {"outcome": "refused", "line": FULL_LINE.format(n=len(live))}, False
-        other = rule_id("show" if mode == "hide" else "hide", match, value)
+        other_mode = "show" if mode == "hide" else "hide"
         replaced = None
         for r in live:
-            if r.get("id") == other:
+            if _same_rule(r, other_mode, match, value):
                 r["removed_at"] = now
                 r["removed_by"] = choice_id or ""
                 r["replaced_by"] = rid
@@ -1062,7 +1089,7 @@ def reopens_off_limits(workspace_root, choice: Dict[str, Any]) -> Optional[str]:
                 return None
             addr = address_of(choice.get("value"))
             hit = next((r for r in live if r.get("off_limits") and r.get("mode") == "hide"
-                        and r.get("match") == "sender" and r.get("value") == addr), None)
+                        and r.get("match") == "sender" and stored_value(r) == addr), None)
             return addr if hit else None
     except Exception:  # noqa: BLE001
         return None
@@ -1150,7 +1177,7 @@ def feed(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
 
 __all__ = [
     "STORE_REL", "MODES", "MATCHES", "KINDS", "VERBS", "load", "store_path",
-    "address_of", "domain_of", "subject_words", "mode_from_note", "plain", "rule_id",
+    "address_of", "domain_of", "subject_words", "mode_from_note", "plain", "rule_id", "stored_value",
     "item_facts", "verdict", "sort_items", "active_rules",
     "add_rule", "remove_rule", "drop_thread", "bring_back", "keep_thread", "unkeep_thread",
     "apply_one", "apply_choices", "feed",

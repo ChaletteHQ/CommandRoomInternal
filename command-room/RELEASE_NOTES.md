@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.12.6 (2026-11-27)
+
+Promises and to-dos that name someone off limits keep their rows but show as "An item" across the Hub, your reminders included. All open and Focus now name the person who owes you, and leave out items an off-limits person owes you. Page sends, drafts and calendar changes always reach your book. Last names on their own, accented spellings and capitals are held, and a draft is checked one recipient at a time. After updating, say "update my hub" once and reload the Hub tab.
+
 ## v6.12.5 (2026-11-26)
 
 The Hub now writes a follow-up draft or a quick prep itself, in seconds. When an Apply cannot be confirmed it says so instead of asking you to press again, and a typed to-do is added once. Urgent, the plate and the live prep save keep out names of people who are off limits. If your prep edits cannot be read, say "repair my prep edits". After updating, say "update my hub" once and reload the Hub tab.

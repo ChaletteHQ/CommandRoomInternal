@@ -108,6 +108,8 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import wall_text  # noqa: E402 - cr1#1779: the one wall fold
+
 #: Where a caller lands the items for a call through the read door.
 ITEMS_REL = "_hq/.system/import/screen_items.json"
 #: Collections whose items are records not about a person: a link to a
@@ -190,15 +192,13 @@ def _plain(text: Any, extra: bool = True) -> str:
     letter across a zero-width space (left out, the two words join and the
     edge check fails)."""
     if not extra:
-        s = unicodedata.normalize("NFKD", str(text or ""))
-        return "".join(ch for ch in s if not unicodedata.combining(ch))
+        # cr1#1779: the one wall fold's `strip` (every mark out), format characters kept
+        return wall_text.strip(text, keep_format=True)
     out = []
-    for ch in unicodedata.normalize("NFKD", str(text or "")):
-        if unicodedata.combining(ch):
-            continue
+    # cr1#1779: NFKD, every mark and every format character out (`wall_text.strip`); then dashes
+    # and look-alike letters, which only this wall reads (ruling 147x)
+    for ch in wall_text.strip(text):
         cat = unicodedata.category(ch)
-        if cat == "Cf":
-            continue
         if cat == "Pd":
             out.append("-")
             continue

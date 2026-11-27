@@ -154,7 +154,23 @@ def declared_backends(workspace_root=None, entities: Optional[dict] = None) -> D
 
 
 def declared_backend(category: str, workspace_root=None,
-                     entities: Optional[dict] = None) -> Optional[Dict[str, Any]]:
+                     entities: Optional[dict] = None, *, purpose: str = "read",
+                     environ: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+    """The routing shim (cr1#1877 slice 0): the row as `_declared_backend_raw`
+    reads it, a Refusal (`is_refused`) when its job is set but refused, or
+    None when undeclared. A row with no job block is today's row, the same
+    object. Walls read `declared_backend_ids` / `connector_ids_raw` instead."""
+    row = _declared_backend_raw(category, workspace_root, entities)
+    if row is None:
+        return None
+    refused = _job_verdict(category, row, workspace_root, entities, purpose, environ)
+    if refused is not None:
+        return refused
+    return _strip_job(row)
+
+
+def _declared_backend_raw(category: str, workspace_root=None,
+                          entities: Optional[dict] = None) -> Optional[Dict[str, Any]]:
     """The declared backend row for a category ({server_id, provider, label}),
     or None when undeclared (caller falls back to substring discovery).
 
@@ -237,8 +253,9 @@ def recorded_aliases(category: str, workspace_root) -> List[str]:
 def declared_backend_ids(category: str, workspace_root=None,
                          entities: Optional[dict] = None) -> List[str]:
     """`[declared server_id] + recorded aliases` for a category, or `[]`
-    when the category is undeclared (IDENT1 I-1)."""
-    row = declared_backend(category, workspace_root, entities)
+    when the category is undeclared (IDENT1 I-1). RAW (cr1#1877): the walls
+    read it, so a refused job never loses its scheduled aliases here."""
+    row = _declared_backend_raw(category, workspace_root, entities)
     if not row:
         return []
     return list(row.get("server_ids") or [row["server_id"]])
@@ -847,6 +864,7 @@ def set_declared_backend(workspace_root, category: str, server_id: str,
     else:
         prior = conn.get(category)
         prior_sid = prior.get("server_id") if isinstance(prior, dict) else None
+        reset_job = None
         row = {"server_id": server_id, "provider": provider, "label": label}
         if isinstance(prior, dict):
             # cr1#667: a re-pin moves the server id and keeps the owner's
@@ -855,12 +873,26 @@ def set_declared_backend(workspace_root, category: str, server_id: str,
             for key in CONNECTOR_SETTING_KEYS:
                 if key in prior:
                     row[key] = prior[key]
+            # cr1#1877: the job block stays with its row. A new server id puts
+            # it back to draft with its test cleared; its origin is kept, so a
+            # confirmed job moved by an old writer must be confirmed again and
+            # never regains the migrated drafts' exemption (151a).
+            if isinstance(prior.get(JOB_KEY), dict):
+                job = dict(prior[JOB_KEY])
+                if prior_sid != server_id:
+                    job["state"] = "draft"
+                    job.pop("test", None)
+                    job["rev"] = int(job.get("rev") or 0) + 1
+                    reset_job = job
+                row[JOB_KEY] = job
         conn[category] = row
         if not is_uuid_shaped_server_id(server_id):
             retire_uuid_bindings(ws, server_id, provider,
                                  prior_server_id=prior_sid,
                                  binding_verified=binding_verified)
     _write_entities(workspace_root, ent, holder)
+    if not is_zapier and reset_job is not None:
+        _job_event(workspace_root, JOB_SET_EVENT, category, reset_job, "server_changed")
     return conn
 
 
@@ -1231,7 +1263,343 @@ def accounts_surface(workspace_root=None,
     return {"lines": gated, "n_accounts": len(records)}
 
 
+# ---------------------------------------------------------------------------
+# cr1#1877 slice 0: the connector job record (spec: Hub Rebuild notes,
+# spec_1877_connector_setup.md, revision 3 with the three fix-check MUSTs).
+#
+# Each `workspace.connectors.<category>` row may carry a `job` block. The
+# routing reader below answers ONE of three for a category: the row (set),
+# a Refusal (set but refused: never falls back), or None (never set). A row
+# with NO job block is a legacy draft: set, its checks report only, so every
+# seat before the migration and every client seat (ruling 151c) behaves
+# exactly as before. The walls never read through this: they keep the raw
+# readers (`connector_ids_raw`, `connector_rows_raw`, `declared_backend_ids`),
+# so a personal row refused as a work job keeps blocking.
+# ---------------------------------------------------------------------------
+JOB_KEY = "job"
+JOB_STATES = ("set", "skipped", "draft")
+JOB_ORIGINS = ("panel", "chat", "migration", "legacy_writer")
+#: Origins whose account, role and identity checks only report (ruling 151a).
+JOB_EXEMPT_ORIGINS = ("migration", "legacy_writer")
+#: The category a job lives on, and its plain name.
+JOB_CATEGORIES = {"email": "work_mail", "calendar": "work_calendar", "meetings": "meeting_notes",
+                  "documents": "files", "chat": "chat", "personal_calendar": "personal_calendar"}
+JOB_WORDS = {"email": "Work mail", "calendar": "Work calendar", "meetings": "Meeting notes",
+             "documents": "Files", "chat": "Chat", "personal_calendar": "Personal calendar"}
+#: Only accounts marked as work serve a work job (ruling 151f).
+WORK_ROLES = ("business-primary", "business-secondary")
+PERSONAL_JOB_ROLES = (ROLE_PERSONAL,)
+JOB_PURPOSES = ("read", "write")
+REFUSED_KEY = "refused"
+JOB_REFUSAL_LINES = {
+    "foreign_run": "Connectors were set up on another account; say set up my connectors on this one.",
+    "skipped": "{job} is switched off on the Hub.",
+    "unreadable": "{job}'s setup could not be read, so nothing is read or written through it.",
+    "reconfirm": "{job} changed outside setup; confirm it on the Hub.",
+    "account_unnamed": "{job} has no work account named; confirm its account on the Hub.",
+    "role": "{job}'s account is not marked as work; mark it on the Hub.",
+    "write_untested": "{job} was set up in chat; test it on the Hub before anything is sent or changed through it.",
+}
+#: The page's approval of a job, as `page_approval` answers it (cr1#1877 151j).
+PAGE_NEEDS_APPROVAL = "needs_approval_on_this_page"
+NOT_APPROVED_ON_PAGE_LINE = "Not approved on this page yet"
+JOB_SET_EVENT = "connector_job_set"
+JOB_DRAFTED_EVENT = "connector_job_drafted"
+
+
+def is_refused(row: Any) -> bool:
+    """True when `row` is a Refusal from the routing reader: set but refused.
+    Every guard that tests a declared row's `server_id` asks this FIRST and
+    returns its own refusal, never a fallback (spec §5, M1)."""
+    return isinstance(row, dict) and row.get(REFUSED_KEY) is True
+
+
+def job_refusal(category: str, purpose: str, reason: str) -> Dict[str, Any]:
+    """A Refusal: a plain dict that serialises to JSON. It carries no
+    server_id, server_ids, provider, label or live_read, so no reader can
+    route on it."""
+    word = JOB_WORDS.get(category, str(category))
+    line = JOB_REFUSAL_LINES.get(reason, JOB_REFUSAL_LINES["unreadable"]).format(job=word)
+    return {REFUSED_KEY: True, "category": category, "purpose": purpose, "reason": reason, "line": line}
+
+
+def _strip_job(row: Dict[str, Any]) -> Dict[str, Any]:
+    """The row as readers have always seen it: the same object when it has no
+    job block (a legacy seat is byte for byte today's), else a copy without it."""
+    if JOB_KEY not in row:
+        return row
+    return {k: v for k, v in row.items() if k != JOB_KEY}
+
+
+def foreign_run(workspace_root, environ: Optional[Dict[str, str]] = None) -> bool:
+    """Whether THIS run is a scheduled fire foreign to the declared scheduled
+    writer, and not an account acting for the owner (spec §5, fix-check MUST 1).
+    Judged through `receipts.foreign_scheduled_fire`, the write door's own gate:
+    only a run fired as scheduled can be foreign, so the owner's chat or a
+    manual run never is; only its `writer` answer counts (`device` is the same
+    account on another computer, not a connector question). Never raises;
+    anything it cannot judge is not foreign."""
+    if workspace_root is None:
+        return False
+    try:
+        import os
+        env = dict(os.environ) if environ is None else dict(environ)
+        import receipts
+        if receipts.foreign_scheduled_fire(env, str(workspace_root)) != "writer":
+            return False
+        import schedule_holder as _sh
+        here = _sh.account_mark(env)
+        return not (here and here in acting_account_marks(workspace_root))
+    except Exception:  # noqa: BLE001 - not judged: not foreign (the door still judges writes)
+        return False
+
+
+def _job_accounts_ok(category: str, block: Dict[str, Any], workspace_root,
+                     entities: Optional[dict]) -> Optional[str]:
+    """None when every account the job names is on file with an allowed role;
+    else the refusal reason (151f, 151g)."""
+    named = block.get("accounts")
+    if not isinstance(named, list) or not named:
+        return "account_unnamed"
+    on_file = {str(a.get("account_id") or derive_account_id(a.get("address"))): a
+               for a in accounts(workspace_root, entities) if isinstance(a, dict)}
+    allowed = PERSONAL_JOB_ROLES if category == "personal_calendar" else WORK_ROLES
+    for entry in named:
+        aid = str(entry.get("account_id") or "") if isinstance(entry, dict) else ""
+        acc = on_file.get(aid)
+        if not aid or acc is None:
+            return "account_unnamed"
+        if str(acc.get("role") or "") not in allowed:
+            return "role"
+    return None
+
+
+def _job_verdict(category: str, row: Dict[str, Any], workspace_root, entities: Optional[dict],
+                 purpose: str, environ: Optional[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    """None when the row may be used for `purpose`; else its Refusal."""
+    if foreign_run(workspace_root, environ):
+        return job_refusal(category, purpose, "foreign_run")
+    if JOB_KEY not in row:
+        return None   # a legacy draft: set, checks report only (fix-check MUST 2)
+    block = row.get(JOB_KEY)
+    if not isinstance(block, dict) or block.get("state") not in JOB_STATES:
+        return job_refusal(category, purpose, "unreadable")
+    origin = block.get("origin")
+    if origin not in JOB_ORIGINS:
+        return job_refusal(category, purpose, "unreadable")
+    if block.get("state") == "skipped":
+        return job_refusal(category, purpose, "skipped")
+    if origin in JOB_EXEMPT_ORIGINS:
+        return None   # 151a: a migrated or legacy draft keeps working
+    if block.get("state") == "draft":
+        # a confirmed job an old writer moved: it does not regain 151a's exemption
+        return job_refusal(category, purpose, "reconfirm")
+    why = _job_accounts_ok(category, block, workspace_root, entities)
+    if why:
+        return job_refusal(category, purpose, why)
+    if purpose == "write" and origin == "chat":
+        test = block.get("test") if isinstance(block.get("test"), dict) else {}
+        if not test.get("passed_at"):
+            return job_refusal(category, purpose, "write_untested")   # 151b: passed once
+    return None
+
+
+def connector_job(category: str, workspace_root=None, entities: Optional[dict] = None, *,
+                  purpose: str = "read", environ: Optional[Dict[str, str]] = None):
+    """The routing reader (spec §5): `{"row": <row without its job block>,
+    "job": <block or None>}` when the category's job may be used for
+    `purpose`; a Refusal when it is set but refused; None when never set."""
+    if purpose not in JOB_PURPOSES:
+        raise ValueError(f"purpose must be one of {JOB_PURPOSES}, got {purpose!r}")
+    row = _declared_backend_raw(category, workspace_root, entities)
+    if row is None:
+        return None
+    refused = _job_verdict(category, row, workspace_root, entities, purpose, environ)
+    if refused is not None:
+        return refused
+    block = row.get(JOB_KEY) if isinstance(row.get(JOB_KEY), dict) else None
+    return {"row": _strip_job(row), "job": block}
+
+
+def job_settings(category: str, workspace_root=None, entities: Optional[dict] = None, *,
+                 purpose: str = "read", environ: Optional[Dict[str, str]] = None):
+    """`connector_settings` for routing: the settings, a Refusal, or None."""
+    row = _declared_backend_raw(category, workspace_root, entities)
+    if row is None:
+        return None
+    refused = _job_verdict(category, row, workspace_root, entities, purpose, environ)
+    if refused is not None:
+        return refused
+    return connector_settings(category, workspace_root, entities)
+
+
+def job_settings_all(workspace_root=None, entities: Optional[dict] = None, *,
+                     purpose: str = "read", environ: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    """`declared_connector_settings` for routing: every record, a refused one
+    replaced by its Refusal plus its `kind` (so a job can say it skipped it,
+    never read it, and never go looking for another)."""
+    out: List[Dict[str, Any]] = []
+    raw = declared_backends(workspace_root, entities)
+    foreign = foreign_run(workspace_root, environ)
+    for rec in declared_connector_settings(workspace_root, entities):
+        cat = rec.get("category")
+        row = raw.get(cat) if isinstance(raw.get(cat), dict) else {}
+        refused = (job_refusal(cat, purpose, "foreign_run") if foreign
+                   else _job_verdict(cat, row, workspace_root, entities, purpose, {}))
+        if refused is not None:
+            refused["kind"] = rec.get("kind")
+            out.append(refused)
+        else:
+            out.append(rec)
+    return out
+
+
+def connector_ids_raw(category: str, workspace_root=None,
+                      entities: Optional[dict] = None) -> Optional[Dict[str, Any]]:
+    """The walls' reader (spec §5, fix-check MUST 3): `{server_ids (declared id
+    then recorded aliases), provider, role, kind, label}` exactly as stored,
+    ignoring the job block; None when undeclared."""
+    row = _declared_backend_raw(category, workspace_root, entities)
+    if row is None:
+        return None
+    rec = connector_settings(category, workspace_root, entities) or {}
+    return {"server_ids": list(row.get("server_ids") or [row["server_id"]]),
+            "provider": row.get("provider"), "role": row.get("role"),
+            "kind": rec.get("kind"), "label": row.get("label")}
+
+
+def connector_rows_raw(workspace_root=None, entities: Optional[dict] = None) -> Dict[str, Dict[str, Any]]:
+    """Every declared row at once, as `connector_ids_raw` reads one."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for cat in declared_backends(workspace_root, entities):
+        if cat == _ZAPIER_PIN_KEY:
+            continue
+        one = connector_ids_raw(cat, workspace_root, entities)
+        if one is not None:
+            out[cat] = one
+    return out
+
+
+def page_approval(category: str, hub_address: Optional[str], workspace_root=None,
+                  entities: Optional[dict] = None) -> str:
+    """The page's own approval of a job (151j): `granted` only when it was
+    given on THIS Hub artifact; `needs_approval_on_this_page` otherwise (a
+    moved Hub, a second page, a client's own Hub; an empty address never
+    matches); `not_needed` when the job's page reads nothing. Server-side jobs
+    never read this."""
+    row = _declared_backend_raw(category, workspace_root, entities) or {}
+    block = row.get(JOB_KEY) if isinstance(row.get(JOB_KEY), dict) else {}
+    appr = block.get("approval") if isinstance(block.get("approval"), dict) else {}
+    if appr.get("page") == "not_needed":
+        return "not_needed"
+    here = str(hub_address or "").strip()
+    if appr.get("page") == "granted" and here and str(appr.get("artifact") or "").strip() == here:
+        return "granted"
+    return PAGE_NEEDS_APPROVAL
+
+
+def _put_job(row: Dict[str, Any], block: Dict[str, Any]) -> Dict[str, Any]:
+    prior = row.get(JOB_KEY) if isinstance(row.get(JOB_KEY), dict) else {}
+    new = dict(block)
+    new["rev"] = int(prior.get("rev") or 0) + 1
+    row[JOB_KEY] = new
+    return new
+
+
+def _job_event(workspace_root, etype: str, category: str, block: Dict[str, Any], reason: str) -> None:
+    """One event per job write, carrying no shape body, display name or address."""
+    try:
+        from event_gate import append_event
+        append_event(Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl",
+                     {"type": etype, "source_skill": "connector-setup",
+                      "data": {k: v for k, v in {
+                          "category": category, "state": block.get("state"),
+                          "origin": block.get("origin"), "provider_key": block.get("provider_key"),
+                          "shape_sha": (block.get("test") or {}).get("shape_sha") if isinstance(block.get("test"), dict) else None,
+                          "reason": reason}.items() if isinstance(v, str) and v}},
+                     holder="connector-setup")
+    except Exception:  # noqa: BLE001 - the record write stands; the event is its narration
+        pass
+
+
+def set_connector_job(workspace_root, category: str, block: Dict[str, Any], *,
+                      reason: str = "", holder: str = "connector-setup",
+                      event: str = JOB_SET_EVENT) -> Dict[str, Any]:
+    """THE writer of a job block (spec §2). Refuses a block that is not one
+    (unknown state or origin) or a category with no declared row; never
+    writes an address in clear. Returns the block as written."""
+    import connector_jobs as _cj
+    why = _cj.job_block_problem(block, category)
+    if why:
+        raise ValueError(f"not a job block: {why}")
+    if not _cj.REASON_RE.match(str(reason or "x")):
+        raise ValueError("a job event's reason is a short code, never free text")
+    ent = _load_full(workspace_root)
+    ws = _workspace_container(ent)
+    conn = ws.get("connectors")
+    row = conn.get(category) if isinstance(conn, dict) else None
+    if not (isinstance(row, dict) and row.get("server_id")):
+        raise ValueError(f"no declared connector for category {category!r}")
+    written = _put_job(row, block)
+    _write_entities(workspace_root, ent, holder)
+    _job_event(workspace_root, event, category, written, reason)
+    return written
+
+
+def draft_from_seat(workspace_root, live_sources: Optional[Dict[str, Any]] = None,
+                    hub_address: Optional[str] = None, *, holder: str = "connector-setup") -> Dict[str, Any]:
+    """The migration (spec §6): a draft job block (`origin: migration`) on each
+    declared row of a job category that has none, in its OWN category (a row
+    is never moved). `live_sources` is `config/live_sources` as the page wrote
+    it, passed in as `live_sources_check` takes it; its states become the
+    job's approval, stamped with `hub_address` (an empty one never matches).
+    Idempotent: a row that already has a block is left alone. Returns
+    `{drafted: [categories], kept: [categories]}`."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    srcs = (live_sources or {}).get("sources") if isinstance(live_sources, dict) else None
+    srcs = srcs if isinstance(srcs, dict) else {}
+    page_word = {"email": "mail", "calendar": "calendar", "chat": "chat"}
+    ent = _load_full(workspace_root)
+    ws = _workspace_container(ent)
+    conn = ws.get("connectors")
+    drafted: List[str] = []
+    kept: List[str] = []
+    if isinstance(conn, dict):
+        for cat in sorted(JOB_CATEGORIES):
+            row = conn.get(cat)
+            if not (isinstance(row, dict) and row.get("server_id")):
+                continue
+            if JOB_KEY in row:
+                kept.append(cat)
+                continue
+            block: Dict[str, Any] = {"state": "draft", "origin": "migration", "set_at": now, "set_by": "migration"}
+            if cat == "documents":
+                block["guessed"] = True
+            st = srcs.get(page_word.get(cat, "")) if isinstance(srcs.get(page_word.get(cat, "")), dict) else None
+            if st and str(st.get("state") or "") in ("ok", "skipped", "refused", "failed"):
+                import connector_jobs as _cj
+                at = str(st.get("at") or "")
+                art = str(hub_address or "").strip()
+                block["approval"] = {"page": "granted" if st.get("state") == "ok" else "denied",
+                                     "seen_at": at if _cj.ISO_RE.match(at) else now,
+                                     "artifact": art if _cj.ARTIFACT_RE.match(art) else ""}
+            _put_job(row, block)
+            drafted.append(cat)
+    if drafted:
+        _write_entities(workspace_root, ent, holder)
+        for cat in drafted:
+            _job_event(workspace_root, JOB_DRAFTED_EVENT, cat, conn[cat][JOB_KEY], "migration")
+    return {"drafted": drafted, "kept": kept}
+
+
 __all__ = [
+    # cr1#1877 slice 0: the connector job record
+    "JOB_KEY", "JOB_STATES", "JOB_ORIGINS", "JOB_EXEMPT_ORIGINS", "JOB_CATEGORIES", "JOB_WORDS",
+    "WORK_ROLES", "JOB_PURPOSES", "REFUSED_KEY", "JOB_REFUSAL_LINES", "PAGE_NEEDS_APPROVAL",
+    "NOT_APPROVED_ON_PAGE_LINE", "JOB_SET_EVENT", "JOB_DRAFTED_EVENT",
+    "is_refused", "job_refusal", "foreign_run", "connector_job", "job_settings", "job_settings_all",
+    "connector_ids_raw", "connector_rows_raw", "page_approval", "set_connector_job", "draft_from_seat",
     # readers
     "accounts_surface",
     "SURFACE_CLAUSE_ON", "SURFACE_CLAUSE_OFF",

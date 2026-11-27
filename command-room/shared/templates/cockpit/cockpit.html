@@ -3759,7 +3759,7 @@
   function waitRow(c, line, cls) {
     var tag = c.applied ? '<span class="tag ' + (cls || "wait") + '">' + esc(line) + "</span>" : waitTag(c, line);
     // cr1#1591 review: one line, like the rows it waits to become
-    return '<div class="row one' + riseClass("w" + c.id) + '"><div class="main"><div class="title" title="' + esc(showTitle(c.title)) + '"><span class="tt">' + esc(showTitle(c.title)) + "</span>" + tag + "</div></div><div class=\"acts\">" + (c.applied ? "" : undoBtn(c)) + "</div></div>";
+    return '<div class="row one' + riseClass("w" + c.id) + '"><div class="main"><div class="title" title="' + esc(showTitle(c.title)) + '"><span class="tt">' + esc(showTitle(c.title)) + (typeof piHeldTag === "function" ? piHeldTag(c) : "") + "</span>" + tag + "</div></div><div class=\"acts\">" + (c.applied ? "" : undoBtn(c)) + "</div></div>";
   }
   function renderMine() {
     var m = S.mine, h = "", ids = {};
@@ -3809,7 +3809,7 @@
       : looksDoneBtn(cid) + '<button class="act primary" data-cact="' + (t.pending ? "confirm" : "done") + '" data-cid="' + esc(cid) + '">' + (t.pending ? "Confirm" : "Done") + "</button>";
     var last = typeof lastActionLine === "function" ? lastActionLine(t.last_action) : "";
     var more = (last ? '<div class="sub lastact">' + esc(last) + "</div>" : "") + '<div class="sub">' + esc([PRIO[pr] + " priority", t.due ? "due " + fmtDate(t.due) : ""].filter(Boolean).join(" · ")) + "</div>";
-    return '<div class="row one' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + (i * 60) + 'ms"><div class="main"><div class="title" title="' + esc(showTitle(t.title)) + '"><span class="tt">' + esc(showTitle(t.title)) + "</span>"
+    return '<div class="row one' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + (i * 60) + 'ms"><div class="main"><div class="title" title="' + esc(showTitle(t.title)) + '"><span class="tt">' + esc(showTitle(t.title)) + (typeof piHeldTag === "function" ? piHeldTag(t) : "") + "</span>"
       + (pr === 1 ? '<span class="tag">High</span>' : "") + tag + '</div><div class="slot">' + (!w && !shut && typeof slotHtml === "function" ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div>"
       + '<details class="rmore"><summary title="Later, Remind me, its priority, its date and its last action">More</summary>' + more
       + (w || shut ? "" : moveMenu({ n: cid, later: true, remind: true, move: t.project_id && (S.mine || {}).lanes_known === true ? { here: t.project || "", id: t.project_id, personal: !!t.personal_lane } : null, extra: '<button class="act" data-cact="drop" data-cid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>' })) + "</details></div>";
@@ -4156,7 +4156,7 @@
       + moveMenu({ n: id, later: true, remind: true, move: canMove ? mv : null, extra: '<button class="act" type="button" data-fx-dropit="' + esc(id) + '" title="Take this off your list without marking it done">Drop</button>'
         + (where === "focus" ? '<button class="act" type="button" data-fx-out="' + esc(id) + '" title="Take this out of Focus. Its due date does not change.">Remove from Focus</button>' : "") }) + "</details>" : "";
     var h = '<div class="row one fxrow" data-row="' + esc(id) + '" data-fx-row="' + esc(id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms">'
-      + '<div class="main"><div class="title">' + check + '<button type="button" class="tt linkish" data-fx-src="' + esc(id) + '" aria-expanded="' + (st.src === id ? "true" : "false") + '" title="Show where this came from">' + esc(showTitle(r.title)) + "</button>" + (mt && Number(mt.priority) === 1 ? '<span class="tag">High</span>' : "") + fxTags(r) + (r.waiting ? '<span class="tag wait">waiting to be saved</span>' : "") + (typeof remindTag === "function" ? remindTag(id) : "") + fxFailTag(id) + "</div>"
+      + '<div class="main"><div class="title">' + check + '<button type="button" class="tt linkish" data-fx-src="' + esc(id) + '" aria-expanded="' + (st.src === id ? "true" : "false") + '" title="Show where this came from">' + esc(showTitle(r.title)) + "</button>" + (typeof piHeldTag === "function" ? piHeldTag(r) : "") + (mt && Number(mt.priority) === 1 ? '<span class="tag">High</span>' : "") + fxTags(r) + (r.waiting ? '<span class="tag wait">waiting to be saved</span>' : "") + (typeof remindTag === "function" ? remindTag(id) : "") + fxFailTag(id) + "</div>"
       + (st.src === id ? fxSourceBox(r) : "") + (st.done === id ? fxDoneBox(id) : "")
       // More's Later and Remind me open their box here (onPlateAct, slotHtml)
       + '<div class="slot">' + (typeof slotHtml === "function" ? slotHtml(id) : "") + "</div>"
@@ -4457,7 +4457,7 @@
     var subParts = [r.project, r.context, (r.horizon === "past_due" || (r.horizon === "overdue" && "counted" in r && !r.counted)) ? "" : r.horizon];
     // cr1#1636 item 8: a closed row never says it is late or how long ago it was due
     if (shut) subParts = [r.project, String(r.context || "").split(" · ").filter(function (b) { return !/^\s*(overdue|late|past due|due\b)|\bago\s*$/i.test(b); }).join(" · ")];
-    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + esc(showTitle(r.title)) + (compact ? "" : originBox(r)) + tag + '</div><div class="sub">' + esc(plainSub(subParts)) + "</div>" + fold + (compact || typeof cCtxShown !== "function" ? "" : cCtxShown(cid)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + esc(showTitle(r.title)) + (typeof piHeldTag === "function" ? piHeldTag(r) : "") + (compact ? "" : originBox(r)) + tag + '</div><div class="sub">' + esc(plainSub(subParts)) + "</div>" + fold + (compact || typeof cCtxShown !== "function" ? "" : cCtxShown(cid)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
   }
   // A row's More: presses that would crowd the row, folded under one word.
   function moreFoldActs(acts) { return acts ? '<details class="more"><summary>More</summary>' + (acts.indexOf('class="mm"') >= 0 ? acts : '<div class="parts">' + acts + "</div>") + "</details>" : ""; }
@@ -4779,7 +4779,7 @@
     // apart: the note never reads "none" above lines the page drew.
     var total = plateTotal(p), held = plateHeld(p), guesses = openListCounts(p) ? (p.rows || []).filter(function (r) { return r.pending; }).length : 0;
     var note = held < total ? " · " + (held ? held + " shown here" : "none shown here") + (guesses ? (held ? ", plus " : ", only ") + guesses + " waiting for your yes" : "") + "; ask for the rest in a chat" : "";
-    $("platehead").innerHTML = '<div class="summary"><b>' + total + "</b> open" + note + (q ? " · " + rows.length + " match" : "") + "</div>";
+    $("platehead").innerHTML = '<div class="summary"><b>' + total + "</b> open" + note + (q ? " · " + rows.length + " match" : "") + "</div>" + piUnreadHtml();
     var LANE_ORDER = ["confirm", "do_it", "chase", "schedule", "wait", "parked"];
     var lanes = {}, order = [];
     rows.forEach(function (r) { var k = r.lane || "other"; if (!lanes[k]) { lanes[k] = []; order.push(k); } lanes[k].push(r); });
@@ -4831,7 +4831,7 @@
       + '<div class="sub">Each comes back on its own on its day.</div>';
     rows.innerHTML = list.map(function (r) {
       var who = r.mine ? "Yours" : "Check back" + (r.with ? " with " + r.with : "");
-      return '<div class="row one" data-later="' + esc(r.id) + '"><div class="main"><div class="title"><span class="tt">' + esc(showTitle(r.title)) + '</span></div><div class="sub">' + esc(who + " · back " + fmtDate(r.back)) + "</div></div></div>";
+      return '<div class="row one" data-later="' + esc(r.id) + '"><div class="main"><div class="title"><span class="tt">' + esc(showTitle(r.title)) + (typeof piHeldTag === "function" ? piHeldTag(r) : "") + '</span></div><div class="sub">' + esc(who + " · back " + fmtDate(r.back)) + "</div></div></div>";
     }).join("") || '<div class="quiet">Nothing is hidden by a Later.</div>';
   }
   // To confirm: every question Review held (renderReview draws them into this
@@ -5185,7 +5185,7 @@
     if (!local) return false;
     return reopenConfirmed(key, value) ? true : null;
   }
-  function offLimitsRule(addr) { addr = bareAddr(addr); return ((S.mailrules || {}).rules || []).filter(function (r) { return r.off_limits && r.mode === "hide" && r.match === "sender" && r.value === addr; })[0] || null; }
+  function offLimitsRule(addr) { addr = bareAddr(addr); return ((S.mailrules || {}).rules || []).filter(function (r) { return r.off_limits && r.mode === "hide" && r.match === "sender" && (r.value === addr || normOf(r.value) === normOf(addr)); })[0] || null; }   // cr1#1779
   function reopenConfirmed(key, value) {
     S.pendingReopen = S.pendingReopen || {};
     var first = S.pendingReopen[key];
@@ -6067,7 +6067,7 @@
   }
   function threadPanel(r) {
     var p = r.panel || {};
-    var nxt = r.next ? '<span class="cfind" role="link" tabindex="0" data-cfind="' + esc(r.next.title) + '">' + esc(showTitle(r.next.title)) + "</span>" + (r.next.due ? " · " + esc(fmtDate(r.next.due)) : "") + (r.next.overdue ? ' · <span class="late">late</span>' : "") + " " + fromWords("Commitment") : "";
+    var nxt = r.next ? '<span class="cfind" role="link" tabindex="0" data-cfind="' + esc(r.next.title) + '">' + esc(showTitle(r.next.title)) + (typeof piHeldTag === "function" ? piHeldTag(r.next) : "") + "</span>" + (r.next.due ? " · " + esc(fmtDate(r.next.due)) : "") + (r.next.overdue ? ' · <span class="late">late</span>' : "") + " " + fromWords("Commitment") : "";
     var h = panelSection("Where it stands", (p.stands || []).map(function (l) { return esc(showTitle(l.text)) + " " + fromWords(l.from, l.day); }))
       + panelSection("Next step", [nxt])
       + panelSection("People", (p.people || []).map(function (x) { return esc(x.name) + ' <span class="from">' + esc("on " + num(x.n) + (num(x.n) === 1 ? " item" : " items")) + "</span>"; }))
@@ -6095,7 +6095,7 @@
     var counts = r.open == null ? "" : num(r.open) ? num(r.open) + " open" + (num(r.overdue) ? ' · <span class="late">' + num(r.overdue) + " late</span>" : "") : "nothing open";
     var quiet = [esc(r.org), esc(ago(r.last_activity)), counts].filter(Boolean).join(" · ");
     var btn = num(r.open) ? '<button class="act primary" data-proj="' + esc(r.name) + '" title="Show the commitments on this ' + esc(word("thread")) + '">See commitments</button>' : "";
-    var nxt = r.next ? "Next: " + esc(showTitle(r.next.title)) + (r.next.due ? " · " + esc(fmtDate(r.next.due)) : "") + (r.next.overdue ? ' · <span class="late">late</span>' : "") : "";
+    var nxt = r.next ? "Next: " + esc(showTitle(r.next.title)) + (typeof piHeldTag === "function" ? piHeldTag(r.next) : "") + (r.next.due ? " · " + esc(fmtDate(r.next.due)) : "") + (r.next.overdue ? ' · <span class="late">late</span>' : "") : "";
     var who = r.contact ? "Main contact: " + esc(r.contact) : "";
     var stands = (r.stands || []).map(function (l) { return esc(showTitle(l.text)) + (l.day ? " · " + esc(fmtDate(l.day)) : ""); });
     var dec = r.last_decision ? "Last decision: " + esc(r.last_decision.text) + (r.last_decision.day ? " · " + esc(fmtDate(r.last_decision.day)) : "") : "";
@@ -6241,7 +6241,7 @@
     // pointer or a log row on the page.
     var src = r.source || {}, from = src.word ? fromWords(src.word) : "";
     var nh = noHomeActs(r);
-    return '<div class="row' + riseClass("nh" + r.id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms"><div class="main"><div class="title">' + esc(showTitle(r.title)) + nh.tag + '</div><div class="sub">' + quiet + "</div>"
+    return '<div class="row' + riseClass("nh" + r.id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms"><div class="main"><div class="title">' + esc(showTitle(r.title)) + (typeof piHeldTag === "function" ? piHeldTag(r) : "") + nh.tag + '</div><div class="sub">' + quiet + "</div>"
       + moreFold([r.waiting_for_yes ? "Waiting for your yes" : "", "No " + esc(word("thread")) + " yet: assign it to a " + esc(word("work_stream")) + ", or it stays here", onPlate ? "" : "To find it, ask for your loose ends in a chat", from]) + '</div><div class="acts">' + btn + nh.acts + "</div></div>";
   }
   // cr1#1645 item 3: the No home yet pile's one move (a work stream and
@@ -6332,6 +6332,7 @@
     return '<input type="date" class="when" data-eddue="' + esc(k) + '" aria-label="Due date" title="Change the date; the row keeps showing. Later hides a row until a day." value="' + esc(edDue()[k] || "") + '">';
   }
   function edActs(kind, n, current, due) {
+    if (kind === "commitment_edit" && typeof piHeld === "function" && piHeld(n)) return "";   // cr1#1867: its words are held
     // A row's Rename (or Edit wording): the newest press on the row while it
     // waits or stands, else the box while it is open, else the button.
     var last = edPresses(kind, n).sort(edNewest)[0], tag = "";
@@ -6600,6 +6601,35 @@
     var box = $("settingsguide"); if (box) box.innerHTML = '<details class="secfold guidefold" data-wrfold="set:buttons"' + (typeof wrFoldOpen === "function" && wrFoldOpen("set:buttons") ? " open" : "") + '><summary><h2 role="heading" aria-level="2">What the buttons do</h2></summary>' + guide + "</details>";
   }
   // ---- end of the seat's words ------------------------------------------
+  // ---- held item words (cr1#1867, owner ruling 149a, HOLD) --------------
+  // A promise or to-do whose own words name someone hidden keeps its row (Done, Later and Put in... still
+  // work, by id), but its words never reach the page: the builder sends "" with `title_held: true`, and the
+  // scrub below, run once where each feed is read, gives it "An item" wherever a title is read. It offers no
+  // Chase, no draft and no Edit (`piHeld`). When who is hidden could not be read, every item's words are
+  // held, and the feed says so (`titles_held: "unread"`), so the page says why.
+  var PI_WORDS = "An item", PI_TAG = "details held";
+  var PI_UNREAD_LINE = "Titles are held while your off-limits list cannot be read.";
+  var PI_FEEDS = ["plate", "focus", "allopen", "people", "projects", "board", "week", "review", "mine", "stillyours"];
+  function piHeldTag(r) { return r && r.title_held === true ? '<span class="tag">' + PI_TAG + "</span>" : ""; }
+  function piHeld(id) { return !!(S.piHeld && id != null && S.piHeld[String(id)]); }
+  function piScrub(doc) {
+    if (!doc || typeof doc !== "object") return doc;
+    if (!S.piHeld) S.piHeld = {};
+    var walk = function (o) {
+      if (Array.isArray(o)) { o.forEach(walk); return; }
+      if (!o || typeof o !== "object") return;
+      if (o.title_held === true) {
+        ["title", "statement", "summary"].forEach(function (k) { if (k in o) o[k] = PI_WORDS; });
+        if (o.id != null) S.piHeld[String(o.id)] = true;
+        ["chase", "chase_draft", "chase_note", "draft", "draft_offer"].forEach(function (k) { delete o[k]; });
+      }
+      for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k) && o[k] && typeof o[k] === "object") walk(o[k]);
+    };
+    walk(doc);
+    return doc;
+  }
+  function piUnread() { return PI_FEEDS.some(function (k) { return !!(S[k] && S[k].titles_held === "unread"); }); }
+  function piUnreadHtml() { return piUnread() ? '<div class="quiet piunread">' + esc(PI_UNREAD_LINE) + "</div>" : ""; }
   // ---- title_off (cr1#1833, decision 141n) --------------------------------
   // A meeting whose title names someone off limits (or whose title could not be
   // checked) carries `title_off` from the builder, on Today's rows, the past
@@ -7370,7 +7400,7 @@
     // cr1#775: where the question came from, so a project question reads beside the people from the same read.
     var sub = [r.reason, r.group === "close" ? "proposed close" : "", r.board ? "from " + String(r.board).replace(/-/g, " ") : ""].filter(Boolean).join(" · ");
     var ends = r.expires_on ? "If you do nothing by " + fmtDate(r.expires_on) + ", " + r.default_line + "." : "This one waits for your answer.";
-    return '<div class="row' + riseClass("v" + r.id) + '" style="animation-delay:' + ((i || 0) * 50) + 'ms" data-qrow="' + esc(r.id) + '"><div class="main"><div class="title">' + esc(showTitle(r.title)) + tag + "</div>"
+    return '<div class="row' + riseClass("v" + r.id) + '" style="animation-delay:' + ((i || 0) * 50) + 'ms" data-qrow="' + esc(r.id) + '"><div class="main"><div class="title">' + esc(showTitle(r.title)) + (typeof piHeldTag === "function" ? piHeldTag(r) : "") + tag + "</div>"
       + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + reviewDiff(r) + (lineText ? '<div class="sub">' + esc(lineText) + "</div>" : "") + '<div class="sub">' + esc(ends) + "</div>" + (r.chat_line ? '<div class="sub">' + esc(r.chat_line) + "</div>" : "") + ask + '</div><div class="acts">' + acts + "</div></div>";
   }
   function reviewClosed(shown) {
@@ -7637,6 +7667,7 @@
   // checked: the page's own check decides, and holds it when it cannot tell.
   function recWalled(it) {
     if (it.kind !== "prep") return false;
+    if (it.title_held === true) return true;   // decision 152d: the server held its words (cr1#1867)
     var m = it.meeting_id ? recCalMeeting(it.meeting_id, it.start) : null;
     if (m) return typeof toOff === "function" ? toOff(m) : false;
     return typeof toTitleWalled === "function" && toTitleWalled(it.title);
@@ -8250,7 +8281,7 @@
     }
     // cr1#1591 (Part A 8): the text shows two lines; More opens the rest of
     // it inline, with the menu. The card's state sits beside its press.
-    return '<div class="card' + (c.late ? " late" : "") + (shut ? " closed" : "") + (menu || ((w || shut) && full) ? " open" : "") + '" data-card="' + esc(cid) + '"><div class="ct" title="' + esc(showTitle(c.title)) + '">' + esc(showTitle(c.title)) + '</div><div class="cs">' + esc(sub) + '</div><div class="cacts">' + tag + acts + "</div>" + menu + "</div>";
+    return '<div class="card' + (c.late ? " late" : "") + (shut ? " closed" : "") + (menu || ((w || shut) && full) ? " open" : "") + '" data-card="' + esc(cid) + '"><div class="ct" title="' + esc(showTitle(c.title)) + '">' + esc(showTitle(c.title)) + (typeof piHeldTag === "function" ? piHeldTag(c) : "") + '</div><div class="cs">' + esc(sub) + '</div><div class="cacts">' + tag + acts + "</div>" + menu + "</div>";
   }
   function onBoardPress(btn) {
     var cid = btn.getAttribute("data-bcid") || btn.getAttribute("data-bmore");
@@ -9351,7 +9382,7 @@
     var c = syPress(r.id), age = num(r.age_days);
     var sub = [age ? age + " days old" : "", SY_DIR[r.direction] || "", r.due ? "due " + fmtDate(r.due) : ""].filter(Boolean).join(" · ");
     var acts = c ? syStateHtml(c) : ["keep", "done", "drop"].map(function (v) { return '<button class="act" type="button" data-sy="' + v + '" data-syid="' + esc(r.id) + '">' + SY_VERB[v] + "</button>"; }).join("");
-    return '<div class="row one" data-syrow="' + esc(r.id) + '"><div class="main"><div class="title"><span class="tt">' + esc(showTitle(r.title)) + '</span></div><div class="sub">' + esc(sub) + '</div></div><div class="acts">' + acts + "</div></div>";
+    return '<div class="row one" data-syrow="' + esc(r.id) + '"><div class="main"><div class="title"><span class="tt">' + esc(showTitle(r.title)) + (typeof piHeldTag === "function" ? piHeldTag(r) : "") + '</span></div><div class="sub">' + esc(sub) + '</div></div><div class="acts">' + acts + "</div></div>";
   }
   function syCount(pj) { return num(pj.n_ids != null ? pj.n_ids : (pj.ids || []).length); }
   // review round 1 of #1742 (MUST 2): what a project press leaves open, in words
@@ -12060,7 +12091,7 @@
     var c = (uxWaiting().filter(function (x) { return String(x.id) === String(S.ux.chase); }))[0], r = c ? uxPlateRow(c.id) : null, h = "";
     if (!c) h = '<div class="quiet">' + esc(UX_NO_CHASE_LINE) + "</div>";
     else {
-      h += '<div class="title">' + esc(showTitle(c.title)) + "</div>";
+      h += '<div class="title">' + esc(showTitle(c.title)) + (typeof piHeldTag === "function" ? piHeldTag(c) : "") + "</div>";
       if (r && r.chase) {
         var d = r.chase;
         // feed-shape audit (U1): a chase is the plate's template, written with no voice rules,
@@ -15412,7 +15443,7 @@
   function liveWallAt() { var p = liveWallPick(); return p ? p.at : ""; }
   // The wall itself. A mailbox the feed lists as walled is never asked for
   // and never shown; with no readable wall, every mailbox is walled.
-  function liveWalled(addr) { var w = liveWall(); if (!w || !w.ok) return true; return inList(w.walled, lowerOf(addr)); }
+  function liveWalled(addr) { var w = liveWall(); if (!w || !w.ok) return true; return inList(w.walled, lowerOf(addr)) || inList(w.walled, normOf(addr)); }   // cr1#1779
   // Off limits: by the sender's address, or by the full name on file when a
   // chat message carries no address. With no readable wall, everyone is.
   // Review round 1 of cr1#1771: a name is read with its accents folded off
@@ -15473,7 +15504,8 @@
     if (a.src === "chat" && !a.addr && anyOffLimits()) return false;
     return true;
   }
-  function liveOwn(addr, name) { var w = liveWall(); return !!(w && (inList(w.own, bareAddr(addr)) || inList(w.own_names, normOf(name)))); }
+  // cr1#1779: the address half also as the one wall fold reads it, both sides
+  function liveOwn(addr, name) { var w = liveWall(), a = normOf(bareAddr(addr)); return !!(w && (inList(w.own, bareAddr(addr)) || (!!a && (w.own || []).some(function (o) { return normOf(o) === a; })) || inList(w.own_names, normOf(name)))); }
   // What the page may ask the mail connector for: `{calls: [mailbox or ""]}`,
   // or `{off, line}` when it may ask for nothing.
   function liveMailPlan() {
@@ -16084,8 +16116,10 @@
     // rule on the sender wins. Rules by subject or by kind wait for the Inbox run.
     var rules = (S.mailrules || {}).rules || [], d = domainOf(a.addr), hide = false, show = false;
     rules.forEach(function (r) {
-      if (r.match === "sender" && r.value === a.addr) { if (r.mode === "show") show = true; else hide = true; }
-      else if (r.match === "domain" && r.value === d && r.mode === "hide") hide = true;
+      // cr1#1779: both sides as the one wall fold reads them (normOf): mail_rules stores a new rule folded,
+      // and a rule stored before it holds its raw value
+      if (r.match === "sender" && (r.value === a.addr || normOf(r.value) === normOf(a.addr))) { if (r.mode === "show") show = true; else hide = true; }
+      else if (r.match === "domain" && (r.value === d || normOf(r.value) === domainOf(normOf(a.addr))) && r.mode === "hide") hide = true;
     });
     return hide && !show;
   }
@@ -17010,13 +17044,49 @@ var pwVoice = (function () {
       if (!on) return Promise.resolve({ bad: "unknown" });
       list.push({ id: id, email: String(on.email || raw[i].email || "").trim().toLowerCase(), name: String(on.name || raw[i].name || "") });
     }
+    // train H fix (1812 x 1873, decision 152c): the address is checked as an address (its hash against the
+    // hidden list's), and its local part's words are screened as words EXCEPT those the recipient's own name
+    // covers when that name is a shown whole name ("Rio Sample <rio@...>"); a bare or unnamed address, or one
+    // whose name is not shown, keeps every word screened
+    function pwWords(v) { return typeof normOf === "function" ? normOf(String(v || "")).replace(/[^\p{L}\p{N}]+/gu, " ").trim() : ""; }
+    // review of cb5ae198c (should 1): the name as the server sets it aside, cut at its bracket (`_flat(_cut(n))`)
+    function pwOwnName(v) { return pwWords(String(v || "").split("(")[0]); }
+    // decision 152i: every run of two words or more in the WHOLE local part, for the hidden whole-name check that
+    // comes before the own-name exclusion ("Rio Sample" at rio.sample.jr@ meets "rio sample jr")
+    function pwLocalWins(p) {
+      var ws = pwWords(String(p.email || "").split("@")[0]).split(" ").filter(Boolean), out = [];
+      for (var i = 0; i < ws.length; i++) for (var n = 2; n <= 8 && i + n <= ws.length; n++) out.push(ws.slice(i, i + n).join(" "));
+      return out;
+    }
     var vals = [];
-    list.forEach(function (p) { if (p.email) vals.push(typeof bareAddr === "function" ? bareAddr(p.email) : p.email); if (p.name) vals.push(p.name); });
+    list.forEach(function (p) {
+      if (p.email) vals.push(typeof bareAddr === "function" ? bareAddr(p.email) : p.email);
+      if (p.name) { vals.push(p.name); vals.push(pwWords(p.name)); vals.push(pwOwnName(p.name)); }
+      vals = vals.concat(pwLocalWins(p));
+    });
     return hashAll(vals).then(function () {
       if (list.some(function (p) { return liveOffLimits(p.email, p.name); })) return { bad: "off_limits" };
-      return pwNamed(vd, list.map(function (p) { return p.name + " " + p.email; })).then(function (named) {
-        if (named === null) return { bad: "wall" };
-        return named ? { bad: "off_limits" } : { list: list };
+      var hd = pwList(vd);
+      if (!hd) return { bad: "wall" };
+      function has(l, v) { var h = HASHES[normOf(v)]; return !!h && (l || []).indexOf(h) >= 0; }
+      if (list.some(function (p) { return p.email && has(hd.emails, typeof bareAddr === "function" ? bareAddr(p.email) : p.email); }))
+        return { bad: "off_limits" };
+      // decision 152i: a hidden whole name anywhere in the local part holds FIRST, before any word is set aside
+      if (list.some(function (p) { return pwLocalWins(p).some(function (w) { return has(hd.whole, w); }); }))
+        return { bad: "off_limits" };
+      // review of cb5ae198c (must): each name and each local-part leftover is screened on its OWN, never
+      // joined, so words from two recipients, or a name and its own address, never read as one visible name
+      var texts = [];
+      list.forEach(function (p) {
+        var nw = pwOwnName(p.name), own = nw.indexOf(" ") > 0 && has(hd.shown, nw) ? nw.split(" ") : [];
+        var local = pwWords(String(p.email || "").split("@")[0]);
+        var rest = local ? local.split(" ").filter(function (w) { return own.indexOf(w) < 0; }) : [];
+        if (String(p.name || "").trim()) texts.push(String(p.name));
+        if (rest.length) texts.push(rest.join(" "));
+      });
+      return Promise.all(texts.map(function (t) { return pwNamed(vd, [t]); })).then(function (all) {
+        if (all.some(function (named) { return named === null; })) return { bad: "wall" };
+        return all.some(function (named) { return named; }) ? { bad: "off_limits" } : { list: list };
       });
     }, function () { return { bad: "wall" }; });
   }
@@ -17258,14 +17328,14 @@ var pwVoice = (function () {
       // One banner when the data stream ends, however many lists were listening.
       var errShown = false;
       var onErr = function (e) { statusReady = measureReady = true; if (errShown) return; errShown = true; banner("The page's data stream ended. Reload to reconnect.", true, errText(e)); };
-      ["today", "plate", "inbox", "projects"].forEach(function (k) { db.doc("feed/" + k).onSnapshot(function (snap) { S[k] = snap.exists ? snap.data() : null; if (k === "today") { S.todayFeed = S.today; calRefresh(); tlKick(); } else if (k === "plate") calRefresh(); if (!snap.metadata.fromCache) { dbReady = true; clearTimeout(loadTimer); } renderAll(); }, onErr); });
+      ["today", "plate", "inbox", "projects"].forEach(function (k) { db.doc("feed/" + k).onSnapshot(function (snap) { S[k] = snap.exists ? (k === "plate" || k === "projects" ? piScrub(snap.data()) : snap.data()) : null; if (k === "today") { S.todayFeed = S.today; calRefresh(); tlKick(); } else if (k === "plate") calRefresh(); if (!snap.metadata.fromCache) { dbReady = true; clearTimeout(loadTimer); } renderAll(); }, onErr); });
       db.collection("status").onSnapshot(function (snap) { var st = {}; snap.docs.forEach(function (d) { st[d.id] = d.data(); }); var prev = S.status.update, was = !!(prev && prev.state === "running"); S.status = st; var first = !statusReady; statusReady = true; renderLights(); maybeFireQueued(); if (first) applySoonEnsure(); else if (was && !(st.update && st.update.state === "running")) applySoonEnsure(prev.at || "0"); }, onErr);
       db.collection("choices").onSnapshot(function (snap) { S.choices = snap.docs.map(function (d) { return d.data(); }).filter(withinWindow); calRefresh(); renderAll(); if (!choicesReady) { choicesReady = true; applySoonEnsure(); } }, onErr);
       db.doc("feed/brief").onSnapshot(function (snap) { S.brief = snap.exists ? snap.data() : null; renderBriefTab(); }, onErr);
-      db.doc("feed/week").onSnapshot(function (snap) { S.week = snap.exists ? snap.data() : null; renderWeek(); }, onErr);
-      db.doc("feed/review").onSnapshot(function (snap) { S.review = snap.exists ? snap.data() : null; renderReview(); renderBrief(); }, onErr);
+      db.doc("feed/week").onSnapshot(function (snap) { S.week = snap.exists ? piScrub(snap.data()) : null; renderWeek(); }, onErr);
+      db.doc("feed/review").onSnapshot(function (snap) { S.review = snap.exists ? piScrub(snap.data()) : null; renderReview(); renderBrief(); }, onErr);
       db.doc("feed/settings").onSnapshot(function (snap) { S.settings = snap.exists ? snap.data() : null; renderSettings(); renderUpdate(); if (typeof renderHubHead === "function") renderHubHead(); }, onErr);
-      db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? snap.data() : null; S.mineErr = false; renderToday(); }, function (e) { S.mineErr = true; renderToday(); onErr(e); });
+      db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? piScrub(snap.data()) : null; S.mineErr = false; renderToday(); }, function (e) { S.mineErr = true; renderToday(); onErr(e); });
       db.doc("feed/mail_rules").onSnapshot(function (snap) { S.mailrules = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); if (typeof toWallMoved === "function") toWallMoved(); }, onErr);
       // cr1#1765: the off-limits wall on its own, and what set-up asked of each live source
       db.doc("feed/wall").onSnapshot(function (snap) { S.wall = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); if (typeof toWallMoved === "function") toWallMoved(); }, onErr);
@@ -17279,18 +17349,18 @@ var pwVoice = (function () {
       }, function (e) { S.livesrcReady = false; renderLiveSetup(); onErr(e);
         // ...and a document that stops being readable takes the layer down at once.
         if (CALLIVE && CALLIVE.via) tlCheck(); });
-      db.doc("feed/people").onSnapshot(function (snap) { S.people = snap.exists ? snap.data() : null; renderPeople(); renderInboxLive(); if (S.tlive.layers.calendar) tlShow(); }, onErr);
+      db.doc("feed/people").onSnapshot(function (snap) { S.people = snap.exists ? piScrub(snap.data()) : null; renderPeople(); renderInboxLive(); if (S.tlive.layers.calendar) tlShow(); }, onErr);
       // cr1#1758: the "Prep this one" presses and what the Prep run said of each
       db.doc("config/prep_one").onSnapshot(function (snap) { S.prepOne = snap.exists ? snap.data() : null; renderToday(); }, onErr);
       // cr1#1788: the Prep page's own edits, laid over each meeting's prep
       db.doc("feed/prepx").onSnapshot(function (snap) { S.prepx = snap.exists ? snap.data() : null; S.prepxReady = true; if (S.meetOpen && typeof renderMeetView === "function") renderMeetView(); }, function (e) { S.prepxReady = true; onErr(e); });
-      db.doc("feed/board").onSnapshot(function (snap) { S.board = snap.exists ? snap.data() : null; renderBoard(); if (typeof renderCalParts === "function") renderCalParts(); if (typeof renderComing === "function") renderComing(); }, onErr);
+      db.doc("feed/board").onSnapshot(function (snap) { S.board = snap.exists ? piScrub(snap.data()) : null; renderBoard(); if (typeof renderCalParts === "function") renderCalParts(); if (typeof renderComing === "function") renderComing(); }, onErr);
       // cr1#1745: the follow-ups waiting on the wrap-up page, their words in this doc only
       db.doc("feed/followups").onSnapshot(function (snap) { S.followups = snap.exists ? snap.data() : null; if (typeof renderWrapView === "function") renderWrapView(); if (typeof renderPast === "function" && S.today) renderTodayParts(); }, onErr);
       // cr1#1706: the Still yours? review's own small doc
-      db.doc("feed/stillyours").onSnapshot(function (snap) { S.stillyours = snap.exists ? snap.data() : null; if (S.wk) renderStillYours(); }, onErr);
+      db.doc("feed/stillyours").onSnapshot(function (snap) { S.stillyours = snap.exists ? piScrub(snap.data()) : null; if (S.wk) renderStillYours(); }, onErr);
       // cr1#1784 part A: the new sections' documents, one snapshot each; a missing one is null and draws nothing
-      ["focus", "urgent", "pfollow", "allopen"].forEach(function (k) { db.doc("feed/" + k).onSnapshot(function (snap) { S[k] = snap.exists ? snap.data() : null; renderTodayParts(); }, onErr); });
+      ["focus", "urgent", "pfollow", "allopen"].forEach(function (k) { db.doc("feed/" + k).onSnapshot(function (snap) { S[k] = snap.exists ? piScrub(snap.data()) : null; renderTodayParts(); }, onErr); });
       // cr1#1017: the page's own measure, the last seven days of it; this load is one open.
       var since = new Date(); since.setDate(since.getDate() - MEASURE_DAYS);
       db.collection("measure").where("day", ">=", measureDay(since)).onSnapshot(function (snap) { var m = {}; snap.docs.forEach(function (d) { var x = d.data(); m[x.day || d.id] = x; }); S.measure = m; measureReady = true; renderMeasure(); renderLights(); }, onErr);

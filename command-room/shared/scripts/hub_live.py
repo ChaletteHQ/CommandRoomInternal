@@ -40,13 +40,14 @@ import hashlib
 import json
 import re
 import sys
-import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
+
+import wall_text  # noqa: E402 - cr1#1779: the one wall fold
 
 #: Said on the page when the wall could not be read (fail closed).
 UNREADABLE_LINE = ("New mail is not listed here, because your account "
@@ -76,9 +77,9 @@ def _norm(value: Any) -> str:
     `_plain`, with accents folded off their letters (NFKD, every mark
     dropped) and characters that print nothing (zero-width and other format
     characters) taken out, so neither can disguise or split a name. The
-    page's `normOf` reads a value the same way before it hashes it."""
-    t = unicodedata.normalize("NFKD", str(value or ""))
-    return _plain("".join(c for c in t if unicodedata.category(c)[0] != "M" and unicodedata.category(c) != "Cf"))
+    page's `normOf` reads a value the same way before it hashes it.
+    cr1#1779: the one wall fold, `wall_text.fold`."""
+    return wall_text.fold(value)
 
 
 def digest(value: Any) -> str:

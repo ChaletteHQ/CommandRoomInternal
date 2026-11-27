@@ -51,6 +51,19 @@ class ToolDescriptor:
     description: str = ""  # human-friendly description from the manifest
 
 
+def _is_refused(declared) -> bool:
+    """cr1#1877: a declared row the job record refuses (`connector_config.
+    is_refused`). Asked BEFORE every `declared.get("server_id")` guard, so a
+    refusal is never read as "nothing declared" and never falls back to name
+    matching or fingerprints."""
+    return isinstance(declared, dict) and declared.get("refused") is True
+
+
+def _refused_result(declared, candidates: int):
+    return DiscoveryResult(tool_id=None, reason=str(declared.get("line") or "This connector is refused."),
+                           candidates_considered=candidates)
+
+
 @dataclass
 class DiscoveryResult:
     """Outcome of a discovery call. tool_id present = matched; None = no match
@@ -444,6 +457,9 @@ def discover_calendar_tool(
     """
     tools_list = _as_tool_descriptors(tools)
 
+    refused = _refused_result(declared, len(tools_list)) if _is_refused(declared) else None
+    if refused is not None:
+        return refused
     if declared and declared.get("server_id"):
         # The same unconditional `return` the mail and chat seams carry: on a
         # miss the caller gets the declared backend's own refusal, not another
@@ -1161,6 +1177,9 @@ def _discover_mail_tool(
     # The `return res` on a MISS is the whole fix. The one addition mail needs
     # is `op_candidates`: chat resolves one operation name per backend, mail
     # does not (see `discover_for_category`).
+    refused = _refused_result(declared, len(tools_list)) if _is_refused(declared) else None
+    if refused is not None:
+        return refused
     if declared and declared.get("server_id"):
         res = discover_for_category(
             "email", operation, tools_list,
@@ -1553,6 +1572,9 @@ def discover_chat_tool(
     """
     tools_list = list(tools)
 
+    refused = _refused_result(declared, len(tools_list)) if _is_refused(declared) else None
+    if refused is not None:
+        return refused
     if declared and declared.get("server_id"):
         res = discover_for_category("chat", operation, tools_list,
                                     declared=declared, zapier_ids=zapier_ids)
@@ -1848,6 +1870,9 @@ def discover_for_category(
     is unchanged. Omitted (the default) = today's behavior, and the intent
     route below still owns the compiled search verbs."""
     tools_list = list(tools)
+    refused = _refused_result(declared, len(tools_list)) if _is_refused(declared) else None
+    if refused is not None:
+        return refused
     zap = zapier_servers(tools_list, zapier_ids)
     if declared and declared.get("server_id"):
         sid = declared["server_id"]

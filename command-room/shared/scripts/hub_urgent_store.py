@@ -36,6 +36,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+import wall_text  # cr1#1779: the one wall fold
+
 STORE_REL = Path("_hq") / "data" / "hub-urgent-items.json"
 #: The most items kept from one inbox read.
 MAX_ITEMS = 60
@@ -60,11 +62,14 @@ def walled(item: Dict[str, Any], wall: Optional[Dict[str, Any]]) -> bool:
     answers it; None (unreadable) walls everything."""
     if wall is None:
         return True
+    # cr1#1779: both sides read through the one wall fold, so an accent or a
+    # character that prints nothing does not slip a name or an address past it
     addr = _low(item.get("sender_email") or item.get("sender"))
-    if addr and addr in (wall.get("addrs") or ()):
+    addrs = wall.get("addrs") or ()
+    if addr and (addr in addrs or wall_text.fold(addr) in addrs or wall_text.address(addr) in addrs):
         return True
-    words = " " + _name_words(" ".join(str(item.get(k) or "") for k in ("sender_name", "subject"))) + " "
-    return any(n and (" " + _name_words(n) + " ") in words for n in (wall.get("names") or ()))
+    words = " " + _name_words(wall_text.fold(" ".join(str(item.get(k) or "") for k in ("sender_name", "subject")))) + " "
+    return any(n and (" " + _name_words(wall_text.fold(n)) + " ") in words for n in (wall.get("names") or ()))
 
 
 def _name_words(text: Any) -> str:

@@ -63,10 +63,11 @@ CARRY_LINE = "{n} carried to the next brief."
 NO_CARRY_LINE = "Nothing is left to carry."
 NO_PERSON_LINE = ("The answers stay with the meeting: it is not clear which one person said them, "
                   "so none was added to a person.")
-WALLED_LINE = ("Someone on this meeting is off limits, so the answers and what is left were not saved; "
-               "your decisions were.")
-WALL_UNREAD_LINE = ("The off-limits list could not be read, so the answers and what is left were not saved; "
-                    "your decisions were.")
+#: cr1#1874: a personal tie on the meeting walls it as an off-limits attendee does (decision 68, 147n).
+WALLED_LINE = ("Someone on this meeting is off limits or on your personal side, so the answers and what is left "
+               "were not saved; your decisions were.")
+WALL_UNREAD_LINE = ("Who is off limits or on your personal side could not be read, so the answers and what is left "
+                    "were not saved; your decisions were.")
 #: cr1#1858: an answer whose words name someone who cannot be named here (or whose words could not be checked)
 ANSWER_HELD_LINE = ("{n} named someone who cannot be named here, or could not be checked, so {it} saved as asked, "
                     "without the answer.")
@@ -117,6 +118,19 @@ def _saves(evs: List[dict]) -> List[dict]:
 #: `failed` marker carry it, frozen so a later change to UNDO_FAILED_LINE
 #: never makes an older failed row read as a take-back that held.
 _OLD_UNDO_FAILED = "The save for {title} could not be taken back in full;"
+
+
+def _said_title(root: Path, title: str) -> str:
+    """cr1#1867 (owner ruling 149a): a meeting's title as a line read back from the book may say it: "the
+    meeting" when it names someone hidden now (the drafts' screen in title mode) or when that cannot be
+    told. A title saved before someone was put off limits is judged as it is read, not as it was written."""
+    try:
+        import followup_draft as fd
+
+        hw = fd.hidden_words(root)
+        return "the meeting" if fd.title_hidden(title, hw) else title
+    except Exception:  # noqa: BLE001 - fail closed
+        return "the meeting"
 
 
 def _undo_failed(d: dict) -> bool:
@@ -368,11 +382,14 @@ def _save(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
     if title_held:
         held += 1
         title = "a meeting"   # the words built from it say no more; the row keeps no title
-    off = _off_limits(root)
+    # cr1#1874: the fence is the Hub's personal fence too (decision 68, 147n): off limits or a personal tie.
+    # Either list unreadable is unknown, never "nobody": walled.
+    off, ties = _off_limits(root), _tie_ids(root)
+    hidden = None if off is None or ties is None else off | {str(t) for t in ties}
     # the people come from the occurrence's own brief, never from the page
     on_it = _attendees(evs, meeting_id, start, owner=str(actor or ""), tz=tz)
-    people = [p for p in on_it if off is not None and p not in off]
-    walled = off is None or len(people) < len(on_it)
+    people = [p for p in on_it if hidden is not None and p not in hidden]
+    walled = hidden is None or len(people) < len(on_it)
     picks = [{"q": _clean(d.get("q")), "pick": _clean(d.get("pick"), 120)}
              for d in _list(inp.get("decide")) if isinstance(d, dict) and _clean(d.get("q")) and _clean(d.get("pick"))]
     n_picks = len(picks)
@@ -493,7 +510,7 @@ def _save(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
                                               it="its question was" if held_answers == 1 else "their questions were")
     if held:
         line += " " + HELD_LINE.format(n=_n(held, "note", "notes"), it="it was" if held == 1 else "they were")
-    if off is None:
+    if hidden is None:
         line += " " + WALL_UNREAD_LINE
     elif walled:
         line += " " + WALLED_LINE
@@ -521,7 +538,7 @@ def _undo(root: Path, press_id: str, undo_id: str, actor: str, saves: List[dict]
     if press_id in _undone(saves, gone):
         return {"outcome": "already", "line": UNDONE_LINE}
     d = press["data"]
-    title = str(d.get("title") or "the meeting")
+    title = _said_title(root, str(d.get("title") or "the meeting"))   # cr1#1867: as it is read now
     failed = False
     kept = len(d.get("decisions") or [])
     by_seq = {int(e["seq"]): str((e.get("data") or {}).get("person_id") or "") for e in evs
@@ -601,10 +618,23 @@ def carried_points(workspace_root, person_ids: Optional[List[str]] = None) -> Di
         return {"lines": [], "n": 0}
     # review round 2, should 5: the wall as it stands now. A person put off
     # limits since a save carries nothing of it; an unread wall carries nothing.
-    off = _off_limits(root)
-    if off is None:
+    # cr1#1874: a personal tie is fenced the same way; either list unread carries nothing
+    off, ties = _off_limits(root), _tie_ids(root)
+    if off is None or ties is None:
         return {"lines": [], "n": 0}
+    off = off | {str(t) for t in ties}
     want -= off
+    # cr1#1867 (owner ruling 149a): what was carried is judged as it is read, by the drafts' screen in title
+    # mode: a point that names someone hidden now carries nothing, and a title that does is not named as where
+    # it came from; when that cannot be told, nothing is carried
+    try:
+        import followup_draft as fd
+
+        hw = fd.hidden_words(root)
+    except Exception:  # noqa: BLE001
+        hw = None
+    if hw is None:
+        return {"lines": [], "n": 0}
     undone = _undone(saves, _retracted(evs))
     live = [e for e in saves if not e["data"].get("undoes_choice") and str(e["data"].get("hub_choice")) not in undone
             and want & {str(p) for p in e["data"].get("person_ids") or []}
@@ -614,8 +644,10 @@ def carried_points(workspace_root, person_ids: Optional[List[str]] = None) -> Di
         d = e["data"]
         later_done = {_point(x) for f in live[i + 1:] for x in (f["data"].get("covered") or [])}
         day = str(d.get("start") or e.get("ts") or "")[:10]
-        per_save.append([{"text": str(text), "from": str(d.get("title") or ""), "day": day}
-                         for text in d.get("carried") or [] if _point(text) not in later_done])
+        said_from = "" if fd.title_hidden(str(d.get("title") or ""), hw) else str(d.get("title") or "")
+        per_save.append([{"text": str(text), "from": said_from, "day": day}
+                         for text in d.get("carried") or [] if _point(text) not in later_done
+                         and not fd.title_hidden(str(text), hw)])
     # newest save first, each save's points in its own order
     out = [ln for lines in reversed(per_save) for ln in lines]
     return {"lines": out[:CARRIED_CAP], "n": len(out)}
@@ -986,7 +1018,8 @@ def _off_words(root: Path, off: Any) -> Optional[Dict[str, Any]]:
     except Exception:  # noqa: BLE001 - unread: fail closed
         return None
     return {"names": {f for f in (fd._flat(n) for n in names) if f} | rule["last"],
-            "shown": {f for f in (fd._flat(n) for n in shown - full) if f}, "emails": mails | rule_mails,
+            # cr1#1873: two words or more only, as the drafts' own `shown`
+            "shown": fd._whole_shown(shown - full), "emails": mails | rule_mails,
             "cased": rule["cased"], "whole": rule["whole"], "own": rule["own"], "shared": rule["shared"]}
 
 
@@ -1592,7 +1625,7 @@ def _unwrap(root: Path, press_id: str, undo_id: str, actor: str, evs: List[dict]
     if any(str(e["data"].get("undoes_choice")) == press_id for e in rows):
         return {"outcome": "already", "line": WRAP_UNDONE_LINE}
     d = press["data"]
-    title = str(d.get("title") or "the meeting")
+    title = _said_title(root, str(d.get("title") or "the meeting"))   # cr1#1867: as it is read now
     kept = 0
     for w in reversed(d.get("wrote") or []):
         try:

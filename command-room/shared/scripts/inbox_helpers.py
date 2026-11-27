@@ -398,6 +398,12 @@ def _drift_answer(workspace_root: str, category: str, descriptors,
         return None
     candidates = list(drift.get("candidates") or [])
     one = drift.get("candidate_server_id")
+    if one:
+        # cr1#1877 (fix-check MUST 1): a scheduled fire foreign to the declared
+        # writer adopts no alias; it skips and flags like a zero-match fire.
+        import connector_config as _cc
+        if _cc.foreign_run(workspace_root):
+            one = None
     data: Dict[str, Any] = {
         "category": category,
         "declared_server_id": declared.get("server_id"),
@@ -487,8 +493,13 @@ def mail_seams(workspace_root: str,
         # was given.
         declared_mail = connector_config.declared_backend("email", workspace_root)
         declared_cal = connector_config.declared_backend("calendar", workspace_root)
+        # cr1#1877 (151b): the seams that send, draft, label or change the
+        # calendar read the jobs for WRITE, so a chat-set job with no Hub test
+        # resolves none of them; search, thread and find stay reads.
+        write_mail = connector_config.declared_backend("email", workspace_root, purpose="write")
+        write_cal = connector_config.declared_backend("calendar", workspace_root, purpose="write")
     except Exception:  # noqa: BLE001 — nothing declared is a supported state
-        declared_mail = declared_cal = None
+        declared_mail = declared_cal = write_mail = write_cal = None
 
     descriptors = [
         ToolDescriptor(tool_id=t.get("name") or t.get("tool_id") or "",
@@ -516,12 +527,15 @@ def mail_seams(workspace_root: str,
             use_mail = drift["email"]["declared_for_ops"]
         if (drift.get("calendar") or {}).get("declared_for_ops"):
             use_cal = drift["calendar"]["declared_for_ops"]
+    import connector_config as _cc
     for op in ("search", "draft", "send", "thread", "label"):
-        out["email"][op] = _seam(_declared_seam(discover_for_category, use_mail),
-                                 "email", op, descriptors, use_mail)
+        use = write_mail if (op not in _READ_SEAM_OPS["email"] and _cc.is_refused(write_mail)) else use_mail
+        out["email"][op] = _seam(_declared_seam(discover_for_category, use),
+                                 "email", op, descriptors, use)
     for op in ("respond", "find", "create", "update"):
-        out["calendar"][op] = _seam(_declared_seam(discover_for_category, use_cal),
-                                    "calendar", op, descriptors, use_cal)
+        use = write_cal if (op not in _READ_SEAM_OPS["calendar"] and _cc.is_refused(write_cal)) else use_cal
+        out["calendar"][op] = _seam(_declared_seam(discover_for_category, use),
+                                    "calendar", op, descriptors, use)
     if drift:
         for category, answer in drift.items():
             for seam in out[category].values():
@@ -594,13 +608,24 @@ _MAIL_SEAM_FNS = {"search": "discover_mail_search_tool",
                   "draft": "discover_mail_draft_tool",
                   "send": "discover_mail_send_tool",
                   "thread": "discover_mail_thread_fetch_tool"}
+#: cr1#1877: the seams that only read; every other seam reads its job for write.
+_READ_SEAM_OPS = {"email": ("search", "thread"), "calendar": ("find",)}
 _CALENDAR_SEAM_OPS = {"respond": "respond_to_event", "find": "find_events",
                       "create": "create_event", "update": "update_event"}
 
 
 def _declared_seam(fallback, declared):
     """The resolver for one seam: the named, vocabulary-aware seam when a
-    backend is declared, today's category call otherwise."""
+    backend is declared, today's category call otherwise. A refused job
+    (cr1#1877) resolves nothing, with its line: never today's category call."""
+    import connector_config as _cc
+    if _cc.is_refused(declared):
+        import tool_discovery as td
+
+        def refuse(category, op, descriptors, declared=None):
+            return td._refused_result(_refusal, len(list(descriptors or [])))
+        _refusal = declared
+        return refuse
     if not (isinstance(declared, dict) and declared.get("server_id")):
         return fallback
     import tool_discovery as td
@@ -1532,7 +1557,9 @@ def fetch_plan_and_line(workspace_root: str,
         import connector_config as cc
 
         records = cc.accounts(workspace_root)
-        mail = cc.declared_backend("email", entities=cc.load_entities(workspace_root))
+        # cr1#1877 (fix-check MUST 3): a wall, so it reads the row RAW: a
+        # personal mail row refused as a work job is still personal here.
+        mail = cc.connector_ids_raw("email", entities=cc.load_entities(workspace_root))
     except Exception:  # noqa: BLE001 - fail closed (cr1#664)
         return [], ACCOUNTS_UNREADABLE_LINE
     if _is_personal(mail):
@@ -1620,11 +1647,17 @@ def connector_discovery_queries(workspace_root: str) -> List[str]:
     (cr1#941), else the fallback provider names. Derived from the
     declaration, so a re-declared connector changes the step by itself."""
     out: List[str] = []
+    refused = False
     try:
         import connector_config as cc
 
         for category in CONNECTOR_DISCOVERY_CATEGORIES:
             row = cc.declared_backend(category, entities=cc.load_entities(workspace_root))
+            if cc.is_refused(row):
+                # cr1#1877: a refused job is never searched for, and never
+                # replaced by the fallback product names
+                refused = True
+                continue
             label = str((row or {}).get("label") or "").split(" (")[0].strip()
             tools = _provider_tool_query(str((row or {}).get("provider") or ""))
             for query in (label, tools):
@@ -1632,7 +1665,7 @@ def connector_discovery_queries(workspace_root: str) -> List[str]:
                     out.append(query)
     except Exception:  # noqa: BLE001 - an unreadable declaration falls back
         out = []
-    return out or list(CONNECTOR_DISCOVERY_QUERIES)
+    return out or ([] if refused else list(CONNECTOR_DISCOVERY_QUERIES))
 
 
 def connector_discovery_step(workspace_root: str) -> Dict[str, Any]:

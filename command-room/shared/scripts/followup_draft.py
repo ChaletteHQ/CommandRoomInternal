@@ -90,9 +90,10 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
-import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import wall_text  # cr1#1779: the one wall fold
 
 EVENT = "followup_draft"
 #: cr1#1787 part C (coordinator, GAP 2): a meeting whose drafting was held
@@ -307,9 +308,8 @@ def _plain(text: Any) -> str:
     Fix check at 051b0c01b (must 2): every mark is dropped (category M),
     spacing marks too (an Indic vowel sign has no combining class), as
     `hub_live._norm` and the page's `normOf` drop them, so a name is read the
-    same on both sides."""
-    t = unicodedata.normalize("NFKD", str(text or ""))
-    return "".join(c for c in t if unicodedata.category(c)[0] != "M" and unicodedata.category(c) != "Cf")
+    same on both sides. cr1#1779: that is the one wall fold's `strip`."""
+    return wall_text.strip(text)
 
 
 def _flat(text: Any) -> str:
@@ -404,6 +404,20 @@ def _cut(name: Any) -> str:
     return str(name or "").split("(", 1)[0].strip()
 
 
+def _whole_shown(names: Any) -> set:
+    """cr1#1873: the whole names set aside before a screen matches: each
+    name up to an opening bracket (`_cut`: "Cy Vane (Example Co)" is "cy
+    vane"), folded, and kept only when it has two or more words that are not
+    a title ("Mr. Walbridge" is one word, a surname, and is never set aside:
+    it would set aside a hidden person's surname). Pure."""
+    out = set()
+    for n in names or ():
+        f = _flat(_cut(n))
+        if len([w for w in f.split() if w not in NAME_TITLES]) >= 2:
+            out.add(f)
+    return out
+
+
 def _surname_names(rec: Dict[str, Any]) -> List[str]:
     """cr1#1846 (coordinator decision, review of a386dda2c): the only fields a
     last name comes from: the record's own name and its second name field,
@@ -472,7 +486,10 @@ def hidden_words(workspace_root) -> Optional[Dict[str, Any]]:
     # the recorder and the page's hashed list agree
     names = {n for n in names if n not in NAME_TITLES or n in real}
     return {"names": names | last,
-            "shown": {f for f in (_flat(n) for n in hp.get("shown_full") or ()) if f},
+            # cr1#1873: only a visible person's whole name of two words or more is set aside (as `own`): a one-word
+            # alias ("Lee") would set aside a hidden person's surname or first name written the same way
+            # the addendum of #1873: brackets off, and a title is not a word of the name
+            "shown": _whole_shown(hp.get("shown_full") or ()),
             "emails": mails,
             "own": rule["own"],
             "cased": cased,
@@ -500,8 +517,9 @@ def _cased_hits(texts: List[Any], hw: Dict[str, Any], *, title: bool = False) ->
     are set aside. Pure.
 
     `title` (cr1#1862): a title opens no sentence ("Baker invoice"), so there
-    a capitalised one holds at any position, first included. Prose (the
-    default) is unchanged."""
+    a capitalised one holds at any position, first included. In prose it
+    holds only when not first in its sentence. A word in capitals counts as
+    capitalised in both (147r for titles; cr1#1873 for prose)."""
     import re
 
     raw = " | ".join(_plain(t) for t in texts)
@@ -511,8 +529,9 @@ def _cased_hits(texts: List[Any], hw: Dict[str, Any], *, title: bool = False) ->
             raw = re.sub(r"(?i)(?<!\w)" + r"\W+".join(words) + r"(?!\w)", " ", raw)
     hits = []
     for w in sorted(hw.get("cased") or ()):
-        # decision 147r: in a title a word in capitals is written capitalised too ("BROWN INVOICE")
-        form = (r"(?:" + re.escape(w.capitalize()) + r"|" + re.escape(w.upper()) + r")") if title else re.escape(w.capitalize())
+        # decision 147r: a word in capitals is written capitalised too ("BROWN INVOICE"); cr1#1873: in prose as
+        # well as in a title, where the sentence-position rule below still holds
+        form = r"(?:" + re.escape(w.capitalize()) + r"|" + re.escape(w.upper()) + r")"
         for m in re.finditer(r"(?<![\w])" + form + r"(?![\w])", raw):
             if title:
                 hits.append(w)
