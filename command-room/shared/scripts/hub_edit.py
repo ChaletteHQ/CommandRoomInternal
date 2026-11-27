@@ -180,7 +180,10 @@ COMMIT_NOTE_REASON = "Note taken back on the Command Room Hub"
 #: been put back, and it still stands in the way.
 COMMIT_NOTE_STALE_LINE = ("{name} had other changes after this note, so the note was left as it is; "
                           "nothing was written.")
-FAILED_LINE = "{name} could not be written; nothing changed. Try again, or say it in a chat."
+#: cr1#1864 (147s): caught as a ValueError, which includes the event gate's
+#: EventGateError, raised after the record was saved (`set_person_field`,
+#: `create_objective`, `update_objective`): the line never says nothing changed.
+FAILED_LINE = "{name} could not be confirmed just now; the item shows whether it changed."
 NEEDS_VALUE_LINE = "Type the {what}; nothing was written. To clear it, say so in a chat."
 NO_FIELD_LINE = "That is not something the Hub edits on a person; nothing was written."
 NO_COMPANY_LINE = "{value} is not a company on file; nothing was written. Add it in a chat first."
@@ -197,6 +200,13 @@ UNDO_NEWER_LINE = "{name} was changed again on the Hub after this, so this was l
 UNDO_CHANGED_LINE = "{name} has changed since, so it was left as it is; nothing was written."
 UNDO_IN_USE_LINE = "{name} has other work on it now, so it stays; nothing was written."
 UNDO_FAILED_LINE = "{name} could not be put back; nothing was written. Try again, or say undo in a chat."
+#: cr1#1864 (147s): an Undo whose writer may have put back part of it before it
+#: raised or reported an error (a stream and its threads archived one by one, a
+#: batch undo with errors, words after a due date, a thread saved before its
+#: log row, a reverser): the line never says nothing was written. UNDO_FAILED_LINE
+#: stays only where nothing can have been written (a refusal before any write,
+#: or the one `_record` row, a single atomic append that lands whole or not at all).
+UNDO_UNCONFIRMED_LINE = "{name} could not be confirmed as put back just now; the item shows whether it changed."
 
 #: Add context (cr1#1383). The note as kept, and the lines.
 CONTEXT_CAP = 200
@@ -819,10 +829,10 @@ def _undo(root: Path, kind: str, press_id: str, undo_id: str, actor: str, evs: L
     before = _max_seq(evs)
     try:
         line = _put_back(root, kind, pd, tid, rec, actor)
-    except Exception:  # noqa: BLE001 - nothing claimed; the item stays as it is, and says so
-        return _no(UNDO_FAILED_LINE.format(name=now_value or name), "error")
-    if line is None:
-        return _no(UNDO_FAILED_LINE.format(name=now_value or name), "error")
+    except Exception:  # noqa: BLE001 - cr1#1864: part may have been put back first
+        return _no(UNDO_UNCONFIRMED_LINE.format(name=now_value or name), "error")
+    if line is None:  # a batch undo that undid none, or some with errors
+        return _no(UNDO_UNCONFIRMED_LINE.format(name=now_value or name), "error")
     ev = _record(root, before, {"hub_choice": undo_id, "kind": kind, "action": "undo", "target_id": tid,
                                 "undoes_choice": press_id, "line": line}, ids=ids)
     return _ok(line, target_id=tid, seq=ev.get("seq"))
@@ -1183,8 +1193,8 @@ def _commit_undo(root: Path, press_id: str, undo_id: str, actor: str, evs: List[
             # showed its summary reads exactly as before.
             cs.edit_commitment_wording(str(root), cid, edited_by=actor, source_skill=UNDO_SOURCE,
                                        new_title=old, reason=COMMIT_UNDO_REASON)
-        except ValueError:
-            return _no(UNDO_FAILED_LINE.format(name=now_value), "error")
+        except ValueError:  # cr1#1864: the due date may already be put back above
+            return _no(UNDO_UNCONFIRMED_LINE.format(name=now_value), "error")
     if words_part and due_part:
         line = f"Put back the wording {old} and the date it had."
     elif due_part:
@@ -1263,8 +1273,8 @@ def _commit_note_undo(root: Path, press: dict, undo_id: str, actor: str, evs: Li
         back = bu.REVERSERS["commitment_note"]["reverse"](
             str(root), {"commitment_id": cid, "change_ref": f"seq:{note_seq}", "reason": COMMIT_NOTE_REASON},
             undone_by=actor, source_skill=UNDO_SOURCE)
-    except Exception:  # noqa: BLE001 - nothing claimed; the note stays, and says so
-        return _no(UNDO_FAILED_LINE.format(name=name), "error")
+    except Exception:  # noqa: BLE001 - cr1#1864: the writer may have saved before it raised
+        return _no(UNDO_UNCONFIRMED_LINE.format(name=name), "error")
     status = (back or {}).get("status")
     if status == "already_undone":
         return _no(UNDO_ALREADY_LINE, "already")
@@ -1418,8 +1428,8 @@ def _context_undo(root: Path, kind: str, press: dict, undo_id: str, actor: str,
             bu.REVERSERS["entity_fact_structured"]["reverse"](
                 str(root), {"person_id": tid, "change_ref": f"seq:{_seq(fact)}", "reason": CONTEXT_UNDO_REASON},
                 undone_by=actor, source_skill=SOURCE_SKILL)
-    except Exception:  # noqa: BLE001 - nothing claimed; the note stays, and says so
-        return _no(UNDO_FAILED_LINE.format(name=name), "error")
+    except Exception:  # noqa: BLE001 - cr1#1864: the writer may have saved before it raised
+        return _no(UNDO_UNCONFIRMED_LINE.format(name=name), "error")
     line = CONTEXT_TAKEN_LINE.format(name=name)
     ev = _record(root, before, {"hub_choice": undo_id, "kind": kind, "action": "undo", "target_id": tid,
                                 "undoes_choice": str(pd.get("hub_choice") or ""), "line": line})

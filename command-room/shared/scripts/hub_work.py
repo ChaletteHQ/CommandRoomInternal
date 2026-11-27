@@ -181,15 +181,28 @@ def _full_forms(rec: Dict[str, Any]) -> set:
 
 def _name_forms(rec: Dict[str, Any]) -> set:
     """Every way a person's record is written: the full name, the first name
-    and each alias, lower case."""
+    and each alias, lower case.
+
+    Fix check of #1812 at 90aed0468 (should): the first name is taken from
+    the name up to any bracket ("(Example Co)" says where they work), after a
+    leading title is read as `followup_draft.name_readings` says, so "Dr. Tess
+    Vane" gives "tess", never "dr."."""
+    try:
+        from followup_draft import name_readings
+    except Exception:  # noqa: BLE001 - no title rule: the first word, as before
+        def name_readings(words):  # type: ignore[no-redef]
+            return [list(words)]
     out = set()
     for v in [rec.get("canonical_name"), rec.get("name")] + list(rec.get("aliases") or []):
         v = str(v or "").strip().lower()
         if len(v) >= HIDDEN_NAME_MIN:
             out.add(v)
-            first = v.split()[0] if v.split() else ""
-            if len(first) >= HIDDEN_NAME_MIN:
-                out.add(first)
+            # decision 147l: every reading's first word ("hon j. vale" gives "hon";
+            # its "j." is an initial and is never held as a first name)
+            for words in name_readings(v.split("(", 1)[0].split()):
+                first = words[0] if words else ""
+                if len(first.strip(".")) >= HIDDEN_NAME_MIN:
+                    out.add(first)
     return out
 
 

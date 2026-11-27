@@ -302,9 +302,20 @@ def _why(names: List[str], deadline: Optional[_dt.date], today: _dt.date) -> str
 
 
 def _owed_rows(owed: Iterable[Dict[str, Any]], *, owner_id: str, today: _dt.date,
-               hidden_ids: Iterable[str] = (), names_unread: bool = False) -> List[Dict[str, Any]]:
+               hidden_ids: Iterable[str] = (), names_unread: bool = False,
+               title_screen: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Up to `CHASE_CAP` things other people owe the owner that are late or
-    due today, latest first. A row the owner owes (Focus's) never shows."""
+    due today, latest first. A row the owner owes (Focus's) never shows.
+
+    cr1#1862 (decision 147q): a row whose title names someone hidden is
+    dropped, by the drafts' own free-text screen (`followup_draft.
+    names_hidden`, in its `title` mode), before the cap, so the cap fills
+    with rows that can be shown. `title_screen` None (who is hidden cannot be
+    read) drops every row: no title can be checked."""
+    if title_screen is None:
+        return []
+    import followup_draft as fd
+
     hidden = {str(h) for h in hidden_ids or ()}
     out = []
     for r in owed or []:
@@ -319,7 +330,11 @@ def _owed_rows(owed: Iterable[Dict[str, Any]], *, owner_id: str, today: _dt.date
             continue
         if due > today:
             continue
-        out.append({"id": r.get("id"), "title": str(r.get("title") or "")[:200],
+        title = str(r.get("title") or "")[:200]
+        # the review of e2567453d: the full title and the cut it shows (a cut can end on a name)
+        if fd.title_hidden(r.get("title"), title_screen) or fd.title_hidden(title, title_screen):
+            continue
+        out.append({"id": r.get("id"), "title": title,
                     "who": "" if names_unread else str(r.get("owner_name") or "")[:120],
                     "owner_id": who, "due": due.isoformat(), "days_late": (today - due).days,
                     # review round 1 of #1819: the plate drafts a chase for a late item only,
@@ -334,9 +349,14 @@ def rank_urgent(items: Optional[List[Dict[str, Any]]], *, now: _dt.datetime,
                 starred_ids: Iterable[str] = (), starred_addresses: Iterable[str] = (),
                 hidden_ids: Iterable[str] = (), owner_id: str = "",
                 owed_to_you: Optional[List[Dict[str, Any]]] = None,
-                names_unread: bool = False) -> Dict[str, Any]:
+                names_unread: bool = False,
+                title_screen: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """READ. The Urgent list from the inbox leg's live items. Answers
     `{generated_at, rows, n_rows, n_more, empty, line, chase, open_todo, ranking}`.
+    `title_screen` (cr1#1862) is the drafts' free-text screen
+    (`followup_draft.hidden_words`) for the `chase` titles; None when who is
+    hidden cannot be read, which lists no `chase` row and adds
+    `chase_held: true`.
     `generated_at` is the stamp every Hub feed carries and the page's
     reconcile reads (`_stamp`: UTC, whole seconds, `Z`), so it compares as
     text against a press's `applied_at` the way the page compares it.
@@ -402,7 +422,11 @@ def rank_urgent(items: Optional[List[Dict[str, Any]]], *, now: _dt.datetime,
                            "chase": [], "open_todo": False, "ranking": RANKING}
     # Ruling 130f: waiting on others shows on a busy day as well as an empty one.
     out["chase"] = _owed_rows(owed_to_you or [], owner_id=owner_id, today=today,
-                              hidden_ids=hidden, names_unread=names_unread)
+                              hidden_ids=hidden, names_unread=names_unread, title_screen=title_screen)
+    # cr1#1862 (add-only, on that path only): who is hidden could not be read, so no
+    # waiting-on-others row could be checked and none is listed
+    if title_screen is None:
+        out["chase_held"] = True
     if rows:
         return out
     # Feed-shape audit (U4): the free time before the next meeting is the
@@ -500,7 +524,17 @@ def urgent_view(workspace_root, items: Optional[List[Dict[str, Any]]] = None, *,
         hp = hub_work.hidden_people(root)
     except Exception:  # noqa: BLE001 - fail closed: nobody is named
         hp = {"unread": True, "ids": frozenset()}
+    # cr1#1862: the drafts' own screen for the waiting-on-others titles; None when it
+    # cannot be read (then no row is listed)
+    screen = None
+    if not hp.get("unread"):
+        try:
+            import followup_draft
+
+            screen = followup_draft.hidden_words(root)
+        except Exception:  # noqa: BLE001 - fail closed
+            screen = None
     return rank_urgent(items, now=now, tzinfo=tzinfo, own=own, starred_ids=stars,
                        hidden_ids=hp.get("ids") or (), owner_id=owner,
                        owed_to_you=owed if owed is not None else owed_to_you(root, owner_id=owner),
-                       names_unread=bool(hp.get("unread")))
+                       names_unread=bool(hp.get("unread")), title_screen=screen)

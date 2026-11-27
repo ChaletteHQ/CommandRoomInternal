@@ -697,6 +697,16 @@ When the off-limits list could not be read, Maintenance set it aside and the bri
 2. On `offer`, wait for the owner's yes. Only then run the same writer with `"confirm": true` and the offer's own `"taken_at"`, and say its `line`. On `changed` (a newer copy than the one shown) or `ask_first` (no time was handed back), say its line and ask again with its `taken_at`. A no, or anything else, writes nothing. While a copy exists, every change to the list waits for the restore (decision 141aa); only with no copy does re-entering the list in Settings end the hold.
 3. Never list who is on the copy, and never restore without that yes, in this chat or a scheduled one.
 
+### "repair my prep edits" (cr1#1847, decision 147t)
+
+**Trigger phrases:** `repair my prep edits`, `fix my prep edits file`.
+
+When the Prep page's edits file could not be read on two Maintenance runs at least an hour apart, the health check and the Prep page say so and give this phrase. Nothing moves until the owner says yes to what they were shown.
+
+1. Ask first: `plan run_writer` `hub_prep_edit:repair` with `"args": {"workspace_root": "<WS>"}` (no `token`; it writes nothing). Say its `line` as it is. `not_needed` or `none` ends here: say the line and stop.
+2. On `ask_first`, the line is the offer (the date of the last readable copy and how many meetings it has edits for, or starting clean). Wait for the owner's yes. Only then run the same writer with the offer's own `"token"`, and say its `line`. On `changed` (the file or the copy is not what was shown), say its line and ask again with its new `token`. A no, or anything else, writes nothing.
+3. Never read or quote the edits, and never repair without that yes, in this chat or a scheduled one.
+
 ### "export that doc" / "save that doc to my folder" — a Claude Doc made anyway lands in the folder (DOCS1 D-2, 2026-09-24)
 
 **Trigger phrases:** `export that doc`, `save that doc to my folder`.

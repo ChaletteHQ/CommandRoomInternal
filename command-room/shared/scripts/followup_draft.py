@@ -302,9 +302,14 @@ def _owner(root: Path) -> str:
 def _plain(text: Any) -> str:
     """The text as the screen reads it: accents folded off their letters,
     and characters that print nothing (zero-width and other format marks)
-    taken out, so neither can split or disguise a name."""
+    taken out, so neither can split or disguise a name.
+
+    Fix check at 051b0c01b (must 2): every mark is dropped (category M),
+    spacing marks too (an Indic vowel sign has no combining class), as
+    `hub_live._norm` and the page's `normOf` drop them, so a name is read the
+    same on both sides."""
     t = unicodedata.normalize("NFKD", str(text or ""))
-    return "".join(c for c in t if not unicodedata.combining(c) and unicodedata.category(c) != "Cf")
+    return "".join(c for c in t if unicodedata.category(c)[0] != "M" and unicodedata.category(c) != "Cf")
 
 
 def _flat(text: Any) -> str:
@@ -332,8 +337,37 @@ ORDINARY_SURNAMES = frozenset({
 })
 #: review of 261a82f28 (MUST 3): a full stop closing one of these titles
 #: does not start a sentence ("Mr. Brown").
-NAME_TITLES = frozenset({"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "sir", "rev", "fr", "hon", "capt",
-                         "col", "gen", "lt", "sgt", "st", "sen", "gov", "rep", "pres", "atty"})
+#: Fix check at 051b0c01b (must 1): the one list of titles, the page's
+#: hidden list included (`hidden_words` drops a title that is no hidden
+#: person's own name word); it took in the Hub's old `VOICE_TITLE_WORDS`.
+NAME_TITLES = frozenset({"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "sir", "madam", "dame", "lord", "lady",
+                         "rev", "fr", "hon", "capt", "col", "gen", "lt", "sgt", "st", "sen", "gov", "rep", "pres",
+                         "atty"})
+def strip_title(words: List[str]) -> List[str]:
+    """Fix check at 90aed0468 (should), narrowed by decision 147l: the words
+    of a name with a leading title taken off, only when the title is written
+    with a full stop ("Dr. Vane" gives "Vane"). Without a stop the words are
+    kept as written: see `name_readings`. Pure."""
+    if len(words) >= 2 and _flat(words[0]) in NAME_TITLES and words[0].endswith("."):
+        return words[1:]
+    return list(words)
+
+
+def name_readings(words: List[str]) -> List[List[str]]:
+    """Decision 147l (fix check at d88f19697, must 1): every reading of a
+    name's words a hidden person is held on. A title with a full stop is
+    taken off ("Dr. Tess Vane": "Tess Vane"). A title word with no stop and
+    two or more words after it may be a real first name ("Hon J. Vale",
+    "Sen Wei Li"), so both readings are kept: as written, and with it taken
+    off. Otherwise the words as written. Pure."""
+    first = strip_title(words)
+    if len(first) != len(words):
+        return [first]
+    if len(words) >= 3 and _flat(words[0]) in NAME_TITLES:
+        return [list(words), list(words[1:])]
+    return [list(words)]
+
+
 #: The line for a draft held on a last name a visible person shares too.
 SURNAME_LINE = ("That follow-up uses a last name that someone off limits or on your personal side "
                 "shares, so it was not drafted.")
@@ -396,7 +430,11 @@ def hidden_words(workspace_root) -> Optional[Dict[str, Any]]:
     (`shown`). An ordinary-word last name (`ORDINARY_SURNAMES`) goes to
     `cased`, held only capitalised and not first in its sentence. A held last
     name that a visible person's name also ends in is in `shared`, so the
-    held line can say so without naming anyone."""
+    held line can say so without naming anyone.
+
+    A title alone (`NAME_TITLES`) is not one of `names` unless it is a word
+    of a hidden person's own name fields or of any alias of theirs, each cut
+    at its bracket and read as `name_readings` says (decision 147l)."""
     root = _root(workspace_root)
     try:
         import hub_work
@@ -418,10 +456,21 @@ def hidden_words(workspace_root) -> Optional[Dict[str, Any]]:
             return None
         mails |= {_plain(m).strip().casefold() for m in off_limits_senders(root) if str(m).strip()}
         rule = last_name_rule([p for p in people if isinstance(p, dict)], ids, _owner(root))
+        # cr1#1812 (fix checks at 051b0c01b and 90aed0468, must 1): the hidden people's own name
+        # words, every word of a name field or an alias, each cut at its bracket and with a
+        # leading title off ("Gen Sample", "Col Reyes", "Hon (Example Co)" keep Gen, Col and Hon held)
+        real = {w for p in people if isinstance(p, dict) and str(p.get("id") or "") in ids
+                for n in _surname_names(p) + [_cut(a) for a in p.get("aliases") or []]
+                for r in name_readings(_plain(n).split()) for t in r for w in _flat(t).split()}
     except Exception:  # noqa: BLE001 - fail closed
         return None
     names = {f for f in (_flat(n) for n in hp.get("names") or ()) if f}
     last, cased, whole = rule["last"], rule["cased"], rule["whole"]
+    # fix check at 051b0c01b (must 1): a title alone ("Dr. Vane" gives "dr") is no
+    # one's name and is not held, unless it is a hidden person's own name word
+    # ("Hon Vale", "Zed Lord") or a one-word alias of theirs; done here once, so
+    # the recorder and the page's hashed list agree
+    names = {n for n in names if n not in NAME_TITLES or n in real}
     return {"names": names | last,
             "shown": {f for f in (_flat(n) for n in hp.get("shown_full") or ()) if f},
             "emails": mails,
@@ -445,10 +494,14 @@ def voice_hidden_names(hw: Dict[str, Any]) -> List[str]:
     return sorted(str(n) for n in hw.get("names") or () if str(n).strip())
 
 
-def _cased_hits(texts: List[Any], hw: Dict[str, Any]) -> List[str]:
+def _cased_hits(texts: List[Any], hw: Dict[str, Any], *, title: bool = False) -> List[str]:
     """The ordinary-word last names written capitalised and not first in
     their sentence, after the whole names of the owner and of visible people
-    are set aside. Pure."""
+    are set aside. Pure.
+
+    `title` (cr1#1862): a title opens no sentence ("Baker invoice"), so there
+    a capitalised one holds at any position, first included. Prose (the
+    default) is unchanged."""
     import re
 
     raw = " | ".join(_plain(t) for t in texts)
@@ -458,7 +511,12 @@ def _cased_hits(texts: List[Any], hw: Dict[str, Any]) -> List[str]:
             raw = re.sub(r"(?i)(?<!\w)" + r"\W+".join(words) + r"(?!\w)", " ", raw)
     hits = []
     for w in sorted(hw.get("cased") or ()):
-        for m in re.finditer(r"(?<![\w])" + re.escape(w.capitalize()) + r"(?![\w])", raw):
+        # decision 147r: in a title a word in capitals is written capitalised too ("BROWN INVOICE")
+        form = (r"(?:" + re.escape(w.capitalize()) + r"|" + re.escape(w.upper()) + r")") if title else re.escape(w.capitalize())
+        for m in re.finditer(r"(?<![\w])" + form + r"(?![\w])", raw):
+            if title:
+                hits.append(w)
+                break
             before = raw[:m.start()].rstrip()
             if before.endswith("."):
                 prev = re.findall(r"(\w+)\.$", before)
@@ -506,7 +564,7 @@ def last_name_rule(records: List[Dict[str, Any]], ids: Any, owner: Any) -> Dict[
             "shared": (last | cased) & visible_last}
 
 
-def hidden_reason(texts: List[Any], hw: Dict[str, Any]) -> Optional[str]:
+def hidden_reason(texts: List[Any], hw: Dict[str, Any], *, title: bool = False) -> Optional[str]:
     """None when `texts` names nobody hidden; else `named`, or `shared` when
     the only words it was held on are last names a visible person's name ends
     in too (cr1#1846). The addresses first; the whole names of the owner and
@@ -524,20 +582,37 @@ def hidden_reason(texts: List[Any], hw: Dict[str, Any]) -> Optional[str]:
     for s in sorted(set(hw.get("shown") or ()) | set(hw.get("own") or ()), key=len, reverse=True):
         flat = flat.replace(" " + s + " ", "  ")
     hits = [n for n in hw.get("names") or () if (" " + n + " ") in flat]
-    hits += _cased_hits([str(t or "") for t in texts], hw)
+    # prose calls the screen exactly as before; only a title passes its mode (cr1#1862)
+    hits += (_cased_hits([str(t or "") for t in texts], hw, title=True) if title
+             else _cased_hits([str(t or "") for t in texts], hw))
     if not hits:
         return None
     shared = set(hw.get("shared") or ())
     return "shared" if all(h in shared for h in hits) else "named"
 
 
-def names_hidden(texts: List[Any], hw: Dict[str, Any]) -> bool:
+def names_hidden(texts: List[Any], hw: Dict[str, Any], *, title: bool = False) -> bool:
     """True when any of `texts` names someone hidden: one of their names or
     last names as a whole word or phrase (an ordinary-word last name only
     capitalised and not first in its sentence), or one of their addresses.
     The whole names of the owner and of someone on file who is not hidden are
     theirs (cr1#1733) and are set aside first. Pure."""
-    return hidden_reason(texts, hw) is not None
+    return hidden_reason(texts, hw, title=title) is not None
+
+
+def title_hidden(title: Any, hw: Optional[Dict[str, Any]]) -> bool:
+    """cr1#1862: True when a commitment or promise title names someone hidden
+    (`names_hidden` in its `title` mode: an ordinary-word last name holds at
+    any position), or when it cannot be checked: `hw` None (who is hidden
+    cannot be read, `hidden_words`) or a screen that fails. The one check for
+    every Hub feed that shows such a title (#1862's chase rows; cr1#1867).
+    Pure."""
+    if hw is None:
+        return True
+    try:
+        return names_hidden([title], hw, title=True)
+    except Exception:  # noqa: BLE001 - a title that cannot be checked is held
+        return True
 
 
 def _email_index(root: Path) -> Optional[Dict[str, str]]:
@@ -612,16 +687,83 @@ def is_skipped(workspace_root, meeting_id: Any, title: Any = "") -> Optional[boo
     return None if rules is None else _skipped(rules, meeting_id, [title])
 
 
+def _when(value: Any) -> Optional[_dt.datetime]:
+    """An ISO time with its offset, in UTC; None when it does not parse or
+    names no offset. Pure."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        t = _dt.datetime.fromisoformat(s[:-1] + "+00:00" if s.endswith(("Z", "z")) else s)
+    except ValueError:
+        return None
+    return t.astimezone(_dt.timezone.utc) if t.tzinfo is not None else None
+
+
+def page_drafted_at(created_at: Any, kept_at: Any = None) -> str:
+    """Fix check at 051b0c01b (should): a page draft's own time, from the
+    press's `created_at` (the page's clock), kept only when it parses and is
+    not after the time the Update keeps it (`kept_at`, now when None); else
+    "", and the draft is then ordered by its place in the book. Pure.
+
+    Fix check at 90aed0468 (should): a page clock a little ahead
+    (`PAGE_CLOCK_SLACK_S`) counts as the keep time, so a redraft timed just
+    after its own keep time still has a time; further ahead it has none."""
+    t = _when(created_at)
+    keep = _when(kept_at) if kept_at else _dt.datetime.now(_dt.timezone.utc)
+    if t is None or keep is None:
+        return ""
+    if t > keep:
+        if (t - keep).total_seconds() > PAGE_CLOCK_SLACK_S:
+            return ""
+        t = keep
+    return t.isoformat().replace("+00:00", "Z")
+
+
+#: Fix check at 90aed0468 (should): how far ahead of the Update's clock a
+#: page draft's time may be and still count (as the keep time).
+PAGE_CLOCK_SLACK_S = 300
+
+
+def _newer(at: tuple, best: tuple) -> bool:
+    """Whether a draft at `at` replaces the one at `best`, each `(drafted_at,
+    seq)`. Fix check at 051b0c01b (should): the drafts' own times are
+    compared only between two page drafts that both carry one; otherwise,
+    and on equal times, the later place in the book wins. Pure."""
+    a, b = _when(at[0]), _when(best[0])
+    if a is not None and b is not None and a != b:
+        return a > b
+    return at[1] >= best[1]
+
+
+def _drafted_order(e: dict, seq: Any) -> tuple:
+    """When a draft was written, as `_newer` compares it: a page draft's own
+    time (`drafted_at`, "" when it had none to trust), then its place in the
+    book."""
+    d = e.get("data") or {}
+    own = str(d.get("drafted_at") or "") if d.get("origin") == "page" else ""
+    return (own, seq if isinstance(seq, int) else -1)
+
+
 def drafts_by_ref(evs: List[dict]) -> Dict[str, Dict[str, Any]]:
-    """The newest `followup_draft` row's data per meeting ref key. Pure."""
+    """The newest `followup_draft` row's data per meeting ref key (fix check
+    of the page's writing at cd06be35b, must 1: two page drafts kept in one
+    Update are told apart by when each was written, never by the order the
+    Update read them; at 051b0c01b: any other pair by the book's order,
+    `_newer`). Pure."""
     from event_seq import event_seq
 
     out: Dict[str, Dict[str, Any]] = {}
+    best: Dict[str, tuple] = {}
     for e in evs:
         if isinstance(e, dict) and e.get("type") == EVENT and isinstance(e.get("data"), dict):
             k = _ref_key(e["data"].get("ref"))
             if k:
-                out[k] = dict(e["data"], seq=event_seq(e))
+                seq = event_seq(e)
+                at = _drafted_order(e, seq)
+                if k not in best or _newer(at, best[k]):
+                    best[k] = at
+                    out[k] = dict(e["data"], seq=seq)
     return out
 
 
@@ -1319,12 +1461,20 @@ def feed_followups(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str
     [{email_id, kind, instruction, to: [{id, name}]}], removed: [person
     ids], at}`), naming nobody hidden. The bodies live here only, never in
     the plate or the today feed. `ok: False` (nothing listed) when the
-    wall, the rules, the plans or the book cannot be read."""
+    wall, the rules, the plans or the book cannot be read. Each draft also
+    carries `press_id`, the page press it was kept from ("" for any other;
+    cr1#1812). `kept` (fix check at d88f19697, must 2) is `kept_presses`
+    over the book, ids only, for every kept draft whether listed or not, so
+    the page can tell a replaced press; `{}` when the book cannot be read."""
     import hub_meetplan
 
     root = _root(workspace_root)
     out: Dict[str, Any] = {"ok": False, "drafts": [], "plans": [], "n_held": 0, "n_skipped": 0, "n_more": 0,
-                           "n_retired": 0, "held": [], "meetings": [], "retired": [], "generated_at": _iso_now(now_iso)}
+                           "n_retired": 0, "held": [], "meetings": [], "retired": [], "generated_at": _iso_now(now_iso), "kept": {}}
+    try:
+        out["kept"] = kept_presses(_events(root), now_iso=now_iso)
+    except Exception:  # noqa: BLE001 - no map: the page says what it can
+        out["kept"] = {}
     try:
         import hub_meeting
 
@@ -1459,7 +1609,10 @@ def feed_followups(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str
                                   "draft_id": did, "meeting_key": hub_meetplan.norm_key(d.get("meeting_key")),
                                   "email_id": eid, "kind": kind, "voice": vo, "voice_block_sha256": vsha,
                                   "voice_source": vsrc, "voice_rules_sha256": vrules,
-                                  "state": STATE_WAITING, "created_at": d.get("ts") or ""})
+                                  "state": STATE_WAITING, "created_at": d.get("ts") or "",
+                                  # fix check of #1812 at 90aed0468 (should): which page press is the
+                                  # kept one, so the page never calls a replaced draft "already saved"
+                                  "press_id": str(d.get("press_id") or "")})
         plans, n_plan_held = _feed_plans(store, hidden, hw, people)
         # cr1#1787 part C: the holds standing (GAP 2), said in plain words, and the
         # recent written-up meetings' people for the plan editor (GAP 1)
@@ -1751,6 +1904,47 @@ def redrafts_due(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, 
     return out
 
 
+#: Fix check at 5039dbb89 (round 5, 1): the window `kept` covers, the Hub's
+#: choices window (`cockpit_helpers.CHOICE_EXPIRY_DAYS`): a press older than
+#: this has expired on the page, so no page asks about it.
+KEPT_WINDOW_DAYS = 7
+
+
+def kept_presses(evs: List[dict], now_iso: Optional[str] = None) -> Dict[str, str]:
+    """Fix check of #1812 at d88f19697 (must 2): which page press each ref's
+    kept draft came from, `{ref: press_id}`, for every ref any follow-up
+    draft was kept for (a meeting's or an item's, listed in the feed or
+    not), each way the ref was written. The press id is "" when the newest
+    draft for that ref is not a page press. Ids only, no words.
+
+    At 5039dbb89 (round 5, 1): only a ref whose newest draft was kept within
+    `KEPT_WINDOW_DAYS` of `now_iso` (the event's own time, `event_time`) is
+    listed, so the map stays the size of a week's drafts and never grows
+    with the book; a newest draft with no time is left out. Pure."""
+    from event_seq import event_seq
+    from event_time import event_dt
+
+    now = _when(now_iso) or _dt.datetime.now(_dt.timezone.utc)
+    since = now - _dt.timedelta(days=KEPT_WINDOW_DAYS)
+    newest = drafts_by_ref(evs)
+    at: Dict[Any, Any] = {}
+    for e in evs:
+        if isinstance(e, dict) and e.get("type") == EVENT:
+            at[event_seq(e)] = event_dt(e)
+    out: Dict[str, str] = {}
+    for e in evs:
+        if isinstance(e, dict) and e.get("type") == EVENT and isinstance(e.get("data"), dict):
+            raw = str(e["data"].get("ref") or "")
+            d = newest.get(_ref_key(raw)) if raw else None
+            if d is None:
+                continue
+            t = at.get(d.get("seq"))
+            if t is None or t < since:
+                continue
+            out[raw] = str(d.get("press_id") or "") if d.get("origin") == "page" else ""
+    return out
+
+
 def waiting_refs(evs: List[dict]) -> set:
     """The ref keys with a follow-up kept (the wrap-up's `draft` mark). Pure."""
     return set(drafts_by_ref(evs))
@@ -1935,8 +2129,136 @@ def plan_page_draft(press: Any, *, owner_id: str, hidden_ids: Optional[set], hid
             "voice_block_sha256": voice["sha256"] if voice["source"] == "learned_block" else None,
             "voice_source": voice["source"], "voice_rules_sha256": voice["sha256"], "voice_applied": applied,
             "origin": "page", "press_id": pid, "tier": PAGE_DRAFT_TIER,
+            # fix check at cd06be35b (must 1): when the page wrote it, so the newest draft wins
+            # fix check at 051b0c01b (should): only a time that parses and is not after the keep time
+            "drafted_at": page_drafted_at(press.get("created_at"), now_iso),
             "check_verdict": verdict}
     ev = {"type": EVENT, "source_skill": PAGE_DRAFT_SOURCE, "person_ids": to, "data": data}
     if now_iso:
         ev["ts"] = now_iso
     return out("keep", PAGE_KEPT_LINE, event=ev, findings=findings, voice=voice)
+
+
+#: cr1#1812: the voice rules the page writes in are email-writer's (the main
+#: voice file first, a learned block only when it holds more than the template).
+PAGE_VOICE_SKILL = "email-writer"
+
+
+def page_voice_now(workspace_root) -> Optional[Dict[str, Any]]:
+    """READ. The voice rules as they stand (`{source, sha256}`), from the
+    same resolver `feed_voice` builds `feed/voice` from, so the page's hash
+    and this one agree; None when there are none. Never raises."""
+    try:
+        import draft_constraints as dc
+
+        sha, src = dc.voice_source(workspace_root, PAGE_VOICE_SKILL)
+    except Exception:  # noqa: BLE001
+        return None
+    return {"source": src, "sha256": sha} if sha and src in VOICE_SOURCES else None
+
+
+def _page_meeting_line(root: Path, inp: Dict[str, Any], evs: List[dict], owner: str, hidden: set,
+                       hw: Dict[str, Any], mails: Dict[str, str]) -> Optional[str]:
+    """A meeting's page draft meets the meeting fence `record_draft` keeps
+    (#1787's `meeting_fence` when it is there, agreed on #1813 and #1814):
+    None when it may be kept, else the refusal line. Without #1787's helper
+    the same checks run here: the meeting written up, on a business
+    calendar, not a solo block, no one hidden on it, every recipient on it."""
+    try:
+        import hub_meeting
+
+        facts = meeting_facts(inp.get("ref"), hub_meeting.index_by_ref(evs), mails, owner)
+    except Exception:  # noqa: BLE001 - the book unread: nothing is kept
+        return HELD_LINE
+    # review round 1 of the page's writing (must 4): the meeting's own titles,
+    # as record_draft checks them, whatever the page said of the meeting.
+    # train G fix (1812 x 1787): checked before the meeting fence, so this
+    # specific line wins; the fence refuses such a draft too, and the page
+    # already holds a walled title (title_off), so the line reveals nothing new
+    if names_hidden(facts["titles"], hw):
+        return PAGE_NAMED_LINE
+    fence = globals().get("meeting_fence")
+    if callable(fence):
+        line = fence(root, ref=inp.get("ref"), meeting_id=inp.get("meeting_id"),
+                     to_person_ids=list(inp.get("to_person_ids") or []), subject=inp.get("subject"),
+                     body=inp.get("body"), meeting_key=inp.get("meeting_key"), email_id=inp.get("email_id"))
+        return line or None
+    if not facts["processed"]:
+        return NOT_PROCESSED_LINE
+    if not facts["has_row"]:
+        return HELD_LINE
+    if facts["calendar"] == "personal":
+        return PERSONAL_LINE
+    if facts["calendar"] != "business":
+        return NO_CALENDAR_LINE
+    if facts["solo"]:
+        return SOLO_LINE
+    if facts["people"] & hidden or names_hidden(facts["external"], hw):
+        return HIDDEN_LINE
+    to = [str(p) for p in inp.get("to_person_ids") or [] if str(p) and str(p) != owner]
+    if any(p not in facts["people"] for p in to):
+        return NOT_ON_LINE
+    return None
+
+
+def record_page_drafts(workspace_root, presses: List[Any], *, now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """A WRITER, called by the Update's save only (`cockpit_helpers.apply_page_drafts`,
+    cr1#1812, ruling 135a). Each `pagedraft` press the page saved is judged
+    by `plan_page_draft`, which trusts nothing the page said: the Python
+    voice check runs again, the recipients are checked against the wall as
+    it stands, a forged press is refused, and the record is keyed by the
+    press id, so one press is kept once. A meeting's draft also meets the
+    meeting fence (`_page_meeting_line`). A kept draft is ONE
+    `followup_draft` row in the book, with its voice stamp; a draft that
+    fails the check is answered refused with its findings and is never a
+    ready draft. Reads only the book and the voice files: nothing a page
+    run left in a temporary folder (140h). Answers `{ok, results: [{id,
+    outcome, line, findings}]}`; a press's failure never stops the rest."""
+    from event_gate import append_event
+
+    root = _root(workspace_root)
+    # fix check at cd06be35b (must 1): in the order the page wrote them, never the read's
+    # (at 051b0c01b: a time that does not parse, or is after the keep time, counts as none)
+    def _page_order(p: dict) -> tuple:
+        t = _when(page_drafted_at(p.get("created_at"), now_iso))
+        return (t is not None, t or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc), str(p.get("id") or ""))
+
+    rows = sorted((p for p in presses or [] if isinstance(p, dict)), key=_page_order)
+    results: List[Dict[str, Any]] = []
+    try:
+        evs = _events(root)
+        hidden = _hidden(root)
+        hw = hidden_words(root)
+        mails = _email_index(root)
+    except Exception:  # noqa: BLE001 - the book unread: nothing is kept
+        evs, hidden, hw, mails = None, None, None, None
+    owner = _owner(root)
+    kept = kept_page_drafts(evs or [])
+    voice_now = page_voice_now(root)
+    for press in rows:
+        pid = str(press.get("id") or "")
+        try:
+            if evs is None:
+                results.append({"id": pid, "outcome": "refused", "line": PAGE_HELD_LINE, "findings": []})
+                continue
+            plan = plan_page_draft(press, owner_id=owner, hidden_ids=hidden, hidden_word_sets=hw, kept=kept,
+                                   voice_now=voice_now, now_iso=now_iso)
+            if plan["outcome"] == "keep" and press["input"].get("about") == "meeting":
+                line = HELD_LINE if mails is None or hidden is None else _page_meeting_line(
+                    root, press["input"], evs, owner, hidden, hw, mails)
+                if line:
+                    plan = dict(plan, outcome="not_kept", line=line, event=None)
+            if plan["outcome"] == "keep":
+                written = append_event(root / "_hq" / "data" / "events.jsonl", plan["event"], holder="followup_draft")
+                ok = bool(written)
+                if ok:
+                    kept.add(pid)
+                results.append({"id": pid, "outcome": "applied" if ok else "error", "line": plan["line"],
+                                "findings": plan["findings"], "voice_applied": bool((plan["voice"] or {}).get("applied"))})
+            else:
+                results.append({"id": pid, "outcome": "already" if plan["outcome"] == "already" else "refused",
+                                "line": plan["line"], "findings": plan["findings"]})
+        except Exception as exc:  # noqa: BLE001 - one press's failure never stops the rest
+            results.append({"id": pid, "outcome": "error", "line": HELD_LINE, "findings": [],
+                            "error": f"{type(exc).__name__}"})
+    return {"ok": True, "results": results}

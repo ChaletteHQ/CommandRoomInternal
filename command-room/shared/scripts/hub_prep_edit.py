@@ -250,6 +250,12 @@ def _load_for_write(workspace_root) -> Dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise ValueError(f"prep edits unreadable: {type(exc).__name__}") from exc
+    return _checked(data)
+
+
+def _checked(data: Any) -> Dict[str, Any]:
+    """The store's own check, for the live file and a kept copy alike
+    (cr1#1847): a ValueError when it is not a store."""
     if not isinstance(data, dict):
         raise ValueError("prep edits unreadable: not an object")
     data.setdefault("version", STORE_VERSION)
@@ -450,6 +456,7 @@ def _write(workspace_root, mutate, choice_id: Optional[str] = None, now_iso: Opt
                 store["applied"] = (store["applied"] + [choice_id])[-APPLIED_CAP:]
             store["history"] = store["history"][-HISTORY_CAP:]
             atomic_write_json(path, store)
+            _keep_written_copy(workspace_root, path)
         return result
     finally:
         release_write_lock(lock)
@@ -674,7 +681,9 @@ def feed(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
     out: Dict[str, Any] = {"generated_at": _iso(now), "ok": False, "meetings": {}, "n_held": 0, "n_cut": 0, "lines": []}
     store, unread = load_store(workspace_root)
     if unread:
-        out["lines"] = [PREPX_UNREAD_LINE]
+        # cr1#1847: once an episode is confirmed, the banner carries the repair's phrase
+        offer = repair_health_line(workspace_root)
+        out["lines"] = [offer[2:] if offer.startswith("⚠ ") else offer] if offer else [PREPX_UNREAD_LINE]
         return out
     hw = fd.hidden_words(Path(str(workspace_root)))
     if hw is None:
@@ -719,9 +728,202 @@ def health_line(workspace_root) -> str:
         _load_for_write(workspace_root)
         return ""
     except Exception:  # noqa: BLE001 - unreadable, as the writers would find it
-        return "⚠ " + PREPX_UNREAD_LINE
+        # cr1#1847: once an episode is confirmed, the alarm says how to repair it
+        return repair_health_line(workspace_root) or "⚠ " + PREPX_UNREAD_LINE
+
+
+# ---------------------------------------------------------------- the repair (cr1#1847, decision 147t)
+#
+# The owner-confirmed repair of an edits file that cannot be read, through the
+# shared `file_repair` pattern (this file is its first caller; the off-limits
+# list moves onto it as a follow-up once cr1#1831 has passed UAT). Nothing is
+# moved automatically: a file that is only mid-sync reads again before an
+# episode is confirmed (`file_repair.EPISODE_MIN_FIRES` fires at least
+# `EPISODE_MIN_GAP_MINUTES` apart, one fingerprint). Maintenance notes what it
+# sees (`watch`); the health check, the Prep page's banner and the phrase
+# "repair my prep edits" carry the offer (`repair_offer`), and only the
+# owner's yes on that offer, with its token handed back, repairs (`repair`).
+
+REPAIR_GROUP = EDITS_REL.name
+REPAIR_LABEL = "prep-edits"
+REPAIR_OFFER_LINE = ("Your prep edits file could not be read since {since}. The last readable copy is from "
+                     "{when}, with edits on {n} meetings. Say yes to put it back; the file as it is now is kept "
+                     "in the archive.")
+REPAIR_OFFER_CLEAN_LINE = ("Your prep edits file could not be read since {since}, and there is no earlier "
+                           "readable copy. Say yes to start with no prep edits; the file as it is now is kept in "
+                           "the archive.")
+REPAIR_CONFLICT_LINE = " A sync conflict copy is also there beside it, kept as it is."
+REPAIR_DONE_LINE = ("Your prep edits are back as they were on {when}. The file as it was is kept at {archived}. "
+                    "Changes made on the Prep page while it could not be read were not saved; make them again.")
+REPAIR_DONE_CLEAN_LINE = ("Your prep edits start again with none. The file as it was is kept at {archived}. "
+                          "Changes made on the Prep page while it could not be read were not saved; make them again.")
+REPAIR_NOT_NEEDED_LINE = "Your prep edits file reads normally, so there is nothing to repair."
+REPAIR_NONE_LINE = ("Your prep edits file has not been unreadable long enough to repair: it may be mid-sync. "
+                    "It is checked again on each Maintenance run.")
+REPAIR_ASK_FIRST_LINE = "Nothing was changed: I need to show you what a repair does first. {offer}"
+REPAIR_CHANGED_LINE = ("Nothing was changed: the file or its last readable copy is not what you were shown. "
+                       "{offer}")
+REPAIR_HEALTH_LINE = ("\u26a0 Your prep edits file could not be read since {since}, so edits on the Prep page are "
+                      "off. Say \"repair my prep edits\" to see how to put it back.")
+REPAIR_FAILED_LINE = ("Your prep edits file could not be replaced just now, so it was left as it was. A copy of it "
+                      "as found is kept at {archived}. Say \"repair my prep edits\" again to try once more.")
+REPAIR_ERROR_LINE = ("The repair could not be finished just now. Say \"repair my prep edits\" again to see where "
+                     "it stands.")
+REPAIR_MANIFEST = ("# Prep edits file set aside\n\n"
+                   "The Prep page's edits file (`_hq/data/hub-prep-edits.json`) could not be read, and the owner "
+                   "said yes to repairing it on {when}. It was copied here as it was found, then {what}. "
+                   "Nothing here was deleted.\n\n"
+                   "- `{rel}`: the file as it was found\n{conflicts}")
+
+
+def _store_reads(store: Any) -> bool:
+    try:
+        _checked(json.loads(json.dumps(store)))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _file_reads(path: Path) -> bool:
+    try:
+        _checked(json.loads(path.read_text(encoding="utf-8")))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _keep_written_copy(workspace_root, path: Path) -> None:
+    """The store as just written, read back from disk, into today's slot
+    (`file_repair.keep_copy`); nothing when it does not read back clean."""
+    try:
+        import file_repair
+
+        written = _checked(json.loads(path.read_text(encoding="utf-8")))
+        file_repair.keep_copy(Path(str(workspace_root)), REPAIR_GROUP, written)
+    except Exception:  # noqa: BLE001 - a copy never stops the owner's write
+        pass
+
+
+def _when_words(workspace_root, value: Any) -> str:
+    try:
+        from tz import to_local
+        d = to_local(value, workspace_path=workspace_root)
+    except Exception:  # noqa: BLE001
+        d = None
+    if d is None:
+        return "an earlier day"
+    hour = d.hour % 12 or 12
+    return f"{d:%A}, {d:%B} {d.day} at {hour}:{d:%M} {'AM' if d.hour < 12 else 'PM'}"
+
+
+def watch(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """Maintenance, every fire: one look at the edits file
+    (`file_repair.note_sighting`). Writes the sighting note only, never the
+    store. Never raises."""
+    import file_repair
+
+    return file_repair.note_sighting(edits_path(workspace_root), _file_reads, now_iso)
+
+
+def _offer_line(workspace_root, o: Dict[str, Any]) -> str:
+    since = _when_words(workspace_root, o.get("since"))
+    if o.get("copy_taken_at"):
+        n = len([m for m in (o.get("copy_store") or {}).get("meetings") or [] if isinstance(m, dict)])
+        line = REPAIR_OFFER_LINE.format(since=since, when=_when_words(workspace_root, o["copy_taken_at"]), n=n)
+    else:
+        line = REPAIR_OFFER_CLEAN_LINE.format(since=since)
+    return line + (REPAIR_CONFLICT_LINE if o.get("conflicts") else "")
+
+
+def repair_offer(workspace_root) -> Dict[str, Any]:
+    """READ. The offer for "repair my prep edits": `{outcome, line, token}`.
+    `not_needed` when the file reads or is gone, `none` while no episode is
+    confirmed, `offer` with the date and size of what a yes puts back. Names
+    no edit."""
+    import file_repair
+
+    path = edits_path(workspace_root)
+    if not path.exists() or _file_reads(path):
+        return {"outcome": "not_needed", "line": REPAIR_NOT_NEEDED_LINE}
+    o = file_repair.offer(Path(str(workspace_root)), path, REPAIR_GROUP, _store_reads)
+    if o["outcome"] != "offer":
+        return {"outcome": "none", "line": REPAIR_NONE_LINE}
+    return {"outcome": "offer", "line": _offer_line(workspace_root, o), "token": o["token"],
+            "copy_taken_at": o.get("copy_taken_at")}
+
+
+def repair(workspace_root, *, token: Optional[str] = None, now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """A WRITER. The owner's yes to the offer shown, with its `token`. Under
+    the store's write lock: the damaged file into a dated archive folder with
+    a MANIFEST, then the last readable copy (or an empty store) over it,
+    atomically. Outcomes: `not_needed`, `none`, `ask_first`, `changed` (each
+    writes nothing), `repaired`, `error`."""
+    import file_repair
+
+    root = Path(str(workspace_root))
+    path = edits_path(root)
+    now = _now(now_iso)
+    try:
+        lock = acquire_write_lock(path, holder="hub-prep-edit")
+    except TimeoutError:
+        return {"outcome": "error", "line": LOCK_BUSY_LINE}
+    try:
+        def manifest(copy_at, conflicts, state):
+            # review at 01cad81e1 (should 2): the MANIFEST says what is true at each step
+            new = f"the last readable copy, from {copy_at}," if copy_at else "an empty edits file"
+            what = {"pending": f"{new} is to be put in its place",
+                    "done": f"{new} was put in its place",
+                    "failed": f"{new} was to be put in its place, but the replacement was refused, so the "
+                              f"live file was left as it was"}[state]
+            extra = "".join(f"- `{c}`: a sync conflict copy beside it, left where it is and not read\n"
+                            for c in conflicts)
+            return REPAIR_MANIFEST.format(when=_iso(now), what=what, rel="{rel}", conflicts=extra)
+
+        try:
+            from tz import to_local
+            day = f"{to_local(now, workspace_path=root):%Y-%m-%d}"
+        except Exception:  # noqa: BLE001
+            day = f"{now:%Y-%m-%d}"
+        got = file_repair.confirm(root, path, REPAIR_GROUP, _store_reads, _file_reads, token, empty=_empty,
+                                  rel=EDITS_REL, label=REPAIR_LABEL, day=day, manifest=manifest)
+    except Exception as exc:  # noqa: BLE001 - review at 01cad81e1 (should 2): an error has its own line
+        return {"outcome": "error", "line": REPAIR_ERROR_LINE, "error": type(exc).__name__}
+    finally:
+        release_write_lock(lock)
+    out = got["outcome"]
+    if out == "not_needed":
+        return {"outcome": out, "line": REPAIR_NOT_NEEDED_LINE}
+    if out == "none":
+        return {"outcome": out, "line": REPAIR_NONE_LINE}
+    if out == "failed":
+        return {"outcome": out, "line": REPAIR_FAILED_LINE.format(archived=got["archived_to"]),
+                "archived_to": got["archived_to"]}
+    if out in ("ask_first", "changed"):
+        o = got["offer"]
+        if o.get("outcome") != "offer":  # the bytes moved on: no episode to offer now
+            return {"outcome": out, "line": REPAIR_CHANGED_LINE.format(offer=REPAIR_NONE_LINE)}
+        line = (REPAIR_ASK_FIRST_LINE if out == "ask_first" else REPAIR_CHANGED_LINE).format(
+            offer=_offer_line(root, o))
+        return {"outcome": out, "line": line, "token": o["token"], "copy_taken_at": o.get("copy_taken_at")}
+    done = (REPAIR_DONE_LINE.format(when=_when_words(root, got["copy_taken_at"]), archived=got["archived_to"])
+            if got["copy_taken_at"] else REPAIR_DONE_CLEAN_LINE.format(archived=got["archived_to"]))
+    return {"outcome": "repaired", "line": done, "archived_to": got["archived_to"],
+            "copy_taken_at": got["copy_taken_at"]}
+
+
+def repair_health_line(workspace_root) -> str:
+    """READ. The offer's alarm once an episode is confirmed, "" before that.
+    Names no edit. Never raises."""
+    try:
+        import file_repair
+
+        s = file_repair.episode(edits_path(workspace_root))
+        return REPAIR_HEALTH_LINE.format(since=_when_words(workspace_root, s.get("first_seen"))) if s else ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 __all__ = ["EDITS_REL", "VERBS", "GUIDE_KINDS", "guide_id", "edits_path", "load_store", "find", "edits_for",
            "norm_start", "occurrence", "place", "today_places", "health_line", "EXPIRE_DAYS", "FEED_PAST_DAYS", "FEED_AHEAD_DAYS", "PREPX_DOC_BUDGET",
-           "view", "set_text", "add_item", "remove_item", "undo", "apply_choices", "feed", "norm_key"]
+           "view", "set_text", "add_item", "remove_item", "undo", "apply_choices", "feed", "norm_key",
+           "watch", "repair_offer", "repair", "repair_health_line"]

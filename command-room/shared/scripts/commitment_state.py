@@ -7075,8 +7075,11 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
     if primary_thread_id:
         ev["primary_thread_id"] = str(primary_thread_id)
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-    append_event(events_path, [ev], holder=source_skill)
-    return {"ok": True, "status": "created", "commitment": ev}
+    written = append_event(events_path, [ev], holder=source_skill)
+    # cr1#1875: what the book actually wrote (the door may fold a repeat into
+    # the held tier, or drop it), so a caller answers from that, not from `ev`
+    return {"ok": True, "status": "created", "commitment": ev,
+            "written": [w for w in (written or []) if isinstance(w, dict)]}
 
 
 #: The provenance an owed-to-me item typed in the Waiting On chat carries

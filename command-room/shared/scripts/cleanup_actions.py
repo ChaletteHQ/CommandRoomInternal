@@ -1407,7 +1407,7 @@ _TIDY_RUNTIME_STAGE_RE = re.compile(r"^(.+)-([0-9a-f]{8}|stage)$")
 #: same way: the off-limits list's kept copies (cr1#1831,
 #: `mail_rules._keep_copy`). Not a live name: the tidy still never moves the
 #: store itself, only its surplus backups.
-TIDY_EXTRA_BACKUP_GROUPS = frozenset({"mail-rules.json"})
+TIDY_EXTRA_BACKUP_GROUPS = frozenset({"mail-rules.json", "hub-prep-edits.json"})
 #: Backup groups: the full data file name, followed by a separator.
 _TIDY_BACKUP_GROUPS = tuple(sorted(TIDY_LIVE_NAMES | TIDY_EXTRA_BACKUP_GROUPS,
                                    key=len, reverse=True))

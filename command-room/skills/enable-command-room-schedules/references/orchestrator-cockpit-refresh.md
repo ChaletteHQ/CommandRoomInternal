@@ -243,6 +243,14 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 
 `set` the answer on `feed/allopen` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
+**Then the voice rules the page writes in (cr1#1812).** The owner's main voice file, and email-writer's learned block when it holds more than the template, for the page's own drafts, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_voice"}'
+```
+
+`set` the answer on `feed/voice` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
 **Then the Maintenance record (cr1#666).** When the Maintenance chat last finished, each job's last completion and how many hours it is behind, one read beside the data:
 
 ```bash

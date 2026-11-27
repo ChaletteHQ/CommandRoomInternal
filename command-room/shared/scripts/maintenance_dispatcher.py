@@ -1511,7 +1511,21 @@ def write_fire_start_marker(workspace_root, *, now: _dt.datetime,
                 pass
     out["sync_conflicts"] = _sync_conflict_sweep(workspace_root)
     out["off_limits_aside"] = _off_limits_aside(workspace_root)
+    out["prep_edits_watch"] = _prep_edits_watch(workspace_root)
     return out
+
+
+def _prep_edits_watch(workspace_root) -> dict:
+    """cr1#1847 (decision 147t): EVERY scheduled Maintenance fire notes what
+    it sees of the Prep page's edits file (`hub_prep_edit.watch`). It never
+    moves or replaces the file: a confirmed episode only lets the health
+    check and the Prep page offer the owner's repair. Best-effort."""
+    try:
+        import hub_prep_edit
+
+        return hub_prep_edit.watch(workspace_root)
+    except Exception as exc:  # noqa: BLE001
+        return {"outcome": "error", "reason": f"{type(exc).__name__}"}
 
 
 def _off_limits_aside(workspace_root) -> dict:

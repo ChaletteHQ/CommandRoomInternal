@@ -7252,6 +7252,258 @@ def feed_stillyours(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     return still_yours.feed(workspace_root, now_iso)
 
 
+#: cr1#1812 (ruling 135a): the page's own drafts. The press kind and its one
+#: verb are `followup_draft`'s (`PAGE_DRAFT_KIND`, `PAGE_DRAFT_ACTION`).
+PAGE_DRAFT_KIND = "pagedraft"
+PAGE_DRAFT_VERB = "keep"
+#: The most `feed/voice` may weigh, as a page document: the share of the
+#: page's own document limit the other feeds keep to (15% of
+#: `REFRESH_DOC_LIMIT` left free, as `PEOPLE_FEED_BUDGET` and HUBHEADROOM1's
+#: 85% guard), not a guess (the coordinator measured a real main voice file at
+#: about 33,500 bytes, so a voice of that size travels whole).
+VOICE_DOC_SHARE = 0.85
+VOICE_NONE_LINE = "There is no voice file yet, so the Hub writes nothing in your voice."
+VOICE_TOO_LONG_LINE = ("Your voice rules are longer than the Hub page can carry, even their hard rules "
+                       "and one register, so the Hub writes nothing in your voice.")
+#: Over the budget, the voice travels as its hard rules and its register blocks
+#: (the file's `## ` sections), as many registers as fit, and the page writes a
+#: draft with the hard rules and the register for its kind of email. A heading
+#: naming one of these words is the hard rules; every other one is a register.
+VOICE_HARD_WORDS = ("hard rule", "always", "never")
+#: Which kinds of email a register is for, by a word in its heading (decided,
+#: reversible: a kind no register names takes the first register about email).
+VOICE_REGISTER_KINDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("sales", ("proposal", "next_steps", "followup", "follow_up", "intro", "outreach", "cold")),
+    ("support", ("reply", "thank_you", "chase", "update", "support", "check_in")),
+    ("security", ("security", "it", "access")),
+    ("deliverable", ("deliverable", "report")),
+)
+
+
+def voice_doc_budget() -> int:
+    """The characters `feed/voice` may weigh (`VOICE_DOC_SHARE` of the page's
+    document limit)."""
+    return int(REFRESH_DOC_LIMIT * VOICE_DOC_SHARE)
+
+
+def _voice_sections(text: str) -> Tuple[str, List[Dict[str, str]]]:
+    """The voice file as its hard rules (what comes before the first `## `
+    section, and every section whose heading names a hard rule) and its
+    register blocks (every other `## ` section), in the file's order."""
+    hard: List[str] = []
+    regs: List[Dict[str, str]] = []
+    head, buf = None, []
+
+    def close() -> None:
+        body = "\n".join(buf).strip("\n")
+        if head is None or any(w in head.lower() for w in VOICE_HARD_WORDS):
+            if body:
+                hard.append(body)
+        else:
+            regs.append({"name": head.strip("# ").strip()[:120], "text": body})
+
+    for line in str(text or "").splitlines():
+        if line.startswith("## "):
+            close()
+            head, buf = line, [line]
+        else:
+            buf.append(line)
+    close()
+    return "\n\n".join(hard), regs
+
+
+def _register_kinds(name: str) -> List[str]:
+    low = name.lower()
+    for word, kinds in VOICE_REGISTER_KINDS:
+        if word in low:
+            return list(kinds)
+    return []
+
+
+#: Review round 1 of the page's writing (#1812, must 2): the longest name, in
+#: words, the page tries; a longer one is not looked for word by word.
+VOICE_HIDDEN_MAX_WORDS = 6
+#: THE switch (#1812; on by ruling 143, "Yes, allow it"): on, feed/voice carries
+#: the recorder's own hidden list as hashes, first names included, and the page
+#: refuses in seconds what the Update would. A first name hashed with plain
+#: SHA-256 can be recovered from the page's stored data, as the owner was told;
+#: the hashes live on the owner's private Hub page only, never in a prompt, a
+#: receipt, a log or the book. Off (a seat may turn it off), the page checks the
+#: full names and addresses the wall already carries and says the Update makes
+#: the final check. Either way the Update's recorder is the final gate.
+PAGE_HIDDEN_CHECK = True
+
+
+#: Fix check of the page's writing (#1812): the most `shown` hashes feed/voice
+#: carries (each about 67 characters as JSON, so at most about 27,000 of the
+#: document's 182,750); past it the rest is cut and counted (`shown_cut`), and
+#: the page then sets aside fewer names, so it refuses more, never less.
+VOICE_SHOWN_CAP = 400
+
+
+def _voice_not_names(root: Path, fd) -> Optional[set]:
+    """Fix check at cd06be35b (should): the forms the hidden list would carry
+    that are not a name: a name read with the company text a bracket after
+    it holds ("(Example Co)"). None when the people cannot be read.
+
+    A title alone is no longer dropped here (fix check at 051b0c01b, must 1):
+    `followup_draft.hidden_words` drops it, once, for the recorder and the
+    page alike, and keeps it when it is a hidden person's own name word
+    (`followup_draft.NAME_TITLES`, which took in the old title list here)."""
+    try:
+        import hub_work
+        from personal_leak import people_records
+
+        hp = hub_work.hidden_people(root)
+        people = people_records(root)
+    except Exception:  # noqa: BLE001 - unread: the page writes nothing
+        return None
+    if not isinstance(hp, dict) or hp.get("unread") or people is None:
+        return None
+    ids = {str(i) for i in hp.get("ids") or ()}
+    out: set = set()
+    for rec in people:
+        if isinstance(rec, dict) and str(rec.get("id") or "") in ids:
+            for n in hub_work._name_forms(rec):
+                if "(" in str(n):
+                    out.add(fd._flat(n))
+    return out
+
+
+def _voice_hidden(workspace_root) -> Optional[Dict[str, Any]]:
+    """Who the page's drafts may not name (review round 1 of the page's
+    writing, must 2; rulings 143 and 144). The document holds, each as a hash
+    (`hub_live.digest`), never the name itself:
+
+    - `names`: every way a hidden person is written, as the Update's recorder
+      screens a page draft (`followup_draft.hidden_words`): people who are
+      off limits and people on the owner's personal side (ruling 144), their
+      full names, first names, aliases and last names (rule L, cr1#1846),
+      through `followup_draft.voice_hidden_names`, which leaves an
+      ordinary-word last name off (its capital-letter rule a hash cannot
+      carry: for those the page says nothing and the recorder applies it);
+    - `emails`: their addresses;
+    - `whole`: the hidden people's whole names of two words or more,
+      matched FIRST, before anything is set aside, as the recorder's
+      `hidden_reason` does (so a visible "Sam Sample" never hides a hidden
+      "Sam Sample Jr.");
+    - `shown`: the full name and every alias of each person on file who is
+      not hidden (`hub_work.hidden_people`'s `shown_full`, less any a hidden
+      person is written by too), and the owner's
+      own whole names, set aside after `whole` as the recorder does (those
+      names are already on the page in plain), at most `VOICE_SHOWN_CAP`, the
+      rest counted in `shown_cut`;
+    - `max_words`: the longest of those names in words, at most
+      `VOICE_HIDDEN_MAX_WORDS`; `longer` is true when a hidden name (`names`
+      or `whole`) is longer still, and the page then refuses every draft (it
+      cannot match that name); a longer visible name only goes unset-aside.
+
+    A title alone is not a name unless it is a hidden person's own name word
+    (`followup_draft.hidden_words`), and a name read with its bracketed
+    company text is not one either (`_voice_not_names`). It lives in the owner's own `feed/voice` document only: never in a
+    request, a saved press, a receipt, a log or the book. `ok` false when
+    who is hidden cannot be read: the page then writes nothing."""
+    shut = {"on": True, "ok": False}
+    try:
+        import followup_draft as fd
+        import hub_live
+
+        hw = fd.hidden_words(Path(str(workspace_root)))
+    except Exception:  # noqa: BLE001 - unread: the page writes nothing
+        return shut
+    if not isinstance(hw, dict):
+        return shut
+    drop = _voice_not_names(Path(str(workspace_root)), fd)
+    if drop is None:
+        return shut
+    names_l = [n for n in fd.voice_hidden_names(hw) if n not in drop]
+    emails = {str(m).strip().lower() for m in hw.get("emails") or () if str(m).strip()}
+    # fix check at cd06be35b (must 2): the hidden whole names hold first, as the recorder orders it
+    whole = sorted(str(n) for n in hw.get("whole") or () if str(n).strip())
+    # the owner's own whole names are set aside too, as the recorder sets them aside
+    shown_all = sorted({str(n) for n in hw.get("shown") or () if str(n).strip()}
+                       | {str(n) for n in hw.get("own") or () if str(n).strip()})
+    shown = shown_all[:VOICE_SHOWN_CAP]
+    words = max([len(n.split()) for n in names_l + shown + whole] or [1])
+    # fix check at 90aed0468 (must 2): only a hidden name the page cannot match switches
+    # its drafting off; a long visible name only goes unset-aside past the cap (refuses more)
+    hidden_words_n = max([len(n.split()) for n in names_l + whole] or [1])
+    return {"on": True, "ok": True, "hashed": "sha256", "names": [hub_live.digest(n) for n in names_l],
+            "whole": [hub_live.digest(n) for n in whole],
+            "shown": [hub_live.digest(n) for n in shown], "shown_cut": len(shown_all) - len(shown),
+            "emails": [hub_live.digest(m) for m in sorted(emails)],
+            "max_words": min(words, VOICE_HIDDEN_MAX_WORDS), "longer": hidden_words_n > VOICE_HIDDEN_MAX_WORDS}
+
+
+def feed_voice(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
+    """READ. cr1#1812 (ruling 135a): `feed/voice`, the voice rules the page
+    writes in, from the owner's main voice file (`_hq/BRAND_VOICE.md`, the
+    file email-writer reads first) and email-writer's learned block when it
+    holds more than the template the plugin ships: the same resolver the
+    Update's recorder compares against (`draft_constraints.voice_source`),
+    so a draft's hash is that text's. A learned block is told from the
+    template by `voice_corrections.has_owner_lines` against the skill's own
+    shipped block (`draft_constraints._learned_text`); a template alone is
+    never the voice. Answers `{generated_at, ok, source, sha256, rules, size,
+    line, partial, hard, registers, left_out}`.
+
+    Within `voice_doc_budget()` the rules travel whole (`rules`). Past it
+    (the coordinator's ruling on #1812) they travel as the hard rules
+    (`hard`) and as many register blocks as fit (`registers`, each `{name,
+    kinds, text}`, the rest named in `left_out`), with `partial` True, and
+    the page writes in the hard rules and the register for the draft's kind.
+    Only when the hard rules and one register do not fit together, or there
+    is no voice file, is `ok` False, with no rules and `line` saying so. The
+    hash is the whole text's either way: the stamp the recorder checks."""
+    out: Dict[str, Any] = {"generated_at": _iso(_now(now_iso)), "ok": False, "source": None, "sha256": None,
+                           "rules": "", "size": 0, "line": VOICE_NONE_LINE, "partial": False, "hard": "",
+                           "registers": [], "left_out": [], "hidden": None}
+    if workspace_root is None:
+        return out
+    # review round 1 of the page's writing (must 2): who no page draft may name, when
+    # the switch is on; off, the page reads the wall it has (`{"on": false}`)
+    out["hidden"] = _voice_hidden(workspace_root) if PAGE_HIDDEN_CHECK else {"on": False}
+    try:
+        import draft_constraints as dc
+        import followup_draft as fd
+
+        sha, src = dc.voice_source(workspace_root, fd.PAGE_VOICE_SKILL)
+        if not sha or src not in fd.VOICE_SOURCES:
+            return out
+        brand_path = Path(str(workspace_root)).joinpath(*dc.BRAND_VOICE_REL)
+        brand = brand_path.read_text(encoding="utf-8") if brand_path.is_file() else ""
+        learned = dc._learned_text(workspace_root, fd.PAGE_VOICE_SKILL) or ""
+    except Exception:  # noqa: BLE001 - an unread voice is no voice
+        return out
+    rules = {"brand_voice": brand, "learned_block": learned, "both": brand.rstrip() + "\n\n" + learned}[src]
+    budget = voice_doc_budget()
+    whole = dict(out, ok=True, source=src, sha256=sha, rules=rules, size=len(rules), line="")
+    if len(json.dumps(whole, separators=(",", ":"))) <= budget:
+        return whole
+    hard, regs = _voice_sections(rules)
+    part = dict(out, ok=True, source=src, sha256=sha, size=len(rules), line="", partial=True, hard=hard)
+    for r in regs:
+        trial = part["registers"] + [{"name": r["name"], "kinds": _register_kinds(r["name"]), "text": r["text"]}]
+        if len(json.dumps(dict(part, registers=trial), separators=(",", ":"))) <= budget:
+            part["registers"] = trial
+        else:
+            part["left_out"] = part["left_out"] + [r["name"]]
+    if not hard or not part["registers"]:
+        return dict(out, size=len(rules), line=VOICE_TOO_LONG_LINE)
+    return part
+
+
+def apply_page_drafts(workspace_root, rows: Optional[List[Dict[str, Any]]] = None, *,
+                      resolved_by: str = "", now_iso=None) -> Dict[str, Any]:
+    """A WRITER, inside the Update's save (`apply_run`): every claimed
+    `pagedraft` press, through `followup_draft.record_page_drafts`, which
+    runs the Python check again and keeps a clean one once (cr1#1812,
+    ruling 135a). Answers `{ok, results}`."""
+    import followup_draft as fd
+
+    return fd.record_page_drafts(workspace_root, list(rows or []), now_iso=now_iso)
+
+
 def _urgent_wall(workspace_root) -> Optional[Dict[str, Any]]:
     """Review round 1 of #1819 (must 1): the wall Urgent names people by, or
     None (Urgent holds). Since cr1#1830 the meeting wall itself holds on a
@@ -7684,12 +7936,44 @@ def apply_settings_choices(workspace_root, choices: Optional[List[Dict[str, Any]
             "n_errors": sum(1 for r in results if r["outcome"] == "error")}
 
 
+def _title_screen(workspace_root, hp: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """cr1#1862: the drafts' own screen for commitment and promise titles
+    (`followup_draft.hidden_words`), or None when it cannot be read (the
+    hidden-people read unread, or the screen fails): then no title can be
+    checked."""
+    if not isinstance(hp, dict) or hp.get("unread"):
+        return None
+    try:
+        import followup_draft
+
+        return followup_draft.hidden_words(Path(str(workspace_root)))
+    except Exception:  # noqa: BLE001 - fail closed
+        return None
+
+
+def _fd_title_hidden(title: Any, hw: Optional[Dict[str, Any]]) -> bool:
+    """cr1#1862: `followup_draft.title_hidden`, failing closed when the module cannot be read."""
+    try:
+        import followup_draft
+
+        return followup_draft.title_hidden(title, hw)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _chase_offers(workspace_root, opens: List[Dict[str, Any]], origins: Dict[str, Any],
-                  now: _dt.datetime, hp: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+                  now: _dt.datetime, hp: Optional[Dict[str, Any]] = None,
+                  hw: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
     """`{commitment_id: offer}` for each late row owed to the owner, with a
     counterparty, that is not snoozed or waiting for the owner's yes
     (cr1#219): `chase_policy.chase_offer` over the book. Reads only; the offer
-    is text the row carries until the owner presses."""
+    is text the row carries until the owner presses.
+
+    cr1#1862: the offer's subject and body are built from the title, and the
+    page makes the mailbox draft from them as they are (`chaseDirect`), so a
+    title that names someone hidden gets no offer, by the drafts' screen in
+    its title mode (`followup_draft.title_hidden` over `hw`, the
+    `hidden_words` read); with `hw` None (unread) nothing is offered."""
     import chase_policy as cp
     from commitment_parties import counterparty_count
     from commitment_state import BUCKET_OWED_TO_YOU, _now_calendar_day, bucket_of, is_overdue
@@ -7740,6 +8024,10 @@ def _chase_offers(workspace_root, opens: List[Dict[str, Any]], origins: Dict[str
         pid = str(_commitment_field(ev, "owner_id") or "")
         # cr1#1738: no draft to someone off limits or personally tied; none at all with the fence unread
         if hp is not None and (hp.get("unread") or pid in (hp.get("ids") or ())):
+            continue
+        # cr1#1862: nor on a title that names someone hidden, or one that cannot be checked
+        d0 = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if _fd_title_hidden(d0.get("title") or d0.get("summary"), hw):
             continue
         rec = people.get(pid)
         rtype = str((rec or {}).get("relationship_type") or (orgs.get((rec or {}).get("org_id")) or {}).get("relationship_type") or "")
@@ -7998,6 +8286,7 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     # Nothing here is fetched live.
     opens: Optional[List[Dict[str, Any]]] = None
     _hp = _hidden_people(workspace_root)
+    _hw = _title_screen(workspace_root, _hp)
     try:
         from cru_match import _commitment_id, load_open_commitments
 
@@ -8012,6 +8301,22 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         origins = {str(_commitment_id(ev)): _row_origin(ev, names, owner, tzinfo, _ties, _hp) for ev in opens}
     except Exception:  # noqa: BLE001 - a bad record leaves the note off, never the plate
         origins = {}
+    # cr1#1862 (decision 147q; the review of e2567453d): a row someone else owes the owner (the
+    # Wait and Chase lanes, which Waiting on, Follow up with and Urgent draw) whose title names
+    # someone hidden is dropped, by the drafts' screen in its title mode, on the title as the
+    # book holds it and as the row shows it (a cut can end on a name); when who is hidden cannot
+    # be read, every such row is. The ids are kept so the late rows, which rebuild a row from the
+    # book, drop them too.
+    try:
+        from cru_match import _commitment_id as _cid_of
+        _full = {str(_cid_of(ev)): ((ev.get("data") or {}).get("title") or (ev.get("data") or {}).get("summary"))
+                 for ev in opens or [] if isinstance(ev, dict) and isinstance(ev.get("data"), dict)}
+    except Exception:  # noqa: BLE001 - no book: the shown title is judged alone
+        _full = {}
+    _chase_hid = {str(r.get("id")) for r in rows if r.get("lane") in ("chase", "wait")
+                  and (_fd_title_hidden(r.get("title"), _hw) or _fd_title_hidden(_full.get(str(r.get("id"))) or "", _hw))}
+    if _chase_hid:
+        rows = [r for r in rows if str(r.get("id")) not in _chase_hid]
     # review round 1 of #1700: each row's project by id (the open list's), for Put in...
     try:
         projects = _projects_of(workspace_root, now)
@@ -8040,6 +8345,7 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     try:
         if opens is not None and _owner_id(workspace_root):
             late_rows, n_late_hidden = _overdue_facts(workspace_root, rows, opens, origins, now)
+            late_rows = [r for r in late_rows if str(r.get("id")) not in _chase_hid]   # cr1#1862
             overdue_ok = True
     except Exception:  # noqa: BLE001 - the Overdue tab says it has no answer; the plate still draws
         pass
@@ -8110,7 +8416,7 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     except Exception:  # noqa: BLE001 - an unread log leaves the strip off, never a guessed count
         feed["done"] = {"kinds": {}, "errors": ["done"]}
     try:
-        offers = _chase_offers(workspace_root, opens or [], origins, now, hp=_hp)
+        offers = _chase_offers(workspace_root, opens or [], origins, now, hp=_hp, hw=_hw)
     except Exception:  # noqa: BLE001 - a bad record takes the press off the row, never the plate
         offers = {}
     seat = hub_words(workspace_root)
@@ -9162,7 +9468,9 @@ def record_calendar_changes(workspace_root, entries: Optional[List[Dict[str, Any
 
 #: A row whose write failed: the owner reads this; the exception text stays in
 #: the result's `error` for the run's receipt (cr1#679).
-ROW_ERROR_LINE = "That one could not be written; nothing changed. Try again, or say it in chat."
+#: cr1#1864 (147s): a writer that raised may have written part of it first, so
+#: the line never says nothing changed and never asks for the press again.
+ROW_ERROR_LINE = "That one could not be confirmed just now; the item shows whether it changed."
 #: The plate could not be read, so no close can be checked against it.
 PLATE_UNREADABLE_LINE = "Your plate could not be read just now, so nothing was closed. The next Apply tries again."
 NOTE_CAP = 2000
@@ -9304,6 +9612,7 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
     meetplan: List[Dict[str, Any]] = []
     prepedit: List[Dict[str, Any]] = []
     focus: List[Dict[str, Any]] = []
+    pagedraft: List[Dict[str, Any]] = []
     refused: List[Dict[str, Any]] = []
     seen = set()
     tokens_seen = set(str(t) for t in (used_tokens or []) if isinstance(t, str) and t)
@@ -9452,6 +9761,14 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
                          **({"back_of": str(raw.get("back_of"))[:160]} if raw.get("back_of") else {}),
                          **({"back_seq": raw.get("back_seq")} if isinstance(raw.get("back_seq"), int)
                             and not isinstance(raw.get("back_seq"), bool) else {})})
+        elif kind == PAGE_DRAFT_KIND:
+            # cr1#1812 (ruling 135a): a draft the page wrote, for `apply_page_drafts`,
+            # whose writer trusts nothing in it (the Python check runs again)
+            if verb != PAGE_DRAFT_VERB:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            pagedraft.append({k: raw.get(k) for k in ("id", "kind", "action", "n", "input", "created_at")})
         elif kind == "stillyours":
             # cr1#1706: a "Still yours?" press, its Undo, or the review's
             # refresh, for `still_yours.review_apply`, which checks each row
@@ -9594,10 +9911,10 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
     return {"commitment": commitment, "inbox": inbox, "hub": hub, "review": review, "week": week,
             "settings": settings, "mail": mail, "people": people, "stillyours": stillyours,
             "meetplan": meetplan,
-            "prepedit": prepedit, "focus": focus, "refused": refused, "skipped": skipped,
+            "prepedit": prepedit, "focus": focus, "pagedraft": pagedraft, "refused": refused, "skipped": skipped,
             "n_waiting": (len(commitment) + len(inbox) + len(hub) + len(review) + len(week)
                           + len(settings) + len(mail) + len(people) + len(stillyours) + len(meetplan)
-                          + len(prepedit) + len(focus)),
+                          + len(prepedit) + len(focus) + len(pagedraft)),
             "n_refused": len(refused)}
 
 
@@ -10499,6 +10816,20 @@ REMINDER_BAD_REF_LINE = "That reminder's link is not an item on your list, so no
 MAIL_MAKE_FEED_LINE = "The last Inbox read could not be checked, so nothing was saved from this message. Refresh the Inbox and press it again."
 #: B3: the same make pressed twice.
 MAKE_ALREADY_LINE = "Already on your list from this; nothing new was added."
+#: cr1#1869: a typed to-do pressed again (a new press, the same words) inside
+#: this many minutes of the first is the same to-do, not a second one
+TODO_TWICE_MINUTES = 60
+TODO_TWICE_LINE = ("Already on your list from a moment ago; nothing new was added. "
+                   "To add a second one, word it differently.")
+#: cr1#1869: the same press retried after its to-do was closed
+TODO_CLOSED_REPLAY_LINE = "Already added from this press; nothing new was added."
+#: cr1#1875 (147y): what the book wrote for a to-do, said truly. The door
+#: folded it onto an open item; it held it for another reason; or it wrote
+#: nothing the press can name.
+TODO_FOLDED_LINE = "Already on your list; nothing new was added."
+TODO_HELD_LINE = "Not added to your list: {reason}."
+TODO_HELD_REASON_OTHER = "it was set aside for review"
+TODO_UNCONFIRMED_LINE = "This to-do could not be confirmed just now; check your list before adding it again."
 #: cr1#1658 change 5: the most rows the Later list sends, soonest back first.
 LATER_CAP = 40
 #: cr1#1383 part 2: add, rename and undo of a work stream, a person and a
@@ -11327,6 +11658,78 @@ def _open_made(root, about: str, title: str) -> Optional[str]:
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         if d.get("about_ref") == about and " ".join(str(d.get("title") or "").split()).lower() == want:
             return str(d.get("id") or "")
+    return None
+
+
+def _todo_made_ever(root, ref: str) -> Optional[str]:
+    """cr1#1869: the id of a to-do this press already wrote, open or closed
+    (`_todo_id` reads open items only, so a retry after a close re-added it)."""
+    try:
+        from connector_adapters.provenance import dedup_key_of
+        from events_io import load_events_owner_scoped
+
+        want = dedup_key_of(ref)
+        if want is None:
+            return None
+        for ev in load_events_owner_scoped(str(root))[0]:
+            d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+            if ev.get("type") == "commitment" and dedup_key_of(d.get("source_ref")) == want:
+                return str(d.get("id") or "") or None
+    except Exception:  # noqa: BLE001 - unreadable: no answer, the open check stands
+        return None
+    return None
+
+
+def _held_reason(data: dict) -> str:
+    """cr1#1875: why the book held a to-do, in plain words. Only the gate's
+    own fixed reasons are said; anything else (a reason that may carry a
+    name, such as a contact not on file) is said as the one general clause."""
+    try:
+        import capture_gate as cg
+        import review_reasons as rr
+
+        known = set(cg.HOME_RULE_REASONS) | {cg.OBSERVED_BY_PREFERENCE_REASON, cg.OBSERVED_THIRD_PARTY_REASON}
+        why = str((data or {}).get("observed_reason") or "").strip()
+        return rr.render_clause(why) if why in known else TODO_HELD_REASON_OTHER
+    except Exception:  # noqa: BLE001 - unreadable: the general clause
+        return TODO_HELD_REASON_OTHER
+
+
+def _todo_written(out, events_path, ref: str) -> Dict[str, Any]:
+    """cr1#1875: the press's answer from what the book wrote for a new to-do:
+    `{outcome, commitment_id}` plus `line` when it was not added as asked."""
+    import capture_gate as cg
+
+    rows = [w for w in ((out or {}).get("written") or []) if isinstance(w, dict)]
+    row = rows[0] if rows else {}
+    d = row.get("data") if isinstance(row.get("data"), dict) else {}
+    if row.get("type") == cg.OBSERVED_TYPE:
+        if d.get("duplicate_of"):
+            return {"outcome": "already", "line": TODO_FOLDED_LINE, "commitment_id": str(d["duplicate_of"])}
+        return {"outcome": "refused", "line": TODO_HELD_LINE.format(reason=_held_reason(d)), "commitment_id": None}
+    cid = (d.get("id") if row.get("type") == "commitment" else None) or _todo_id(events_path, ref)
+    if not cid:
+        return {"outcome": "error", "line": TODO_UNCONFIRMED_LINE, "commitment_id": None}
+    return {"outcome": "applied", "commitment_id": str(cid) if cid else None}
+
+
+def _typed_twice(root, owner: str, title: str, project: Optional[str], now) -> Optional[str]:
+    """cr1#1869: the id of an open typed to-do (made from nothing) with these
+    words, this owner and this project, written in the last
+    TODO_TWICE_MINUTES; None for none."""
+    from cru_match import load_open_commitments
+
+    want = " ".join(str(title or "").split()).lower()
+    floor = now - _dt.timedelta(minutes=TODO_TWICE_MINUTES)
+    for ev in reversed(load_open_commitments(Path(str(root)) / "_hq" / "data" / "events.jsonl")):
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if (d.get("source") == TODO_SOURCE and not d.get("about_ref")
+                and str(d.get("owner_id") or "") == str(owner or "")
+                and (ev.get("primary_thread_id") or None) == (project or None)
+                and " ".join(str(d.get("title") or "").split()).lower() == want):
+            when = _parse(ev.get("ts"))
+            if when is not None and when >= floor:
+                return str(d.get("id") or "") or None
     return None
 
 
@@ -12228,16 +12631,26 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                 text = str(inp.get("title") or "").strip()
                 ref = f"{TODO_REF_SCHEME}:{c.get('id')}"
                 prior = _todo_id(events_path, ref) if choice_id else None
+                # cr1#1869: the same press, its to-do since closed, is not added again
+                closed = _todo_made_ever(root, ref) if choice_id and not prior else None
                 # review round 1 of #1699: a make from a message is checked first (B1,
                 # B5), and the same make pressed twice is added once (B3)
-                gate = None if prior else (_mail_make_gate(root, inp) or _made_gate(root, inp))
-                made = None if prior or gate or not text else _open_made(root, _made_from(root, inp) or "", text[:240])
+                gate = None if prior or closed else (_mail_make_gate(root, inp) or _made_gate(root, inp))
+                about = None if prior or closed or gate or not text else _made_from(root, inp)
+                made = _open_made(root, about or "", text[:240]) if about else None
+                # cr1#1869: a typed to-do (made from nothing) pressed again with the same words
+                twice = (None if prior or closed or gate or made or about or not text
+                         else _typed_twice(root, actor, text[:240], _live_project(root, inp.get("project")), now))
                 if not text:
                     r.update(outcome="error", line=TODO_NEEDS_TEXT_LINE)
                 elif gate:
                     r.update(outcome="refused", line=gate)
+                elif closed:
+                    r.update(outcome="already", replayed=True, line=TODO_CLOSED_REPLAY_LINE, commitment_id=closed)
                 elif made:
                     r.update(outcome="already", line=MAKE_ALREADY_LINE, commitment_id=made)
+                elif twice:
+                    r.update(outcome="already", line=TODO_TWICE_LINE, commitment_id=twice)
                 elif prior:
                     r.update(outcome="applied", replayed=True, commitment_id=prior,
                              line=f"Added as {PRIORITY_NAMES[_priority(inp.get('priority'))].lower()} priority.")
@@ -12249,12 +12662,16 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                         source_skill=SOURCE_SKILL, priority=_priority(inp.get("priority")),
                         source=TODO_SOURCE, about_ref=_made_from(root, inp),
                         primary_thread_id=on_project)
-                    cid = ((out or {}).get("commitment") or {}).get("data", {}).get("id")                         or _todo_id(events_path, f"{TODO_REF_SCHEME}:{c.get('id')}")
+                    # cr1#1875: answer from what the book wrote, never "applied" with no item
+                    got = _todo_written(out, events_path, ref)
                     level = PRIORITY_NAMES[_priority(inp.get('priority'))].lower()
-                    r.update(outcome="applied",
-                             line=((TODO_PERSONAL_PROJECT_LINE if _live_project(root, inp.get("project"), any_lane=True) else TODO_NO_PROJECT_LINE).format(level=level)
-                                   if str(inp.get("project") or "").strip() and not on_project else f"Added as {level} priority."),
-                             commitment_id=cid)
+                    if got["outcome"] != "applied":
+                        r.update(got)
+                    else:
+                        r.update(outcome="applied",
+                                 line=((TODO_PERSONAL_PROJECT_LINE if _live_project(root, inp.get("project"), any_lane=True) else TODO_NO_PROJECT_LINE).format(level=level)
+                                       if str(inp.get("project") or "").strip() and not on_project else f"Added as {level} priority."),
+                                 commitment_id=got["commitment_id"])
             elif kind == "waiting" and verb == "add":
                 r.update(_hub_waiting_add(root, inp, actor))
             else:
@@ -14063,8 +14480,14 @@ def log_run_receipt(workspace_root, *, fired_via: str = "scheduled",
 
 #: The light's line when nothing waits.
 APPLY_NOTHING_LINE = "Nothing waiting."
-#: A choice this run claimed that no writer answered for.
-APPLY_NO_RESULT_LINE = "This press was not written; press it again on the page."
+#: A choice this run claimed that no writer answered for. cr1#1864 (147s): the
+#: writer ran, so it may have landed; the line says so plainly.
+APPLY_NO_RESULT_LINE = "That one could not be confirmed just now; the item shows whether it changed."
+#: cr1#1864 (147s): a page record (a send, a draft or a calendar change the page
+#: made) whose writer failed or gave no answer. It carries no `book_recorded`,
+#: so the next Apply plans it again under the same choice id, and the writer
+#: answers a retry from its first write: nothing is pressed again.
+RECORD_UNCONFIRMED_LINE = "That one could not be confirmed just now; the next Apply checks it again."
 #: The prefix of the run id `apply_start` mints for an Apply run.
 APPLY_RUN_PREFIX = "apply-"
 #: One ArtifactData `batch` carries at most this many writes.
@@ -14080,7 +14503,10 @@ APPLY_FEEDS = {"hub": ("feed/mine",), "review": ("feed/review",),
                # cr1#1788: a Prep page edit refreshes the prep edits
                "prepedit": ("feed/prepx",),
                # cr1#1785: a Focus press refreshes Focus
-               "focus": ("feed/focus",)}
+               "focus": ("feed/focus",),
+               # cr1#1812: a draft the page wrote is kept as a follow-up, and Today's
+               # People follow-ups (cr1#1789) read the same drafts
+               "pagedraft": ("feed/followups", "feed/pfollow")}
 #: The Hub's add and edit presses that also refresh their own tab (cr1#1431).
 APPLY_EDIT_FEEDS = {"stream_edit": ("feed/projects", "feed/board"),
                     "priority_edit": ("feed/projects", "feed/board"),
@@ -14121,13 +14547,16 @@ UPDATE_NARROW: Dict[str, Tuple[str, ...]] = {
     **{"commitment:" + v: _UPDATE_WORK for v in ("done", "drop", "context", "snooze", "reopen", "assign",
                                                  "unassign", "newstream", "notwork", "park", "unpark")},
     **{"review:" + v: _UPDATE_WORK for v in ("confirm", "not relevant", "hold")},
-    # a learned rule's question: Settings lists the rule once it is answered
-    **{"review:learned_rule:" + v: _UPDATE_WORK + ("feed/settings",) for v in ("confirm proposal", "dismiss proposal")},
+    # a learned rule's question: Settings lists the rule once it is answered, and a
+    # learned rule is part of the voice the page writes in (cr1#1812, feed/voice)
+    **{"review:learned_rule:" + v: _UPDATE_WORK + ("feed/settings", "feed/voice")
+       for v in ("confirm proposal", "dismiss proposal")},
     # the Record tab's Put it back can undo a learned rule, which Settings lists
-    "week:week:undo": _UPDATE_WORK + ("feed/settings",),
+    "week:week:undo": _UPDATE_WORK + ("feed/settings", "feed/voice"),
     "week:tidy:archive": _UPDATE_WORK + ("feed/settings",),
     **{"stillyours:" + v: _UPDATE_WORK + ("feed/stillyours",) for v in ("refresh", "keep", "done", "drop")},
-    **{"settings:" + v: ("feed/settings", "feed/week") for v in ("rule edit", "rule off", "rule delete", "budget")},
+    **{"settings:" + v: ("feed/settings", "feed/week") + (("feed/voice",) if v != "budget" else ())
+       for v in ("rule edit", "rule off", "rule delete", "budget")},
     # a star moves the person on the People tab and the top line's ranking
     **{"people:" + v: ("feed/people", "feed/plate", "feed/pfollow", "feed/urgent") for v in ("star", "unstar")},  # cr1#1786: a starred sender
     # a to-do and a "waiting on them" are open items with no home yet: they are
@@ -14151,6 +14580,9 @@ UPDATE_NARROW: Dict[str, Tuple[str, ...]] = {
     **{"meetplan:" + v: ("feed/followups", "feed/pfollow") for v in ("add", "remove", "kind", "undo")},
     # cr1#1785: Focus is its own document; an item's record is never written
     **{"focus:" + v: ("feed/focus",) for v in ("add", "remove", "order", "undo")},
+    # cr1#1812 (ruling 135a): a draft the page wrote is kept as a follow-up; Today's
+    # People follow-ups (cr1#1789) read the same drafts
+    PAGE_DRAFT_KIND + ":" + PAGE_DRAFT_VERB: ("feed/followups", "feed/pfollow"),
 }
 
 
@@ -14191,6 +14623,7 @@ def update_press_space() -> List[str]:
     keys |= {"week:week:" + v for v in WEEK_VERBS} | {"week:tidy:" + v for v in hub_tidy.VERBS}
     keys |= {"stillyours:" + v for v in still_yours.VERBS}
     keys |= {"settings:" + v for v in SETTINGS_VERBS}
+    keys |= {PAGE_DRAFT_KIND + ":" + PAGE_DRAFT_VERB}
     hub = {"reminder": REMINDER_VERBS, "todo": TODO_VERBS, "waiting": WAITING_VERBS, "miss": MISS_VERBS,
            "meeting": MEETING_VERBS, **{k: _edit_verbs(k) for k in EDIT_KINDS}}
     keys |= {"hub:" + k + ":" + v for k, verbs in hub.items() for v in verbs}
@@ -14414,7 +14847,8 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
     writers = (("commitment", apply_commitment_choices), ("review", apply_review_choices),
                ("week", apply_week_choices), ("settings", apply_settings_choices),
                ("mail", apply_mail_choices), ("people", apply_people_choices),
-               ("stillyours", _apply_still_yours), ("meetplan", _apply_meetplan), ("prepedit", _apply_prepedit))
+               ("stillyours", _apply_still_yours), ("meetplan", _apply_meetplan), ("prepedit", _apply_prepedit),
+               (PAGE_DRAFT_KIND, apply_page_drafts))
     hub_rows = [r for r in plan.get("hub") or [] if str(r.get("kind") or "") != "miss"]
     miss_ids = [str(r.get("id")) for r in plan.get("hub") or [] if str(r.get("kind") or "") == "miss"]
     inbox_ids = [str(r.get("id")) for r in plan.get("inbox") or [] if r.get("id")]
@@ -14501,7 +14935,7 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
             got = {str(x.get("id")): x for x in (ans.get("results") or []) if isinstance(x, dict)}
             for e in entries:
                 did = str(e.get("id"))
-                x = got.get(did) or {"outcome": "error", "line": str(ans.get("line") or APPLY_NO_RESULT_LINE)}
+                x = got.get(did) or {"outcome": "error", "line": RECORD_UNCONFIRMED_LINE}
                 rec_results[did] = dict(x, _cal=fn is record_calendar_changes)
 
     writes: List[Dict[str, Any]] = []
@@ -14555,8 +14989,9 @@ def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
                     if f not in touched:
                         touched.append(f)
         else:
-            failed.append(str(x.get("line") or ROW_ERROR_LINE))
-            writes.append(_pinned(did, {"book_record_line": str(x.get("line") or "")}, doc.get("_version")))
+            # cr1#1864 (147s): every record that did not land says the next Apply checks it again
+            failed.append(RECORD_UNCONFIRMED_LINE)
+            writes.append(_pinned(did, {"book_record_line": RECORD_UNCONFIRMED_LINE}, doc.get("_version")))
     more = CLAIM_MORE_LINE.format(n=int(n_more)) if int(n_more or 0) > 0 else ""
     line = _apply_line(applied, refused, failed, recorded, more, partial)
     counts = _apply_counts(applied, refused, len(failed), recorded)
@@ -15282,6 +15717,8 @@ REFRESH_READS: Tuple[Tuple[str, str], ...] = (
     ("feed/stillyours", "feed_stillyours"),
     # cr1#1745: the follow-ups waiting on the wrap-up page, their words kept out of the plate
     ("feed/followups", "feed_followups"),
+    # cr1#1812 (ruling 135a): the voice rules the page writes in, from the main voice file
+    ("feed/voice", "feed_voice"),
     # cr1#1786: Urgent, re-ranked from the inbox part's store at every Update
     ("feed/urgent", "feed_urgent"),
     # cr1#1788: the Prep page's edits, laid over the prep on the page
@@ -15484,7 +15921,7 @@ REFRESH_STAGES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("reads", ("feed/projects", "feed/board", "feed/mine", "feed/mail_rules",
                "feed/people", "feed/brief", "feed/pfollow", "feed/focus", "feed/allopen")),
     ("review", ("feed/review",)),
-    ("record", ("feed/settings", "feed/stillyours", "feed/followups", "feed/urgent", "feed/prepx", "feed/week", "status/maintenance")),
+    ("record", ("feed/settings", "feed/stillyours", "feed/followups", "feed/voice", "feed/urgent", "feed/prepx", "feed/week", "status/maintenance")),
 )
 REFRESH_STAGE_NAMES: Tuple[str, ...] = tuple(s for s, _d in REFRESH_STAGES)
 #: What a part that did not finish is called in the light's line.
@@ -15502,6 +15939,7 @@ REFRESH_DOC_WORDS: Dict[str, str] = {
     "feed/mail_rules": "the mail rules", "feed/people": "the people", "feed/brief": "the brief",
     "feed/review": "To confirm", "feed/settings": "Settings", "feed/week": "the Record tab",
     "feed/stillyours": "the Still yours? review", "feed/followups": "the follow-ups",
+    "feed/voice": "your voice rules",
     "feed/pfollow": "the follow-ups on Today",
     "feed/urgent": "Urgent",
     "feed/prepx": "the prep edits",

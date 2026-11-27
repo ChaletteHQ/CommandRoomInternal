@@ -71,6 +71,12 @@ WALL_UNREAD_LINE = ("The off-limits list could not be read, so the answers and w
 ANSWER_HELD_LINE = ("{n} named someone who cannot be named here, or could not be checked, so {it} saved as asked, "
                     "without the answer.")
 PERSONAL_LINE = "A meeting on your personal calendar is not saved from the Hub; nothing was written."
+#: cr1#1866 (decision 147u): notes whose words name someone who cannot be named here are not saved; the rest are
+HELD_LINE = "{n} named someone who cannot be named here, or could not be checked, so {it} not saved."
+#: cr1#1866: every note named someone hidden, or who is hidden could not be read: nothing is written, and the
+#: page keeps what was typed, so the save can be pressed again
+ALL_HELD_LINE = "Every note named someone who cannot be named here, or could not be checked, so nothing was saved."
+SCREEN_UNREAD_LINE = "Your off-limits list could not be read, so nothing was saved. Try again once it can be."
 GONE_LINE = "That save is not on your book; nothing was written."
 UNDONE_LINE = "That save was already taken back; nothing was written."
 UNDO_LINE = "Took back the save for {title}."
@@ -345,6 +351,23 @@ def _save(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
     standing = saved_for(evs, meeting_id, start, tz)
     if standing:
         return {"outcome": "already", "line": ALREADY_LINE, "press": standing["press"], "meeting_id": meeting_id}
+    # cr1#1866 (decision 147u): every field's own words are judged by the drafts' screen in title mode (these are
+    # short labels, not sentences: an ordinary-word last name holds at any position). One that names someone
+    # hidden is not saved and the rest are; when who is hidden cannot be read, nothing is.
+    import followup_draft as fd
+
+    hw = fd.hidden_words(root)
+    if hw is None:
+        return {"outcome": "refused", "line": SCREEN_UNREAD_LINE}
+
+    def _hid(*texts: Any) -> bool:
+        return any(fd.title_hidden(t, hw) for t in texts)
+
+    held = 0
+    title_held = _hid(title)
+    if title_held:
+        held += 1
+        title = "a meeting"   # the words built from it say no more; the row keeps no title
     off = _off_limits(root)
     # the people come from the occurrence's own brief, never from the page
     on_it = _attendees(evs, meeting_id, start, owner=str(actor or ""), tz=tz)
@@ -352,6 +375,9 @@ def _save(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
     walled = off is None or len(people) < len(on_it)
     picks = [{"q": _clean(d.get("q")), "pick": _clean(d.get("pick"), 120)}
              for d in _list(inp.get("decide")) if isinstance(d, dict) and _clean(d.get("q")) and _clean(d.get("pick"))]
+    n_picks = len(picks)
+    picks = [d for d in picks if not _hid(d["q"], d["pick"])]
+    held += n_picks - len(picks)
     answers = [] if walled else [{"q": _clean(a.get("q")), "said": _clean(a.get("said"))}
                                  for a in _list(inp.get("answers"))
                                  if isinstance(a, dict) and _clean(a.get("q")) and _clean(a.get("said"))]
@@ -361,20 +387,32 @@ def _save(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
     # not kept: its question is saved as asked
     held_answers = 0
     if answers:
-        import followup_draft as fd
-
-        hw = fd.hidden_words(root)
-        clear = [a for a in answers if hw is not None and not fd.names_hidden([a["q"], a["said"]], hw)]
-        held_answers = len(answers) - len(clear)
-        asked_only += [a["q"] for a in answers if a not in clear and a["q"] not in asked_only]
+        # cr1#1866: in title mode, each of the question and the answer on its own ("Brown signs it")
+        clear = [a for a in answers if not _hid(a["q"], a["said"])]
+        for a in answers:
+            if a in clear:
+                continue
+            if _hid(a["q"]):
+                held += 1   # its own question is held too: one held note, nothing of it saved
+            else:
+                held_answers += 1   # the answer is held; its question is saved as asked
+                if a["q"] not in asked_only:
+                    asked_only.append(a["q"])
         answers = clear
     covered = [_clean(x) for x in _list(inp.get("covered")) if _clean(x)]
     asked_carry = [_clean(x) for x in _list(inp.get("carried")) if _clean(x)]
+    # cr1#1866: asked (a held answer's question included), covered and carried, item by item
+    lists = (asked_only, covered, asked_carry)
+    kept_lists = [[x for x in lst if not _hid(x)] for lst in lists]
+    held += sum(len(a) - len(b) for a, b in zip(lists, kept_lists))
+    asked_only, covered, asked_carry = kept_lists
     # review round 2, should 4: with nobody on file no next brief reads a carry
     nobody = not walled and not people
     carried = [] if walled or nobody else asked_carry
     if not (picks or answers or asked_only or covered or carried):
-        return {"outcome": "refused", "line": NOTHING_LINE}
+        # a held title alone is not a note: with nothing else ticked, nothing was picked
+        notes_held = held - (1 if title_held else 0)
+        return {"outcome": "refused", "line": ALL_HELD_LINE if (notes_held or held_answers) else NOTHING_LINE}
     ref = f"{REF}:{choice_id}"
     # G30: a stored source_ref is compared by its identity key, never raw
     from connector_adapters.provenance import dedup_key_of
@@ -453,12 +491,15 @@ def _save(root: Path, c: dict, inp: dict, choice_id: str, actor: str, evs: List[
     if held_answers:
         line += " " + ANSWER_HELD_LINE.format(n=_n(held_answers, "answer", "answers"),
                                               it="its question was" if held_answers == 1 else "their questions were")
+    if held:
+        line += " " + HELD_LINE.format(n=_n(held, "note", "notes"), it="it was" if held == 1 else "they were")
     if off is None:
         line += " " + WALL_UNREAD_LINE
     elif walled:
         line += " " + WALLED_LINE
     row = _append(root, {"type": EVENT, "source_skill": SOURCE_SKILL, "person_ids": people, "data": {
-        "hub_choice": choice_id, "meeting_id": meeting_id, "title": title, "start": start, "person_ids": people,
+        "hub_choice": choice_id, "meeting_id": meeting_id, "title": "" if title_held else title, "start": start,
+        "person_ids": people, **({"held": held} if held else {}),
         "decisions": decisions, "fact_seqs": facts, "fact_person": ",".join(sorted(set(fact_person.values()))),
         "answers": kept, "asked": asked_only, "covered": covered, "carried": carried, "line": line}})
     if not row:

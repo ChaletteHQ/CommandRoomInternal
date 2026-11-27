@@ -433,6 +433,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_week",  # cr1#780 - the Done tab's rows
     "cockpit_helpers:feed_settings",  # cr1#781 - the Settings tab: what was learned and every setting, read only
     "cockpit_helpers:feed_followups",  # cr1#1745 - the follow-ups waiting on the wrap-up page, read only
+    "cockpit_helpers:feed_voice",  # cr1#1812 - the voice rules the page writes in, from the main voice file, read only
     "cockpit_helpers:feed_urgent",  # cr1#1786 - Urgent, re-ranked from the inbox part's store, read only
     "cockpit_helpers:feed_prepx",  # cr1#1788 - the Prep page's edits, read only
     "followup_draft:feed_followups",  # cr1#1745 - the same, with the wall checked as it stands
@@ -820,6 +821,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "advisor_sheet:write_sheet",  # cr1#1017 (train 8) - see the writer table row
     "onboarding_confirm:apply_confirm",  # cr1#1163 part 2 - see the writer table row
     "mail_rules:restore_off_limits",  # cr1#1831 - the owner's restore of the off-limits list, on the owner's word; see the writer table row
+    "hub_prep_edit:repair",  # cr1#1847 - the owner's repair of an unreadable prep-edits file, on the owner's word; see the writer table row
     "whats_new_setup:apply_walk",  # cr1#1235 - see the writer table row
     "schedule_config:set_morning_time",  # cr1#1163 part 2 - see the writer table row
     "project_folder:create_project",  # cr1#1582 - see the writer table row
