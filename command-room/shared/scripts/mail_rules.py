@@ -1063,9 +1063,13 @@ VERBS = ("drop", "teach", "add", "remove", "back", "keep", "unkeep")
 
 #: cr1#1230: what a press says, once, before it lets an off-limits sender's
 #: mail back into the records. Nothing is written until the owner says yes.
-REOPEN_OFF_LIMITS_LINE = ("{value} is off limits, so their mail is kept out of your records. "
+#: cr1#1892 (decision 155e): the line names nobody. It keeps its ending, which the page's
+#: `serverAsked` matches to count the next press as the second.
+REOPEN_OFF_LIMITS_LINE = ("This sender is off limits, so their mail is kept out of your records. "
                           "This would file their mail into your records again. "
                           "Press it again to go ahead.")
+#: cr1#1892 (decision 155e, the wording approved on 2026-11-26): an off-limits rule's row on the page.
+OFF_LIMITS_RULE_LINE = "Mail from someone you put off limits"
 
 
 def reopens_off_limits(workspace_root, choice: Dict[str, Any]) -> Optional[str]:
@@ -1103,7 +1107,7 @@ def apply_one(workspace_root, choice: Dict[str, Any], *, now_iso: Optional[str] 
         reopened = reopens_off_limits(workspace_root, choice)
         if reopened:
             return {"outcome": "refused", "reason": "reopen_unconfirmed", "needs_confirm": True,
-                    "line": REOPEN_OFF_LIMITS_LINE.format(value=reopened)}
+                    "line": REOPEN_OFF_LIMITS_LINE}
     if verb == "drop":
         return drop_thread(workspace_root, thread_id=choice.get("thread_id"),
                            message_ts=choice.get("message_ts"), title=choice.get("title"),
@@ -1151,6 +1155,16 @@ def feed(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
     store = load(workspace_root)
     rules = []
     for r in active_rules(store):
+        if r.get("off_limits"):
+            # cr1#1892 (decision 155e): an off-limits rule names nobody on the page. No `value` and no
+            # `note` (the owner's own words can name them); its line is the approved one. Who is off
+            # limits stays visible as names on People's "Not shown here" line.
+            # Decision 155k (S3): `value` is sent empty, so a released v6.12.5 page that formats
+            # it into its Remove banner reads an empty name, never "undefined".
+            rules.append({"id": r.get("id"), "mode": r.get("mode"), "match": r.get("match"), "value": "",
+                          "off_limits": True, "plain": OFF_LIMITS_RULE_LINE,
+                          "source": r.get("source") or "manual", "added_at": r.get("added_at")})
+            continue
         rules.append({"id": r.get("id"), "mode": r.get("mode"), "match": r.get("match"),
                       "value": r.get("value"), "note": r.get("note") or "", "plain": plain(r),
                       "off_limits": bool(r.get("off_limits")),
@@ -1181,7 +1195,7 @@ __all__ = [
     "item_facts", "verdict", "sort_items", "active_rules",
     "add_rule", "remove_rule", "drop_thread", "bring_back", "keep_thread", "unkeep_thread",
     "apply_one", "apply_choices", "feed",
-    "REOPEN_OFF_LIMITS_LINE", "reopens_off_limits",
+    "REOPEN_OFF_LIMITS_LINE", "OFF_LIMITS_RULE_LINE", "reopens_off_limits",
     "is_held", "off_limits_count", "last_readable_copy", "held_line",
     "set_aside_if_unreadable", "restore_off_limits",
 ]

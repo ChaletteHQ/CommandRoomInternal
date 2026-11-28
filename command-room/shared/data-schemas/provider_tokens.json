@@ -1,0 +1,12 @@
+{
+  "$comment": "cr1#1877: the ONE provider token list. gate1 (run_connector_agnostic_matrix_test) checks skill prose against it and JOBS1 (run_guard_jobs1_test) checks code. Each connector job's slice adds its own product names and turns its own rules to failing. product_name_ceilings is a ratchet: today's count of a job's product names in prose outside the doctrine files, which may only go down as each job's prose is rewritten to name the job, not the product.",
+  "provider_keys": {
+    "calendar": ["google_calendar", "outlook_calendar"]
+  },
+  "product_names": {
+    "calendar": ["Google Calendar", "Outlook Calendar"]
+  },
+  "product_name_ceilings": {
+    "calendar": 21
+  }
+}

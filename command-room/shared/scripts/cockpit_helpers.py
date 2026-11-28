@@ -555,7 +555,32 @@ def hub_pointer(workspace_root) -> Dict[str, Any]:
     stopped = inbox_stop(workspace_root) if url else None
     return {"found": bool(url), "url": url, "line": HUB_POINTER_LINE.format(url=url) if url else "",
             "update_line": update.get("line") or "",
-            "inbox_line": (stopped or {}).get("line") or ""}
+            "inbox_line": (stopped or {}).get("line") or "",
+            **({"connectors_line": unconfirmed_line(workspace_root)} if url else {})}
+
+
+def unconfirmed_line(workspace_root, jobs=None) -> str:
+    """cr1#1877 (ruling 151a, decision 152n): the daily line naming each
+    migrated, unconfirmed connector job, from `connector_config.
+    unconfirmed_jobs_line` (one wording, one source). Only the jobs the
+    Connectors panel can confirm are named (review SHOULD 10): the helper is
+    asked with `jobs`; a helper that cannot take them gives no line, never a
+    line that names a job with no button. '' when the helper is not there
+    yet, a seat has nothing to confirm, or it cannot be read."""
+    try:
+        import connector_config
+        import inspect
+        fn = getattr(connector_config, "unconfirmed_jobs_line", None)
+        if not callable(fn):
+            return ""
+        if jobs is None:
+            import connector_setup
+            jobs = connector_setup.ENABLED_JOBS
+        if "jobs" not in inspect.signature(fn).parameters:
+            return ""
+        return str(fn(workspace_root, jobs=tuple(jobs)) or "")
+    except Exception:  # noqa: BLE001 - no line rather than a wrong one
+        return ""
 
 
 def save_config(workspace_root, *, url: str, trigger_id: Optional[str] = None,
@@ -1180,8 +1205,18 @@ def calendar_live(workspace_root=None, *, include_unverified: bool = False) -> O
         via, provider, row = "superhuman", under["provider"], {"server_id": under["server_id"]}
         account = _bare_address(under["account"])
     plan = CALENDAR_LIVE.get(provider)
-    if not plan or not (plan.get("args_verified") is True or include_unverified):
+    if not plan:
         return None
+    if not (plan.get("args_verified") is True or include_unverified):
+        # cr1#1877 slice 1, ruling 151e: a seat's own successful calendar test,
+        # made on THIS Hub page, switches an unverified plan on for that seat
+        try:
+            import connector_setup
+            seat_ok = connector_setup.calendar_live_allowed(workspace_root, provider)
+        except Exception:  # noqa: BLE001 - not proven: off
+            seat_ok = False
+        if not seat_ok:
+            return None
     try:
         import connector_reads
         cwall = connector_reads.chat_wall(workspace_root)
@@ -1229,18 +1264,16 @@ def record_live_calendar(workspace_root, *, provider=None, server_id=None,
     in the book."""
     import connector_config as cc
     root = str(workspace_root)
-    ent = cc._load_full(root)
-    ws = cc._workspace_container(ent)
-    conn = ws.get("connectors") if isinstance(ws.get("connectors"), dict) else {}
-    row = conn.get("calendar")
+    # cr1#1877 slice 1: read through the raw reader and written through the one
+    # writer (`connector_config.set_live_read`); nothing here touches the block.
+    raw = cc._declared_backend_raw("calendar", root)
+    row = raw if isinstance(raw, dict) else None
+    ws = cc.workspace_block(root)
     if not (isinstance(row, dict) and str(row.get("provider") or "").strip().lower() == "superhuman"):
         return {"ok": False, "reason": "not_superhuman", "line": LIVE_READ_NOT_SUPERHUMAN_LINE}
     if provider is None:
-        if LIVE_READ_KEY not in row:
-            return {"ok": True, "status": "unchanged", "line": LIVE_READ_CLEARED_LINE}
-        row.pop(LIVE_READ_KEY, None)
-        cc._write_entities(root, ent, _LIVE_READ_HOLDER)
-        return {"ok": True, "status": "cleared", "line": LIVE_READ_CLEARED_LINE}
+        status = cc.set_live_read(root, None, holder=_LIVE_READ_HOLDER)
+        return {"ok": True, "status": status, "line": LIVE_READ_CLEARED_LINE}
     if owner_said_yes is not True:
         return {"ok": False, "reason": "not_confirmed", "line": LIVE_READ_NOT_ASKED_LINE}
     # An account that is not an address could never equal an event's own
@@ -1256,11 +1289,7 @@ def record_live_calendar(workspace_root, *, provider=None, server_id=None,
                                             "account": acct, "asked_at": asked}})
     if under is None:
         return {"ok": False, "reason": "bad_live_read", "line": LIVE_READ_BAD_LINE}
-    held = _live_read_row(row)
-    same = bool(held) and all(held[k] == under[k] for k in ("provider", "server_id", "account"))
-    if not same:
-        row[LIVE_READ_KEY] = under
-        cc._write_entities(root, ent, _LIVE_READ_HOLDER)
+    same = cc.set_live_read(root, under, holder=_LIVE_READ_HOLDER) == "unchanged"
     sid = under["server_id"]
     name = connector_display_name(sid) if not _UUIDISH_RE.match(sid) else CALENDAR_LIVE[under["provider"]]["server"]
     # Say what is true now (review of #1818 part B): read live, switched off, or walled.
@@ -1289,7 +1318,8 @@ def calendar_actions(workspace_root=None, *, include_unverified: bool = False) -
         return None
     try:
         import connector_config
-        row = connector_config.declared_backend("calendar", workspace_root)
+        # cr1#1877 slice 1: booking, moving and cancelling read the job for WRITE
+        row = connector_config.declared_backend("calendar", workspace_root, purpose="write")
     except Exception:  # noqa: BLE001 - nothing declared is a supported state
         row = None
     if not isinstance(row, dict):
@@ -1342,7 +1372,8 @@ def calendar_direct(workspace_root=None) -> Optional[Dict[str, Any]]:
         return None
     try:
         import connector_config
-        row = connector_config.declared_backend("calendar", workspace_root)
+        # cr1#1877 slice 1: answering an invitation reads the job for WRITE
+        row = connector_config.declared_backend("calendar", workspace_root, purpose="write")
     except Exception:  # noqa: BLE001 - nothing declared is a supported state
         row = None
     if not isinstance(row, dict):
@@ -1557,6 +1588,33 @@ def _script_safe(js: str) -> str:
 _PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 #: Where the template takes the live calendar plan (cr1#1758).
 CALENDAR_LIVE_MARK = "/*{{CALENDAR_LIVE_JSON}}*/null"
+#: cr1#1877 slice 1: the Connectors panel's config (rows, the Hub page, the
+#: identity tools), in a comment before a `null` like the live plan's mark.
+CONNECTORS_MARK = "/*{{CONNECTORS_JSON}}*/null"
+
+
+def _with_tools(caps: Dict[str, Any], extra: Optional[List[Dict[str, Any]]],
+                existing_only: bool = False) -> Dict[str, Any]:
+    """`caps` with the Connectors panel's read-only test and identity tools
+    added to the `mcp` manifest (cr1#1877 slice 1), each on its connector's
+    own entry. Never removes a tool."""
+    if not extra or not isinstance(caps, dict):
+        return caps
+    servers = (caps.get("mcp") or {}).get("servers")
+    if not isinstance(servers, list):
+        return caps
+    for add in extra:
+        name, tools = str(add.get("server") or ""), [t for t in add.get("tools") or [] if t]
+        if not name or not tools:
+            continue
+        for s in servers:
+            if s.get("server") == name:
+                s["tools"] = list(s["tools"]) + [t for t in tools if t not in s["tools"]]
+                break
+        else:
+            if not existing_only:
+                servers.append({"server": name, "tools": tools})
+    return caps
 
 
 def render_page(template_text: str, *, server: str, basename: str,
@@ -1566,7 +1624,8 @@ def render_page(template_text: str, *, server: str, basename: str,
                 runtime_version: Optional[str] = None,
                 chat: Optional[Dict[str, Any]] = None,
                 calendar_actions: Optional[Dict[str, Any]] = None,
-                calendar_live: Optional[Dict[str, Any]] = None) -> str:
+                calendar_live: Optional[Dict[str, Any]] = None,
+                connectors: Optional[Dict[str, Any]] = None) -> str:
     """Fill the template mechanically and refuse a page with a placeholder
     left over or a leak in its visible text. Nothing here is typed by hand:
     cockpit-setup calls this and publishes what it returns. The footer shows
@@ -1600,6 +1659,9 @@ def render_page(template_text: str, *, server: str, basename: str,
     # filled by anything that does not know it still runs, with no live read.
     live_js = _script_safe(json.dumps(calendar_live if isinstance(calendar_live, dict) else None))
     template_text = template_text.replace(CALENDAR_LIVE_MARK, live_js)
+    # cr1#1877 slice 1: the Connectors panel's config; null shows no panel rows.
+    conn_js = _script_safe(json.dumps(connectors if isinstance(connectors, dict) else None))
+    template_text = template_text.replace(CONNECTORS_MARK, conn_js)
     for key in ("{{TRIGGER_SERVER}}", "{{WORKSPACE_BASENAME}}"):
         if not fills[key]:
             raise ValueError(f"render_page: {key} is required")
@@ -1635,7 +1697,8 @@ def render_page_file(workspace_root=None, *, server: str = "Claude Code Remote",
                      basename: Optional[str] = None, plugin_version: str = "",
                      published_at: Optional[str] = None,
                      plugin_root=None, runtime_version: Optional[str] = None,
-                     recipe: bool = False) -> Dict[str, Any]:
+                     recipe: bool = False,
+                     connector_servers: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """The door form of `render_page`: reads the shipped template beside this
     module (the staged runtime ships `shared/templates/`), fills it, and
     answers `{ok, html, bytes_len, sha256, capabilities, title}` for
@@ -1663,6 +1726,18 @@ def render_page_file(workspace_root=None, *, server: str = "Claude Code Remote",
     chat = chat_direct(workspace_root)
     cal_actions = calendar_actions(workspace_root)
     cal_live = calendar_live(workspace_root)
+    # cr1#1877 slice 1: the Connectors panel. `connector_servers` is what the
+    # set-up chat sees ({server_id, display_name, tools}); with none, the
+    # panel shows its rows from the record and offers no test.
+    try:
+        import connector_setup
+        conn_cfg = connector_setup.page_config(workspace_root, connector_servers)
+    except Exception:  # noqa: BLE001 - no panel config: the page shows none
+        conn_cfg = None
+    conn_tools = (conn_cfg or {}).get("tools") or None
+    ident_tools = (conn_cfg or {}).get("identity_tools") or None
+    if isinstance(conn_cfg, dict):
+        conn_cfg = {k: v for k, v in conn_cfg.items() if k not in ("tools", "identity_tools")}
     # cr1#925: the stamp is fixed here, so the chat's own render of the
     # recipe is byte-for-byte this page.
     published_at = published_at or _iso(_now())
@@ -1670,7 +1745,7 @@ def render_page_file(workspace_root=None, *, server: str = "Claude Code Remote",
                        basename=basename, plugin_version=plugin_version,
                        published_at=published_at, mail=mail, calendar=calendar,
                        runtime_version=runtime_version, chat=chat, calendar_actions=cal_actions,
-                       calendar_live=cal_live)
+                       calendar_live=cal_live, connectors=conn_cfg)
     out = {"ok": True, "html": html, "bytes_len": len(html.encode("utf-8")),
             "sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
             "capabilities": capabilities(server, mail, calendar, chat, calendar_actions=cal_actions,
@@ -1706,6 +1781,13 @@ def render_page_file(workspace_root=None, *, server: str = "Claude Code Remote",
                                        calendar_live=cal_live),
                 "all_new": capabilities(server, mail, calendar, chat, ask=False, chat_server=False, files=False)},
             "template": str(TEMPLATE_REL).replace("\\", "/")}
+    # cr1#1877 slice 1: every declaration carries the panel's test and identity tools
+    out["capabilities"] = _with_tools(out["capabilities"], conn_tools)
+    # review M4 / fix check N2: the panel's test tools ride the full declaration
+    # only; a confirmed job's identity tool rides every declaration (on the
+    # calendar's existing entry), so a fallback publish keeps its page writes
+    out["capabilities_without"] = {k: _with_tools(v, ident_tools, existing_only=True)
+                                   for k, v in out["capabilities_without"].items()}
     if recipe:
         out.pop("html")
         out["recipe"] = {"server": server, "basename": basename,
@@ -1713,7 +1795,7 @@ def render_page_file(workspace_root=None, *, server: str = "Claude Code Remote",
                          "published_at": published_at, "mail": mail,
                          "calendar": calendar, "runtime_version": runtime_version,
                          "chat": chat, "calendar_actions": cal_actions,
-                         "calendar_live": cal_live}
+                         "calendar_live": cal_live, "connectors": conn_cfg}
     return out
 
 
@@ -1746,7 +1828,7 @@ def render_from_recipe(recipe: Dict[str, Any], *, expect_sha256: Optional[str] =
                        mail=recipe.get("mail"), calendar=recipe.get("calendar"),
                        runtime_version=recipe.get("runtime_version"),
                        chat=recipe.get("chat"), calendar_actions=recipe.get("calendar_actions"),
-                       calendar_live=recipe.get("calendar_live"))
+                       calendar_live=recipe.get("calendar_live"), connectors=recipe.get("connectors"))
     raw = html.encode("utf-8")
     sha = hashlib.sha256(raw).hexdigest()
     if expect_sha256 and sha != str(expect_sha256).strip().lower():
@@ -7379,6 +7461,58 @@ PAGE_HIDDEN_CHECK = True
 #: document's 182,750); past it the rest is cut and counted (`shown_cut`), and
 #: the page then sets aside fewer names, so it refuses more, never less.
 VOICE_SHOWN_CAP = 400
+#: cr1#1882 item 1: the most `cased` hashes feed/voice carries. `cased` holds
+#: only words of `followup_draft.ORDINARY_SURNAMES`, a fixed list of 52, as a set
+#: across all hidden people, so today it carries at most 52 hashes (about 3,500
+#: characters as JSON). The cap is a guard should that list ever grow: past it
+#: none is carried, the count is `cased_cut`, and the page's subject screen
+#: answers "cannot tell" (subject drafting stops, never loosens).
+VOICE_CASED_CAP = 400
+
+
+#: cr1#1882 item 3: the most characters the HIDDEN hashes may weigh in feed/voice
+#: (`whole`, `names` and `emails`, as JSON; SF04's `cased` list is not cut by it:
+#: it is reserved in the rest below, decision 158n). Set from the budget, measured 2026-11-27 on the real builder: the whole
+#: document must stay inside `voice_doc_budget()` (182,750) with a 10% margin
+#: (164,475), after the rest at its largest realistic size:
+#:   the voice rules as JSON for a voice file half again the coordinator's measured
+#:   real one (50,250 of 33,500 characters)   53,080
+#:   the document's envelope                     245
+#:   the hidden block's fixed keys              ~200
+#:   `shown` at `VOICE_SHOWN_CAP`              26,801
+#:   SF04's `cased` (52 hashes, a fixed list)   3,505
+#:   together                                ~83,830
+#: leaving ~80,640; rounded down. That is about 1,194 hashes, roughly 200 hidden
+#: people. Past it the lists are cut (`hidden_cut` counts what was left out) and
+#: `longer` is set, so the page answers "cannot tell" for every draft: never a
+#: document over its limit, and never a draft called clear that the full list
+#: would have stopped. The Update's recorder stays the final gate.
+VOICE_HIDDEN_CAP_CHARS = 80_000
+
+
+def _voice_cap_hidden(lists: List[List[str]]) -> Tuple[List[List[str]], int]:
+    """cr1#1882 item 3: the hidden hash lists (`whole`, `names`, `emails`, in
+    the order the page reads them) kept within `VOICE_HIDDEN_CAP_CHARS`, as
+    JSON characters. Answers `(lists, cut)`: the lists unchanged and 0 when
+    they fit; else each list cut, in that order, to what fits, and the number
+    of hashes left out."""
+    size = sum(len(json.dumps(x, separators=(",", ":"))) for x in lists)
+    if size <= VOICE_HIDDEN_CAP_CHARS:
+        return lists, 0
+    room = VOICE_HIDDEN_CAP_CHARS - 2 * len(lists)   # each list's own brackets
+    out: List[List[str]] = []
+    cut = 0
+    for lst in lists:
+        keep: List[str] = []
+        for h in lst:
+            w = len(h) + 3   # the hash, its quotes and a comma
+            if w <= room:
+                keep.append(h)
+                room -= w
+            else:
+                cut += 1
+        out.append(keep)
+    return out, cut
 
 
 def _voice_not_names(root: Path, fd) -> Optional[set]:
@@ -7420,9 +7554,14 @@ def _voice_hidden(workspace_root) -> Optional[Dict[str, Any]]:
       off limits and people on the owner's personal side (ruling 144), their
       full names, first names, aliases and last names (rule L, cr1#1846),
       through `followup_draft.voice_hidden_names`, which leaves an
-      ordinary-word last name off (its capital-letter rule a hash cannot
-      carry: for those the page says nothing and the recorder applies it);
+      ordinary-word last name off (its capital-letter rule a `names` hash
+      cannot carry; those travel in `cased`, below, for a subject only, and
+      in a body the recorder applies the rule);
     - `emails`: their addresses;
+    - `cased` (cr1#1882 item 1): the ordinary-word last names `names` leaves
+      off, for a draft's subject only: a subject is a title, so written
+      capitalised they hold at any position, and the page reads the capital
+      from the text as written;
     - `whole`: the hidden people's whole names of two words or more,
       matched FIRST, before anything is set aside, as the recorder's
       `hidden_reason` does (so a visible "Sam Sample" never hides a hidden
@@ -7437,6 +7576,10 @@ def _voice_hidden(workspace_root) -> Optional[Dict[str, Any]]:
       `VOICE_HIDDEN_MAX_WORDS`; `longer` is true when a hidden name (`names`
       or `whole`) is longer still, and the page then refuses every draft (it
       cannot match that name); a longer visible name only goes unset-aside.
+      `longer` is also true when the hidden hashes pass
+      `VOICE_HIDDEN_CAP_CHARS` (cr1#1882 item 3): the lists are cut to fit,
+      `hidden_cut` counts the hashes left out, and the page refuses every
+      draft, so the document never passes its limit.
 
     A title alone is not a name unless it is a hidden person's own name word
     (`followup_draft.hidden_words`), and a name read with its bracketed
@@ -7457,6 +7600,9 @@ def _voice_hidden(workspace_root) -> Optional[Dict[str, Any]]:
     if drop is None:
         return shut
     names_l = [n for n in fd.voice_hidden_names(hw) if n not in drop]
+    # cr1#1882 item 1: the ordinary-word last names, hashed, for a draft's subject only (title mode: written
+    # capitalised they hold at any position, the capital read on the page from the text as written)
+    cased_l = sorted(str(n) for n in hw.get("cased") or () if str(n).strip() and str(n) not in drop)
     emails = {str(m).strip().lower() for m in hw.get("emails") or () if str(m).strip()}
     # fix check at cd06be35b (must 2): the hidden whole names hold first, as the recorder orders it
     whole = sorted(str(n) for n in hw.get("whole") or () if str(n).strip())
@@ -7468,11 +7614,21 @@ def _voice_hidden(workspace_root) -> Optional[Dict[str, Any]]:
     # fix check at 90aed0468 (must 2): only a hidden name the page cannot match switches
     # its drafting off; a long visible name only goes unset-aside past the cap (refuses more)
     hidden_words_n = max([len(n.split()) for n in names_l + whole] or [1])
-    return {"on": True, "ok": True, "hashed": "sha256", "names": [hub_live.digest(n) for n in names_l],
-            "whole": [hub_live.digest(n) for n in whole],
-            "shown": [hub_live.digest(n) for n in shown], "shown_cut": len(shown_all) - len(shown),
-            "emails": [hub_live.digest(m) for m in sorted(emails)],
-            "max_words": min(words, VOICE_HIDDEN_MAX_WORDS), "longer": hidden_words_n > VOICE_HIDDEN_MAX_WORDS}
+    # cr1#1882 item 3: the hidden hashes kept within their cap; past it the page cannot tell, so it refuses
+    (whole_h, names_h, emails_h), hidden_cut = _voice_cap_hidden(
+        [[hub_live.digest(n) for n in whole], [hub_live.digest(n) for n in names_l],
+         [hub_live.digest(m) for m in sorted(emails)]])
+    out = {"on": True, "ok": True, "hashed": "sha256", "names": names_h,
+           "whole": whole_h,
+           "shown": [hub_live.digest(n) for n in shown], "shown_cut": len(shown_all) - len(shown),
+           "emails": emails_h,
+           "cased": [hub_live.digest(n) for n in cased_l] if len(cased_l) <= VOICE_CASED_CAP else None,
+           "cased_cut": len(cased_l) if len(cased_l) > VOICE_CASED_CAP else 0,
+           "max_words": min(words, VOICE_HIDDEN_MAX_WORDS),
+           "longer": hidden_words_n > VOICE_HIDDEN_MAX_WORDS or hidden_cut > 0}
+    if hidden_cut:
+        out["hidden_cut"] = hidden_cut   # add-only, and only past the cap (byte-identical under it)
+    return out
 
 
 def feed_voice(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
@@ -9144,8 +9300,21 @@ def feed_filtered(workspace_root, items: Optional[List[Dict[str, Any]]] = None) 
     personal = _has_personal_account(workspace_root)
     if not items:
         return {"groups": [], "n": 0, "personal_not_read": personal}
+    # cr1#1892 (decision 155e): nobody hidden is listed, in any group or in `n`. With who is
+    # hidden unread, nothing is: the held shape, which a released page reads as no groups.
+    hidden = _filtered_hidden(workspace_root)
+    if hidden is None:
+        return {"groups": [], "n": None, "held": True, "personal_not_read": personal}
     sel = _ih.select_priority(str(workspace_root), items)
+    sel = {k: ([i for i in v if not _filtered_is_hidden(i, hidden)] if isinstance(v, list) else v)
+           for k, v in sel.items()}
     rules = {r.get("id"): r for r in (_mr.load(workspace_root).get("rules") or []) if isinstance(r, dict)}
+
+    import followup_draft as _fd
+
+    def rule_line(rule):
+        # Decision 155k (M1): a rule that names someone hidden reads as the nameless line
+        return MAIL_RULE_HELD_LINE if _mail_rule_hidden(rule, hidden) else _mr.plain(rule)
 
     def row(item, group, why, rule=None):
         sender = _mr.address_of(item.get("sender_email") or item.get("sender") or "")
@@ -9161,7 +9330,12 @@ def feed_filtered(workspace_root, items: Optional[List[Dict[str, Any]]] = None) 
                           "url": str(item.get("url") or "") or None}}
         if rule is not None:
             out["source"]["rule_id"] = rule.get("id")
-            out["source"]["rule"] = _mr.plain(rule)
+            out["source"]["rule"] = rule_line(rule)
+        # Decision 155k (S1): a clean sender's subject that names someone hidden is held, in its
+        # place and its count, as the drawer's titles are (155e)
+        if out["subject"] and _fd.title_hidden(out["subject"], hidden.get("hw")):
+            out["subject"] = MAIL_HELD_TITLE
+            out["held"] = True
         return out
 
     buckets: Dict[str, List[Dict[str, Any]]] = {g: [] for g, _l, _a in FILTERED_GROUPS}
@@ -9171,7 +9345,7 @@ def feed_filtered(workspace_root, items: Optional[List[Dict[str, Any]]] = None) 
             buckets["dropped"].append(row(item, "dropped", FILTERED_DROPPED_WHY))
             continue
         rule = rules.get(why)
-        buckets["rule"].append(row(item, "rule", (_mr.plain(rule) if rule else str(why or "a mail rule")), rule))
+        buckets["rule"].append(row(item, "rule", (rule_line(rule) if rule else str(why or "a mail rule")), rule))
     for item in sel.get("noise_items") or []:
         cls = str(item.get("noise_class") or "marketing")
         group = "newsletters" if cls == "marketing" else "noise"
@@ -9191,6 +9365,174 @@ def feed_filtered(workspace_root, items: Optional[List[Dict[str, Any]]] = None) 
                             if (a != "never" or r["sender"]) and (a == "never" or r["thread_id"])]
         groups.append({"key": key, "label": label, "n": len(rows), "rows": rows[:FILTERED_CAP]})
     return {"groups": groups, "n": sum(g["n"] for g in groups), "personal_not_read": personal}
+
+
+#: cr1#1892: the Filtered list when who is hidden cannot be read (decision 155e).
+FILTERED_HELD_LINE = "The off-limits list could not be read, so filtered mail is not listed."
+#: cr1#1892 (c): a dropped or kept thread whose subject names someone hidden, in the rules drawer.
+MAIL_HELD_TITLE = "A message, details held"
+#: Decision 155k (M1): a mail rule that names someone hidden, in the drawer and as a Filtered row's why.
+MAIL_RULE_HELD_LINE = "A mail rule, details held"
+#: Decision 155l (S1): a Remove on a held rule, as its press result says it (choices are page data).
+MAIL_RULE_REMOVED_HELD_LINE = "Rule removed."
+
+
+def _filtered_hidden(workspace_root) -> Optional[Dict[str, Any]]:
+    """cr1#1892: who the Inbox's Filtered list and the rules drawer may not
+    show. `{addrs, hp, hw}`: `addrs` the off-limits senders and every address
+    of the people they belong to (the wall's own set, `hub_live._off_limits`)
+    and every address of a personal-side person (`hub_work.hidden_people`,
+    the default of the owner's Q6); `hp` that reader's answer, for names; `hw`
+    the drafts' screen words (`followup_draft.hidden_words`) with `addrs`
+    added, for a subject in title mode. None, which holds everything, when
+    the off-limits list or who is hidden cannot be read, or anything raises."""
+    try:
+        import followup_draft
+        import hub_live
+        import hub_work
+        import mail_rules as _mr
+        from people_writer import get_person_emails
+        from personal_leak import people_records
+
+        off_addrs, _names = hub_live._off_limits(workspace_root)   # raises when the list is unread
+        hp = hub_work.hidden_people(workspace_root)
+        if not isinstance(hp, dict) or hp.get("unread"):
+            return None
+        hw = followup_draft.hidden_words(workspace_root)
+        if hw is None:
+            return None
+        ids = {str(i) for i in hp.get("ids") or ()}
+        addrs = {_mr.address_of(a) for a in off_addrs if a}
+        for person in people_records(Path(str(workspace_root))):
+            if str(person.get("id") or "") in ids:
+                addrs |= {_mr.address_of(a) for a in get_person_emails(person) if a}
+        addrs.discard("")
+        hw = dict(hw, emails=set(hw.get("emails") or ()) | addrs)
+        return {"addrs": addrs, "hp": hp, "hw": hw}
+    except Exception:  # noqa: BLE001 - fail closed: nothing is shown
+        return None
+
+
+def _filtered_is_hidden(item: Any, hidden: Dict[str, Any]) -> bool:
+    """cr1#1892: a fetched thread whose sender is someone hidden, by address
+    or by name (`hub_work.name_is_hidden`, the plate's rule). Fails closed."""
+    try:
+        import hub_work
+        import mail_rules as _mr
+
+        if not isinstance(item, dict):
+            return True
+        if _mr.address_of(item.get("sender_email") or item.get("sender") or "") in hidden["addrs"]:
+            return True
+        # Decision 155k (S2): a thread tied to a hidden person by id, as the gate's own check reads it
+        pid = str(item.get("sender_person_id") or "")
+        if pid and pid in {str(i) for i in hidden["hp"].get("ids") or ()}:
+            return True
+        return bool(hub_work.name_is_hidden(item.get("sender_name") or "", hidden["hp"]))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _mail_rule_hidden(rule: Any, hidden: Optional[Dict[str, Any]]) -> bool:
+    """Decision 155k (M1): a mail rule names someone hidden when its value is a
+    hidden address, or its value, note or plain line trips the title-mode
+    name screen (`followup_draft.title_hidden`, the drawer titles' screen).
+    An off-limits rule always counts. Fails closed: True when who is hidden
+    is unread (`hidden` None), the row is not a rule, or the check raises."""
+    try:
+        import followup_draft
+        import mail_rules as _mr
+
+        if hidden is None or not isinstance(rule, dict):
+            return True
+        if rule.get("off_limits"):
+            return True
+        value, note = str(rule.get("value") or ""), str(rule.get("note") or "")
+        if value and _mr.address_of(value) in hidden["addrs"]:
+            return True
+        if value and rule.get("match") in ("sender", "domain") and _name_run_in(value, hidden.get("hp")):
+            return True
+        line = str(rule.get("plain") or "") or (_mr.plain(rule) if value else "")
+        hw = hidden.get("hw")
+        return any(followup_draft.title_hidden(t, hw) for t in (value, note, line) if t.strip())
+    except Exception:  # noqa: BLE001 - a rule that cannot be checked is held
+        return True
+
+
+def _mail_results_held(workspace_root, choices: Any, out: Dict[str, Any]) -> None:
+    """Decision 155l (S1), widened by 155q (M1): no mail press result carries a
+    copy of a stored rule that names someone hidden, because the choices
+    document is page data. Every result with a `rule` - a Remove, and an Add
+    or a Teach that finds the rule already in force - is screened as the
+    drawer screens the row (`_mail_rule_hidden`), so with who is hidden
+    unread every one is; a hit loses its `rule`. An applied Remove's line
+    becomes "Rule removed."; every other line is the press's own words, or
+    nameless already. In place."""
+    removes = {str(c.get("id")) for c in choices or []
+               if isinstance(c, dict) and str(c.get("action") or "").strip().lower() == "remove"}
+    rows = [r for r in (out or {}).get("results") or [] if isinstance(r, dict) and "rule" in r]
+    if not rows:
+        return
+    hidden = _filtered_hidden(workspace_root)
+    for r in rows:
+        if _mail_rule_hidden(r.get("rule"), hidden):
+            r.pop("rule", None)
+            if str(r.get("id")) in removes and r.get("outcome") == "applied":
+                r["line"] = MAIL_RULE_REMOVED_HELD_LINE
+
+
+def _name_run_in(value: str, hp: Any) -> bool:
+    """Fix check N3 of cr1#1892: a hidden name run into an address, as in
+    `averyfamily.example.com` - one part of the address, split at its dots,
+    dashes and the at sign, that starts or ends with a hidden one-word name
+    of four letters or more (`hub_work.hidden_people`'s `names`; decision
+    155q: a shorter name would hold common rule text, as "rio" in mario@ or
+    "don" in donotreply@). A part that is the name alone is the title
+    screen's already."""
+    import re
+
+    names = [n for n in ((hp or {}).get("names") or ()) if isinstance(n, str)]
+    words = {n.strip().lower() for n in names if len(n.strip()) >= 4 and " " not in n.strip()}
+    parts = [p for p in re.split(r"[.@_+\-]+", str(value or "").lower()) if p]
+    return any(p.startswith(w) or p.endswith(w) for p in parts for w in words)
+
+
+def _mail_rules_held(rows: Any, hidden: Optional[Dict[str, Any]]) -> None:
+    """Decision 155k (M1): every rule row in the drawer, off limits or not, is
+    screened. A hit keeps its place, its id (Remove works by id), its mode and
+    match, and is counted; it reads `MAIL_RULE_HELD_LINE` with no value and no
+    note. With who is hidden unread, every row is. The off-limits row keeps
+    its own approved line (155e). In place."""
+    for r in rows or []:
+        if not isinstance(r, dict) or r.get("off_limits"):
+            continue
+        if _mail_rule_hidden(r, hidden):
+            # Decision 155l (S2): a sender or domain rule keeps working on the page's live mail by
+            # its value's hash, in the wall's form (`hub_live.digest`, what the page's normOf hashes)
+            r.pop("value_hash", None)
+            if r.get("match") in ("sender", "domain") and str(r.get("value") or "").strip():
+                try:
+                    import hub_live
+
+                    r["value_hash"] = hub_live.digest(r.get("value"))
+                except Exception:  # noqa: BLE001 - no hash: the row waits for the Inbox run, as before
+                    pass
+            r["value"], r["note"], r["plain"], r["held"] = "", "", MAIL_RULE_HELD_LINE, True
+
+
+def _mail_titles_held(rows: Any, hidden: Optional[Dict[str, Any]]) -> None:
+    """cr1#1892 (c): the drawer's dropped and kept threads keep their place
+    and their count; a subject that names someone hidden (the drafts' screen
+    in title mode, `followup_draft.title_hidden`) is replaced by
+    `MAIL_HELD_TITLE` and the row marked `held`. With who is hidden unread,
+    every subject is. In place."""
+    import followup_draft
+
+    hw = None if hidden is None else hidden.get("hw")
+    for r in rows or []:
+        if isinstance(r, dict) and followup_draft.title_hidden(r.get("title") or "", hw):
+            r["title"] = MAIL_HELD_TITLE
+            r["held"] = True
 
 
 def _has_personal_account(workspace_root) -> bool:
@@ -10279,6 +10621,7 @@ def apply_mail_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
     from event_gate import append_event
 
     out = mail_rules.apply_choices(workspace_root, choices, now_iso=_iso(_now(now_iso)))
+    _mail_results_held(workspace_root, choices, out)
     # The book keeps one audit row for the batch, like every Hub writer: what
     # was pressed and how it landed, never the rule's words.
     status = {"applied": "updated", "already": "already_resolved", "refused": "refused"}
@@ -10685,6 +11028,12 @@ def feed_mail_rules(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     import mail_rules
 
     out = mail_rules.feed(workspace_root, now_iso=_iso(_now(now_iso)))
+    # cr1#1892 (c): a dropped or kept thread's subject that names someone hidden is held
+    _held = _filtered_hidden(workspace_root)
+    _mail_titles_held(out.get("dropped"), _held)
+    _mail_titles_held(out.get("kept"), _held)
+    # Decision 155k (M1): every rule row is screened too, not only the flagged ones
+    _mail_rules_held(out.get("rules"), _held)
     # cr1#1538: what the page may list by itself (the personal wall and
     # off-limits, from the functions the tasks use). An older page ignores it.
     import hub_live

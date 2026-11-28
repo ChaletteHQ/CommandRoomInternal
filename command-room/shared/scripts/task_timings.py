@@ -194,6 +194,8 @@ TASKS: Dict[str, Dict[str, Any]] = {
     "cockpit-inbox": _hub("inbox", [
         ("wall", (_WALL,)),
         ("discovery", ("inbox_helpers:connector_discovery_step", "inbox_helpers:mail_seams")),
+        # cr1#1877 slice 1: the identity check before an invitation is answered
+        ("identity", ("connector_setup:identity_plan", "connector_setup:identity_gate")),
         ("constraints", ("draft_constraints:load_draft_constraints",)),
         ("context", ("context_loader:load_context",)),
         ("surface", ("inbox_helpers:run_inbox_surface", _CH + "inbox_all")),

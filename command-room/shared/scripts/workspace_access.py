@@ -447,6 +447,10 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_mail_rules",  # cr1#1020 - the Inbox tab's mail rules and dropped threads, read only
     "cockpit_helpers:feed_wall",  # cr1#1765 - the off-limits wall as its own small document, published first by every Update and by set-up; no log read, read only
     "cockpit_helpers:live_sources",  # cr1#1765 - which sources the Hub page reads live, from the plans it is rendered with, read only
+    "connector_setup:setup_doc",  # cr1#1877 slice 1 - the Connectors panel's candidates and hashed work accounts, read only
+    "connector_setup:panel_feed",  # cr1#1877 slice 1 - one plain row per connector job, read only
+    "connector_setup:identity_plan",  # cr1#1877 slice 1 - which identity tool to call before a work write, read only
+    "connector_setup:identity_gate",  # cr1#1877 slice 1 - the check before a work write: the code decides, the prose obeys
     "cockpit_helpers:live_sources_check",  # cr1#1765 - set-up is done only when each live source worked or was skipped, judged from the page's record, read only
     "cockpit_helpers:feed_brief",  # cr1#1310 - the Brief tab: today's saved morning brief, as written, read only
     "morning_message:hub_address",  # cr1#1017 - the Hub page the morning message reads its Inbox feed from, read only
@@ -802,6 +806,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "morning_message:plan_send",  # cr1#1017 - the morning message planned (it builds the plate); see the writer table row
     "morning_message:record",  # cr1#1017 - the morning message sent or skipped, one row; see the writer table row
     "cockpit_helpers:add_chat_priority",  # cr1#776 - see the writer table row
+    "connector_setup:apply_setup",  # cr1#1877 slice 1 - the Connectors panel's choices and tests, judged, then set_connector_job
     "cockpit_helpers:record_live_calendar",  # cr1#1818 part B - see the writer table row
     "cockpit_helpers:apply_review_choices",  # cr1#779 - see the writer table row
     "cockpit_helpers:apply_week_choices",  # cr1#780 - see the writer table row

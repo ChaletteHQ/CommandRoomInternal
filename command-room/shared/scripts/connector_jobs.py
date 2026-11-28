@@ -90,6 +90,8 @@ MCP_ERROR_CODES = frozenset({
     "tool_error", "bad_request", "cancelled", "rate_limited", "upstream_error", "not_granted",
     "capability_disabled", "capability_removed", "transform_error", "consent_required", "user_changed"})
 TEST_RESULTS = ("ok", "empty", "needs_approval", "failed", "account_mismatch", "not_run")
+#: What a seat's own identity look said at its test (cr1#1877 slice 1).
+IDENTITY_VERDICTS = ("match", "mismatch", "cannot_check")
 
 #: The read-only test tool per category and provider (spec §4), from the page
 #: maps. A page test may name only one of these.
@@ -223,7 +225,7 @@ def valid_test_entry(entry: Any, category: str, provider: Optional[str]) -> bool
     this category's read map, identifier-shaped argument names, a shape
     inside the grammar. A tool error's text never passes."""
     allowed = {"at", "artifact", "result", "error_code", "tool", "args_keys", "args_schema_sha",
-               "manifest_sha", "shape", "shape_sha"}
+               "manifest_sha", "shape", "shape_sha", "identity"}
     if not isinstance(entry, dict) or not set(entry) <= allowed:
         return False
     if entry.get("at") is not None and not (isinstance(entry["at"], str) and ISO_RE.match(entry["at"])):
@@ -231,6 +233,8 @@ def valid_test_entry(entry: Any, category: str, provider: Optional[str]) -> bool
     if entry.get("artifact") is not None and not (isinstance(entry["artifact"], str) and ARTIFACT_RE.match(entry["artifact"])):
         return False
     if entry.get("result") not in TEST_RESULTS:
+        return False
+    if entry.get("identity") is not None and entry["identity"] not in IDENTITY_VERDICTS:
         return False
     code = entry.get("error_code")
     if code is not None and code not in MCP_ERROR_CODES:
@@ -326,6 +330,36 @@ def job_block_problem(block: Any, category: str) -> Optional[str]:
     return None
 
 
+def identities_from_answer(provider: str, payload: Any) -> List[str]:
+    """The addresses an identity tool's answer says the connector is signed
+    in as (the page reads the same way: `pxIdentityOf`). Google Calendar's
+    `list_calendars`: the primary entry's `id`; Microsoft 365's `get_me`:
+    `mail`, else `userPrincipalName`; Superhuman's `list_accounts`: each
+    account's `email`. [] when the answer says nothing it can read."""
+    out: List[str] = []
+    p = str(provider or "")
+    try:
+        if p == "google_calendar":
+            items = payload.get("items") if isinstance(payload, dict) else payload
+            for it in items or []:
+                if isinstance(it, dict) and it.get("primary") is True and isinstance(it.get("id"), str):
+                    out.append(it["id"])
+        elif p in ("outlook", "outlook_calendar"):
+            if isinstance(payload, dict):
+                v = payload.get("mail") or payload.get("userPrincipalName")
+                if isinstance(v, str):
+                    out.append(v)
+        elif p == "superhuman":
+            accts = payload.get("accounts") if isinstance(payload, dict) else payload
+            for a in accts or []:
+                v = a.get("email") if isinstance(a, dict) else a
+                if isinstance(v, str):
+                    out.append(v)
+    except Exception:  # noqa: BLE001 - an answer it cannot read says nothing
+        return []
+    return [x.strip() for x in out if "@" in x]
+
+
 def identity_match(provider: str, answered_address: Optional[str], accounts_h: Iterable[str]) -> str:
     """`match`, `mismatch` or `cannot_check`: the connector's own answer about
     who it is signed in as, compared by the wall's hash of the folded bare
@@ -344,5 +378,5 @@ def identity_match(provider: str, answered_address: Optional[str], accounts_h: I
 
 __all__ = ["SHAPE_TYPES", "SHAPE_KEYS", "MCP_ERROR_CODES", "TEST_RESULTS", "READ_TOOLS", "IDENTITY",
            "ISO_RE", "ARTIFACT_RE", "ACCOUNT_ID_RE", "HASH_RE", "REASON_RE", "PAGE_STATES",
-           "provider_of", "shape_of", "valid_shape", "shape_sha", "valid_test_entry", "job_block_problem",
-           "identity_match"]
+           "IDENTITY_VERDICTS", "provider_of", "shape_of", "valid_shape", "shape_sha", "valid_test_entry",
+           "job_block_problem", "identities_from_answer", "identity_match"]

@@ -1305,6 +1305,11 @@ PAGE_NEEDS_APPROVAL = "needs_approval_on_this_page"
 NOT_APPROVED_ON_PAGE_LINE = "Not approved on this page yet"
 JOB_SET_EVENT = "connector_job_set"
 JOB_DRAFTED_EVENT = "connector_job_drafted"
+#: cr1#1877 slice 1 (shared by every slice): a page test applied, the page's
+#: approval seen, a job cleared (Stop on the panel).
+JOB_TESTED_EVENT = "connector_job_tested"
+JOB_APPROVAL_EVENT = "connector_job_approval"
+JOB_CLEARED_EVENT = "connector_job_cleared"
 
 
 def is_refused(row: Any) -> bool:
@@ -1593,7 +1598,37 @@ def draft_from_seat(workspace_root, live_sources: Optional[Dict[str, Any]] = Non
     return {"drafted": drafted, "kept": kept}
 
 
+def set_live_read(workspace_root, live_read: Optional[Dict[str, Any]], *,
+                  holder: str = "cockpit-setup") -> str:
+    """THE writer of the calendar row's `live_read` (cr1#1877 slice 1; it was
+    written by `cockpit_helpers.record_live_calendar` directly). `live_read`
+    None clears it. The caller has checked it (141v: the owner's yes, an
+    address, never a personal account). Answers `recorded`, `cleared` or
+    `unchanged`; raises ValueError when there is no calendar row."""
+    ent = _load_full(workspace_root)
+    ws = _workspace_container(ent)
+    conn = ws.get("connectors")
+    row = conn.get("calendar") if isinstance(conn, dict) else None
+    if not isinstance(row, dict):
+        raise ValueError("no declared calendar row")
+    if live_read is None:
+        if "live_read" not in row:
+            return "unchanged"
+        row.pop("live_read", None)
+        _write_entities(workspace_root, ent, holder)
+        return "cleared"
+    if not isinstance(live_read, dict) or set(live_read) - {"provider", "server_id", "account", "asked_at"}:
+        raise ValueError("live_read holds provider, server_id, account and asked_at only")
+    held = row.get("live_read") if isinstance(row.get("live_read"), dict) else {}
+    if all(held.get(k) == live_read.get(k) for k in ("provider", "server_id", "account")) and held:
+        return "unchanged"
+    row["live_read"] = dict(live_read)
+    _write_entities(workspace_root, ent, holder)
+    return "recorded"
+
+
 __all__ = [
+    "JOB_TESTED_EVENT", "JOB_APPROVAL_EVENT", "JOB_CLEARED_EVENT", "set_live_read",
     # cr1#1877 slice 0: the connector job record
     "JOB_KEY", "JOB_STATES", "JOB_ORIGINS", "JOB_EXEMPT_ORIGINS", "JOB_CATEGORIES", "JOB_WORDS",
     "WORK_ROLES", "JOB_PURPOSES", "REFUSED_KEY", "JOB_REFUSAL_LINES", "PAGE_NEEDS_APPROVAL",

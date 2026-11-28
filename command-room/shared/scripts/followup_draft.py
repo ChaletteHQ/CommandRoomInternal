@@ -325,9 +325,12 @@ SURNAME_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv", "v", "esq"})
 SURNAME_PARTICLES = frozenset({"van", "von", "de", "da", "del", "della", "di", "du", "la", "le",
                                "bin", "al", "der", "den", "ter"})
 #: cr1#1846 part 4: last names that are also ordinary words. One of these is
-#: held only where it is written capitalised and not first in its sentence,
-#: and it never travels in the page's hashed list (a hash carries no case).
-#: A fixed list, changed only by ruling.
+#: held only where it is written capitalised and not first in its sentence
+#: (anywhere in a title: cr1#1862, and a draft's subject: cr1#1882). It never
+#: travels in the page's `names` hashes (a hash carries no case); since cr1#1882
+#: item 1 (decision 155t) it travels apart, as `cased`, and the page reads it for a
+#: draft's subject only, where its rule needs no position, the capital read from
+#: the text as written. A fixed list, changed only by ruling.
 ORDINARY_SURNAMES = frozenset({
     "price", "brown", "long", "hall", "stone", "rose", "may", "bell", "king", "field",
     "page", "day", "cook", "ward", "banks", "lane", "love", "hope", "rich", "bond", "moore",
@@ -503,8 +506,10 @@ def voice_hidden_names(hw: Dict[str, Any]) -> List[str]:
     """cr1#1846 (coordinator decision): the hidden names the page's own
     screen may carry as hashes (`feed_voice.hidden`, ruling 143): every name
     and last name, but never an ordinary-word last name (`cased`), whose
-    capital-letter rule a hash cannot carry; for those the page says nothing
-    and the Update's recorder applies the rule. Pure."""
+    capital-letter rule a `names` hash cannot carry. Those travel apart, as
+    `cased` (cr1#1882 item 1, decision 155t), for a draft's subject only; in a
+    body the page says nothing of them and the Update's recorder applies the
+    rule. Pure."""
     # An ordinary-word last name lives in `cased` only and is never one of
     # `names`; a word in both is someone's first name or whole name, and
     # stays (review of 261a82f28).
@@ -532,7 +537,8 @@ def _cased_hits(texts: List[Any], hw: Dict[str, Any], *, title: bool = False) ->
         # decision 147r: a word in capitals is written capitalised too ("BROWN INVOICE"); cr1#1873: in prose as
         # well as in a title, where the sentence-position rule below still holds
         form = r"(?:" + re.escape(w.capitalize()) + r"|" + re.escape(w.upper()) + r")"
-        for m in re.finditer(r"(?<![\w])" + form + r"(?![\w])", raw):
+        # the review of SF04 (NIT 2): only a letter joins a word, so "_Brown" and "Brown2026" are the name too
+        for m in re.finditer(r"(?<![^\W\d_])" + form + r"(?![^\W\d_])", raw):
             if title:
                 hits.append(w)
                 break
@@ -617,6 +623,26 @@ def names_hidden(texts: List[Any], hw: Dict[str, Any], *, title: bool = False) -
     The whole names of the owner and of someone on file who is not hidden are
     theirs (cr1#1733) and are set aside first. Pure."""
     return hidden_reason(texts, hw, title=title) is not None
+
+
+def draft_hidden_reason(subject: Any, prose: List[Any], hw: Dict[str, Any], titles: Any = ()) -> Optional[str]:
+    """cr1#1882 item 1: a draft's subject is a title (it opens no sentence: "Brown
+    renewal next steps"), so it is screened in title mode, where an ordinary-word
+    last name holds at any position, and so are `titles` (the meeting's own title
+    and its facts' titles: titles too, as #1862 and 149a read them); its body and
+    the other words stay in prose mode. `named` when either names someone hidden,
+    else `shared` when either holds only on shared last names, else None. Pure."""
+    heads = [t for t in [subject] + list(titles or ()) if str(t or "").strip()]
+    a = hidden_reason(heads, hw, title=True) if heads else None
+    b = hidden_reason(list(prose or []), hw)
+    if "named" in (a, b):
+        return "named"
+    return "shared" if "shared" in (a, b) else None
+
+
+def draft_names_hidden(subject: Any, prose: List[Any], hw: Dict[str, Any], titles: Any = ()) -> bool:
+    """cr1#1882 item 1: `draft_hidden_reason` is not None. Pure."""
+    return draft_hidden_reason(subject, prose, hw, titles) is not None
 
 
 def title_hidden(title: Any, hw: Optional[Dict[str, Any]]) -> bool:
@@ -1283,7 +1309,7 @@ def record_draft(workspace_root, *, meeting_id: str, ref: str, to_person_ids: Li
         return no(AUTO_OTHER_LINE)
     if not to:
         return no(NOBODY_LINE)
-    why = hidden_reason([subject, body, title] + facts["titles"], hw)
+    why = draft_hidden_reason(subject, [body], hw, [title] + facts["titles"])   # cr1#1882 item 1: subject and titles in title mode
     if why:
         return no(SURNAME_LINE if why == "shared" else NAMED_LINE)  # cr1#1846
     if check_only:
@@ -1540,7 +1566,7 @@ def feed_followups(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str
             # the meeting's own people and the words, against the wall as it stands now
             if not facts["has_row"] or facts["calendar"] != "business" \
                     or facts["people"] & hidden or names_hidden(facts["external"], hw) \
-                    or names_hidden([d.get("subject"), d.get("body"), d.get("title")] + facts["titles"], hw):
+                    or draft_names_hidden(d.get("subject"), [d.get("body")], hw, [d.get("title")] + facts["titles"]):
                 n_held += 1
                 continue
             # a draft that failed its voice check is never shown as ready (cr1#1803)
@@ -1764,7 +1790,7 @@ def _feed_meetings(evs: List[dict], index: Dict[str, List[dict]], mails: Dict[st
             continue
         seen.add(k)
         f = meeting_facts(ref, index, mails, owner)
-        walled = bool(f["people"] & hidden) or names_hidden(f["external"] + f["titles"], hw)
+        walled = bool(f["people"] & hidden) or names_hidden(f["external"], hw) or names_hidden(f["titles"], hw, title=True)   # cr1#1882
         editable = f["has_row"] and f["calendar"] == "business" and not f["solo"] and not walled
         who = [] if not editable else sorted(
             ({"id": p, "name": (people.get(p) or {}).get("name") or ""} for p in f["people"] if p not in hidden),
@@ -2114,7 +2140,7 @@ def plan_page_draft(press: Any, *, owner_id: str, hidden_ids: Optional[set], hid
         return out("not_kept", PAGE_NOBODY_LINE)
     if any(p in hidden_ids for p in to):
         return out("not_kept", PAGE_HIDDEN_LINE)
-    if names_hidden([subject, body], hidden_word_sets):
+    if draft_names_hidden(subject, [body], hidden_word_sets):   # cr1#1882 item 1: the subject in title mode
         return out("not_kept", PAGE_NAMED_LINE)
     if pid in (kept or set()):
         return out("already", PAGE_ALREADY_LINE)
@@ -2194,7 +2220,7 @@ def _page_meeting_line(root: Path, inp: Dict[str, Any], evs: List[dict], owner: 
     # train G fix (1812 x 1787): checked before the meeting fence, so this
     # specific line wins; the fence refuses such a draft too, and the page
     # already holds a walled title (title_off), so the line reveals nothing new
-    if names_hidden(facts["titles"], hw):
+    if names_hidden(facts["titles"], hw, title=True):   # cr1#1882: a title, in title mode
         return PAGE_NAMED_LINE
     fence = globals().get("meeting_fence")
     if callable(fence):

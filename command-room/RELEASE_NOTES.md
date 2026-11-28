@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.12.7 (2026-11-27)
+
+Off-limits and personal-side senders stay off the Inbox's Filtered list and out of the mail rules. A draft's subject is checked as a title, so a held person's everyday-word last name is caught there. The voice list stays inside its size limit however many people are held. A typed to-do saves at once, and Week labels each column by its date. New under Settings: Connectors, starting with the calendar. After updating, say "update my hub" once and reload the Hub tab.
+
 ## v6.12.6 (2026-11-27)
 
 Promises and to-dos that name someone off limits keep their rows but show as "An item" across the Hub, your reminders included. All open and Focus now name the person who owes you, and leave out items an off-limits person owes you. Page sends, drafts and calendar changes always reach your book. Last names on their own, accented spellings and capitals are held, and a draft is checked one recipient at a time. After updating, say "update my hub" once and reload the Hub tab.

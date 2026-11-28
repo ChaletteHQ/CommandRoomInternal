@@ -1,7 +1,7 @@
 ---
 name: cockpit-setup
 surfaces: both
-description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'rebuild my hub', 'update my hub', 'where is my hub', 'show my settings' (the Hub's Settings, behind the gear: everything learned and every setting), and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Go button whose first press each day switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book; a later press refreshes the day. Publishes the page, registers the three Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
+description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'set up my connectors', 'change my connectors', 'rebuild my hub', 'update my hub', 'where is my hub', 'show my settings' (the Hub's Settings, behind the gear: everything learned and every setting), and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Go button whose first press each day switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book; a later press refreshes the day. Publishes the page, registers the three Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
 ---
 
 # cockpit-setup
@@ -252,8 +252,12 @@ verbatim. A run that ended at Step 2's `ok: false` never reaches this step.
 ## Step 3: Render the page
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"basename": "<basename from Step 1>", "plugin_version": "<the installed plugin version>", "published_at": "<now ISO>", "recipe": true, "server": "Claude Code Remote", "workspace_root": "<WS>"}, "name": "cockpit_helpers:render_page_file"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"basename": "<basename from Step 1>", "plugin_version": "<the installed plugin version>", "published_at": "<now ISO>", "recipe": true, "server": "Claude Code Remote", "workspace_root": "<WS>", "connector_servers": <the connectors this chat has, as [{"server_id": "<the id in its tool names>", "display_name": "<its display name>", "tools": ["<each tool name>"]}], or null>}, "name": "cockpit_helpers:render_page_file"}'
 ```
+
+`connector_servers` (cr1#1877) is what this chat's own tool list shows,
+nothing read from a connector: it lets the page's Connectors panel test the
+ones that can serve a job. Pass the same list to Step 5a.
 
 The answer carries `plugin_version` and `runtime_version` (cr1#118): the
 version in the shipped `plugin.json` beside the helper wins over the typed
@@ -385,6 +389,34 @@ failed or was not made),
 and its `batches[0]` sent as ONE `batch` with the artifact database tool,
 exactly as printed. A step here that fails is left alone: every Hub Update
 publishes the list again before its first heavy part.
+
+## Step 5a: The Connectors panel (cr1#1877; owner rulings 150, 151)
+
+Which connector does which job is set on the Hub, in Settings, under
+Connectors. The page chooses, asks permission and makes one small test read;
+it keeps only the answer's shape. This chat never calls a connector here.
+
+One `run_helper` call of `connector_setup:setup_doc` with `{"workspace_root":
+"<WS>", "servers": <the Step 3 list>}`, then `set` the answer as
+`config/connector_setup` with the artifact database tool, exactly as it came
+back. The Step 6 line also says, once: "On the Hub, open Settings, then
+Connectors: press Test beside the connector that holds your work calendar,
+allow it when the page asks, or press Skip. Say done when you have."
+
+When the owner says done (or `set up my connectors`, or `change my
+connectors`), `get` `config/connector_tests` and `config/connector_setup`
+with the artifact database tool, and ONE `run_writer` call of
+`connector_setup:apply_setup` with `{"workspace_root": "<WS>", "tests_doc":
+<the tests as read>, "setup": <the setup as read>}`. Say its `line`,
+verbatim. Never press, allow or skip anything for the owner. A connector
+the panel cannot test is chosen nowhere else. When its `applied` is not
+empty, run Steps 3 and 4 again at the stored address, so the page's own
+checks before a calendar change use what was just confirmed.
+
+On a first set-up the page has no address until Step 4 publishes it, so
+the panel cannot test yet ("Publish the Hub once more from the chat, then
+test here."): after the first publish, run Steps 3 and 4 once more at the
+recorded address before asking the owner to test.
 
 ## Step 5b: Allow the live sources (cr1#1765)
 

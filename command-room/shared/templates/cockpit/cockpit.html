@@ -1447,6 +1447,7 @@
     <div class="maintnote" id="holdernote" hidden></div>
   </div>
   <!-- review round 1 of #1772: a live source that was skipped, refused or did not work keeps its Allow here -->
+  <div class="col" id="connset" hidden><h2 class="sethead">Connectors</h2><div class="quiet" id="connline"></div><div id="connrows"></div></div>
   <div class="col" id="livesrcset" hidden><h2 class="sethead">Live sources</h2><div id="livesrcrows"></div></div>
   <div id="settingshead" class="quiet"></div>
   <div id="settingsrows" class="col"></div>
@@ -1506,6 +1507,7 @@
     // The seat's plan for reading the calendar itself while the page is open
     // (cr1#1758); null shows the built Today feed only.
     callive: /*{{CALENDAR_LIVE_JSON}}*/null,
+    connectors: /*{{CONNECTORS_JSON}}*/null,
     // The plugin version this page was built from (cr1#1389), against the
     // installed one the Settings feed carries.
     version: {{PLUGIN_VERSION_JSON}}
@@ -4294,6 +4296,9 @@
     saveChoice({ kind: "todo", src: "hub", n: "new", action: "add", input: { title: t, priority: pr, focus: true }, title: t }).then(function (todo) {
       if (!todo) return;
       toast("Added to your list", function () { if (fxCanDelete(todo)) undoChoice(todo.id); else toast(FX_NO_UNDO); });
+      // cr1#1722: a typed to-do is an owner's add, so it saves at once as "+ Add" and "+ Reminder" do (saveNow keeps
+      // its once-a-minute limit, waits behind any other press, and never switches a paused task on)
+      if (typeof saveNow === "function") saveNow(todo);
     });
   }
   function fxDropIt(id) {
@@ -5075,7 +5080,12 @@
   }
   function neverRule(addr) {
     if (!addr) return null;
-    return ((S.mailrules || {}).rules || []).filter(function (r) { return r.mode === "show" && r.match === "sender" && r.value === addr; })[0] || null;
+    // cr1#1892 (decision 155l): a held row names nobody, so it is matched by its value's hash; a Filtered
+    // row is drawn only after its sender is hashed (filteredHash)
+    var h = typeof HASHES !== "undefined" && typeof normOf === "function" ? HASHES[normOf(bareAddr(addr))] : "";
+    return ((S.mailrules || {}).rules || []).filter(function (r) {
+      return r.mode === "show" && r.match === "sender" && (r.held ? !!(h && r.value_hash === h) : r.value === addr);
+    })[0] || null;
   }
   function filteredActs(r) {
     var acts = "", a = r.actions || [];
@@ -5105,6 +5115,8 @@
   // cr1#1169: mail from an account marked personal is never read, so the
   // section says so in one line rather than look as if a filter ate it.
   var FILTERED_PERSONAL_LINE = "Mail from your personal account is never read, so none of it is listed here.";
+  // cr1#1892 (decision 155e): who is hidden could not be read, so the server listed nothing
+  var FILTERED_HELD_LINE = "The off-limits list could not be read, so filtered mail is not listed.";
   // cr1#1591: a press still waiting on a set-aside row, so its group's one
   // line can say so while the group is folded.
   function filteredWaiting(r) {
@@ -5112,11 +5124,28 @@
     return !!(ruleChoice("back", r.thread_id) || ruleChoice("keep", r.thread_id) || ruleChoice("unkeep", r.thread_id)
       || ruleChoice("add", "never:" + r.sender) || (rule && ruleChoice("remove", rule.id)));
   }
+  // cr1#1892: a filtered row is drawn only past the wall, by its sender's hash; a value not
+  // hashed yet is held (liveOffLimits fails closed), so the rows are hashed and drawn again
+  function filteredHash(groups) {
+    if (S.filtHashing || typeof hashAll !== "function" || typeof normOf !== "function" || typeof HASHES === "undefined") return;
+    var need = [];
+    groups.forEach(function (g) { (g.rows || []).forEach(function (r) {
+      [bareAddr(r.sender || ""), r.name || ""].forEach(function (v) { var n = normOf(v); if (n && !HASHES[n] && need.indexOf(v) < 0) need.push(v); });
+    }); });
+    if (!need.length) return;
+    S.filtHashing = true;
+    hashAll(need).then(function () { S.filtHashing = false; renderFiltered(); }, function () { S.filtHashing = false; });
+  }
   function renderFiltered() {
     var el = $("filtered"); if (!el) return;
     var f = S.inbox && S.inbox.filtered, groups = (f && f.groups) || [];
     var personal = f && f.personal_not_read ? '<div class="quiet">' + esc(FILTERED_PERSONAL_LINE) + "</div>" : "";
+    // cr1#1892: the server could not read who is hidden, so it listed nothing; it says why
+    if (f && f.held) { el.innerHTML = '<div class="quiet">' + esc(FILTERED_HELD_LINE) + "</div>" + personal; return; }
     if (!groups.length) { el.innerHTML = personal; return; }
+    // cr1#1892: with no sound wall, each group's line and no rows
+    var fw0 = typeof liveWall === "function" ? liveWall() : null, sound = !!(fw0 && fw0.ok) && typeof liveOffLimits === "function";
+    if (sound) filteredHash(groups);
     var h = '<div class="quiet">Filtered from this read (' + esc(f.n) + ")</div>" + personal;
     groups.forEach(function (g) {
       // cr1#1591: one line a group, its count and Show; opened, its rows,
@@ -5124,12 +5153,13 @@
       var fk = "f:" + (g.key || g.label), fo = !!(S.ifold || {})[fk], fw = (g.rows || []).filter(filteredWaiting).length;
       h += '<details class="more ifold" data-ifold="' + esc(fk) + '"' + (fo ? " open" : "") + "><summary>" + esc(g.label) + ' <span class="n">' + esc(g.n) + "</span>" +
         (fw ? ' · <span class="iwait">' + fw + " waiting</span>" : "") + ' <span class="ishow">' + (fo ? "Hide" : "Show") + "</span></summary>";
-      (g.rows || []).forEach(function (r) {
+      var shown = sound ? (g.rows || []).filter(function (r) { return !liveOffLimits(r.sender || "", r.name || ""); }) : [];
+      shown.forEach(function (r) {
         var src = r.source || {}, link = src.url ? ' · <a href="' + esc(src.url) + '" target="_blank" rel="noopener">open the thread</a>' : "";
         h += '<div class="row"><div class="main"><div class="title">' + esc(r.name || "") + (r.subject ? " · " + esc(showTitle(r.subject, { kind: "mail", drop: [r.name] })) : "") +
           '</div><div class="sub">' + esc(cap(r.why || "")) + (src.rule && src.rule !== r.why ? " · rule: " + esc(src.rule) : "") + link + '</div></div><div class="acts">' + filteredActs(r) + "</div></div>";
       });
-      if (g.n > (g.rows || []).length) h += '<div class="quiet">' + esc(g.n - g.rows.length) + " more not listed.</div>";
+      if (g.n > shown.length) h += '<div class="quiet">' + esc(g.n - shown.length) + " more not listed.</div>";
       h += "</details>";
     });
     el.innerHTML = h;
@@ -5164,7 +5194,8 @@
   }
   // cr1#1230: a press that would let an off-limits sender's mail back into the
   // records says so once and waits for a second press, like Send (cr1#677).
-  var REOPEN_OFF_LIMITS_LINE = "{value} is off limits, so their mail is kept out of your records. This would file their mail into your records again. Press it again to go ahead.";
+  // cr1#1892 (decision 155e): it names nobody; the ending is the server's, which serverAsked matches
+  var REOPEN_OFF_LIMITS_LINE = "This sender is off limits, so their mail is kept out of your records. This would file their mail into your records again. Press it again to go ahead.";
   // The address the server reads (`mail_rules.address_of`): `Name <a@b>` is a@b.
   function bareAddr(t) { var str = String(t == null ? "" : t), m = str.match(/<([^<>@\s]+@[^<>\s]+)>/); return (m ? m[1] : str).trim().replace(/^<|>$/g, "").toLowerCase(); }
   // The server said its sentence on an earlier press of the same thing (the
@@ -5185,7 +5216,16 @@
     if (!local) return false;
     return reopenConfirmed(key, value) ? true : null;
   }
-  function offLimitsRule(addr) { addr = bareAddr(addr); return ((S.mailrules || {}).rules || []).filter(function (r) { return r.off_limits && r.mode === "hide" && r.match === "sender" && (r.value === addr || normOf(r.value) === normOf(addr)); })[0] || null; }   // cr1#1779
+  // cr1#1892: an off-limits rule carries no address, so whether a sender is off limits is the
+  // wall's hash. A sender not hashed yet is left to the server, which refuses the first press with
+  // its own line (serverAsked then counts the next as the second); it is hashed for the next press.
+  function offLimitsRule(addr) {
+    addr = bareAddr(addr); if (!addr) return false;
+    var w = typeof liveWall === "function" ? liveWall() : null, v = typeof normOf === "function" ? normOf(addr) : "";
+    if (!w || !w.ok || !v || typeof HASHES === "undefined") return false;
+    if (!HASHES[v]) { if (typeof hashAll === "function") hashAll([addr]).then(null, function () {}); return false; }
+    return inList(w.off_limits || [], HASHES[v]);
+  }
   function reopenConfirmed(key, value) {
     S.pendingReopen = S.pendingReopen || {};
     var first = S.pendingReopen[key];
@@ -5773,6 +5813,7 @@
   }
   function calErrLine(e) {
     var code = e && e.code ? String(e.code) : "", msg = e && e.message ? String(e.message) : "", name = CAL.server;
+    if (code === "identity") return msg;   // cr1#1877: the identity check's own line
     if (code === "blocked_by_policy" || code === "consent_required" || /forbidden|insufficient|not authorized|unauthorized|AADSTS|access denied/i.test(msg)) return CAL.admin_line;
     if (code === "needs_reauth") return "Reconnect " + name + " in claude.ai Settings, Connectors. Nothing was changed.";
     if (code === "server_not_connected" || code === "selection_required" || code === "server_not_found") return "Add the " + name + " connector in claude.ai Settings, Connectors. Nothing was changed.";
@@ -5803,7 +5844,7 @@
         if (outcome === "error") banner(line, true, err ? errText(err) : "");
       }, function (e) { delete S.answering[k]; renderToday(); banner(outcome === "applied" ? "Answered, but the page could not note it." : line, true, errText(e)); });
     }
-    mcp.callTool(CAL.server, CAL.respond, respondInput(m, answer)).then(function () {
+    (typeof cnCall === "function" ? cnCall("calendar", CAL.server, CAL.respond, respondInput(m, answer)) : mcp.callTool(CAL.server, CAL.respond, respondInput(m, answer))).then(function () {   // cr1#1877: the identity check first
       return land("applied", answer === "accept" ? "Accepted." : (answer === "decline" ? "Declined." : "Marked tentative."));
     }, function (e) { return land("error", calErrLine(e), e); });
   }
@@ -12782,6 +12823,7 @@
   }
   function calActErr(e, done) {
     var code = e && e.code ? String(e.code) : "", msg = e && e.message ? String(e.message) : "", name = CALACT.server, none = done || "Nothing was changed.";
+    if (code === "identity") return msg;   // cr1#1877: the identity check's own line
     if (code === "blocked_by_policy" || code === "consent_required" || /forbidden|insufficient|not authorized|unauthorized|AADSTS|access denied/i.test(msg)) return name + " refused this. An admin may need to let the Claude connector change your calendar. " + none;
     if (code === "needs_reauth") return "Reconnect " + name + " in claude.ai Settings, Connectors. " + none;
     if (code === "server_not_connected" || code === "selection_required" || code === "server_not_found") return "Add the " + name + " connector in claude.ai Settings, Connectors. " + none;
@@ -12917,7 +12959,7 @@
       orig_start: orig.start, orig_end: orig.end, orig_tz: orig.tz || null, via: via || "panel" });
     if (back) row.back = true;
     var wasOpen = S.meetOpen === meetKey(m);
-    return mcp.callTool(CALACT.server, spec.tool, inp).then(function (r) {
+    return (typeof cnCall === "function" ? cnCall("calendar", CALACT.server, spec.tool, inp) : mcp.callTool(CALACT.server, spec.tool, inp)).then(function (r) {   // cr1#1877: the identity check first
       if (calFailed(r)) return calFail(id, id, CALACT.server + " did not make the change. Nothing more was done.");
       // the proof it moved: the answer gives the new start, or names the event back
       var got = calStartIn(r);
@@ -12936,7 +12978,7 @@
     for (var k in (spec.extra || {})) inp[k] = spec.extra[k];
     S.cal.busy[id] = action || "cancel"; delete S.cal.lines[id]; renderAll();
     var row = calRow(action || "cancel", id, m, { start: m.start, end: m.end });
-    return mcp.callTool(CALACT.server, spec.tool, inp).then(function (r) {
+    return (typeof cnCall === "function" ? cnCall("calendar", CALACT.server, spec.tool, inp) : mcp.callTool(CALACT.server, spec.tool, inp)).then(function (r) {   // cr1#1877: the identity check first
       if (calFailed(r)) return calFail(id, id, CALACT.server + " did not cancel it. Nothing more was done.");
       if (S.meetOpen === meetKey(m)) S.meetOpen = null;
       return calLand(row, id, "applied", action === "remove" ? "Booking taken back." : "Cancelled.");
@@ -12953,7 +12995,7 @@
     if (spec.video_key) inp[spec.video_key] = !!b.video;
     for (var k in (spec.extra || {})) inp[k] = spec.extra[k];
     S.cal.busy[key] = "book"; S.cal.bookLine = ""; renderCalBook();
-    return mcp.callTool(CALACT.server, spec.tool, inp).then(function (r) {
+    return (typeof cnCall === "function" ? cnCall("calendar", CALACT.server, spec.tool, inp) : mcp.callTool(CALACT.server, spec.tool, inp)).then(function (r) {   // cr1#1877: the identity check first
       var id = calFailed(r) ? "" : calIdIn(r);
       if (!id) { delete S.cal.busy[key]; S.cal.bookLine = CALACT.server + " gave no event back. Check your calendar before booking again."; renderCalBook(); banner(S.cal.bookLine, true); return null; }
       var row = calRow("book", id, { title: b.title }, { start: calIso(b.start), end: calIso(b.end), tz: tz, people: b.people.map(function (p) { return p.id; }).filter(Boolean), n_people: b.people.length, video: !!b.video });
@@ -13311,8 +13353,15 @@
     var el = $("weekgrid"); if (!el) return;
     if (S.cal.drag && S.cal.drag.on) { S.cal.stale = true; return; }
     if (S.pl && S.pl.drag && S.pl.drag.on) { S.pl.stale = true; return; }   // cr1#1541: nor under a plan drag
-    var t = S.today, days = t && t.week && Array.isArray(t.week.days) ? t.week.days : [], now = Date.now(), h = "";
-    if (!days.length) { putHtml(el, ""); putHtml($("weekpick"), ""); return; }
+    var t = S.today, all = t && t.week && Array.isArray(t.week.days) ? t.week.days : [], now = Date.now(), h = "";
+    // SF05 (Refs #1722): a column per date, by the page's own today (the workspace's day, else this browser's).
+    // "Today" was the feed's first day, frozen when the feed was built: a feed built yesterday drew "Today" on
+    // yesterday beside today's dated column. Days already past are left out, and an older feed says so.
+    var dayNow = (typeof wsDayNow === "function" && wsDayNow(t)) || hubDay();
+    var days = all.filter(function (d) { return d && String(d.date || "") >= dayNow; });
+    var stale = all.length && String(all[0].date || "") !== dayNow
+      ? '<div class="sub wkstale">This week was read on ' + esc(fmtDate(all[0].date)) + "; it catches up at the next update.</div>" : "";
+    if (!days.length) { putHtml(el, stale); putHtml($("weekpick"), ""); return; }
     railSpan();
     var wkDrag = false; days.forEach(function (d) { (d.meetings || []).forEach(function (m) { if (calCanDrag(m)) wkDrag = true; }); });
     // cr1#1641 item 22: the day's all-day events in one lane above the
@@ -13332,7 +13381,8 @@
     for (var hr = WK_H0; hr <= WK_H1; hr++) h += '<span style="top:' + (34 + (hr - WK_H0) * WK_PX) + 'px">' + ((hr + 11) % 12 + 1) + "</span>";
     h += "</div>";
     days.forEach(function (d, i) {
-      h += '<div class="wkc' + (i === 0 ? " today" : "") + '" data-wkday="' + esc(d.date) + '"><div class="wkd">' + esc(i === 0 ? (d.name || "Today") : fmtDate(d.date)) + "</div>";
+      var isToday = String(d.date || "") === dayNow;
+      h += '<div class="wkc' + (isToday ? " today" : "") + '" data-wkday="' + esc(d.date) + '"><div class="wkd">' + esc(isToday ? "Today" : fmtDate(d.date)) + "</div>";
       // cr1#1591 review (it was the Today rail's): meetings that overlap
       // share their day's width, side by side, each pressable and draggable
       var placed = [];
@@ -13370,7 +13420,7 @@
       h += "</div>";
     });
     h += "</div>";
-    putHtml(el, h);
+    putHtml(el, stale + h);   // SF05: an older feed says so above the grid
     var pick = $("weekpick"), open = S.cal.weekOpen, pm = null;
     if (open) days.forEach(function (d) { (d.meetings || []).forEach(function (m) { if (!pm && (m.event_id || meetKey(m)) === open) pm = m; }); });
     if (!pm) { S.cal.weekOpen = null; putHtml(pick, ""); return; }
@@ -15453,12 +15503,17 @@
   // hashes are made the same way (`hub_live._norm`).
   var NORM_DROP;
   function normOf(v) {
+    // SF04 (WALLNORM1's one NFKD on the page): normOf(v, true) returns the same fold with its case kept, for
+    // pwNamed's title mode; a map's index is never true
+    var keepCase = arguments.length > 1 && arguments[1] === true;
     v = String(v == null ? "" : v);
     if (NORM_DROP === undefined) { try { NORM_DROP = new RegExp("[\\p{M}\\p{Cf}]", "gu"); } catch (e) { NORM_DROP = null; } }
     if (NORM_DROP && typeof v.normalize === "function") v = v.normalize("NFKD").replace(NORM_DROP, "");
     // Fix check of round 1: Python's split() also reads U+001C to U+001F and
     // U+0085 as spaces; JS does not, so they are made spaces here first.
-    return v.replace(/[\u001c-\u001f\u0085]/g, " ").trim().toLowerCase().replace(/\s+/g, " ");
+    // (one line, as HUBLIVETODAY1's 'spaces' proof cuts it; title mode trims its words anyway)
+    v = v.replace(/[\u001c-\u001f\u0085]/g, " ").trim();
+    return keepCase ? v : v.toLowerCase().replace(/\s+/g, " ");
   }
   function hasher() { var c = typeof crypto !== "undefined" && crypto ? crypto : (window.crypto || null); return c && c.subtle && typeof TextEncoder !== "undefined" ? c.subtle : null; }
   // The hash of every value, before anything is compared. Rejects where this
@@ -16116,6 +16171,30 @@
     // rule on the sender wins. Rules by subject or by kind wait for the Inbox run.
     var rules = (S.mailrules || {}).rules || [], d = domainOf(a.addr), hide = false, show = false;
     rules.forEach(function (r) {
+      // cr1#1892 (decision 155l): a held row names nobody and is matched by its value's hash, the
+      // wall's form. A value not hashed yet counts for a hide rule (closed) and is hashed once, then the
+      // inbox and Today are drawn again; where this view cannot hash, it stays hidden.
+      if (r.held) {
+        if (!r.value_hash || (r.match !== "sender" && r.match !== "domain")) return;
+        var key = r.match === "sender" ? normOf(a.addr) : domainOf(normOf(a.addr));
+        if (!key) return;
+        var hk = HASHES[key];
+        if (!hk) {
+          S.ruleHashing = S.ruleHashing || {};
+          if (typeof hashAll === "function" && !S.ruleHashing[key]) {
+            S.ruleHashing[key] = true;
+            hashAll([key]).then(function () {
+              if (typeof renderInbox === "function") renderInbox();
+              if (typeof renderToday === "function") renderToday();
+            }, function () {});
+          }
+          if (r.mode === "hide") hide = true;
+          return;
+        }
+        if (hk !== r.value_hash) return;
+        if (r.mode === "show" && r.match === "sender") show = true; else if (r.mode === "hide") hide = true;
+        return;
+      }
       // cr1#1779: both sides as the one wall fold reads them (normOf): mail_rules stores a new rule folded,
       // and a rule stored before it holds its raw value
       if (r.match === "sender" && (r.value === a.addr || normOf(r.value) === normOf(a.addr))) { if (r.mode === "show") show = true; else hide = true; }
@@ -16462,6 +16541,7 @@
   var TL_VIA_LINE = "Read live through {server}, read only. Superhuman still books and moves meetings.";
   function liveSrcStoppable(src) { return src === "calendar" && !!(CALLIVE && CALLIVE.via) && liveSrcState("calendar") === "ok"; }
   function renderLiveSettings() {
+    if (typeof cnRender === "function") cnRender();   // cr1#1877: the Connectors panel sits above
     var box = $("livesrcset"), rows = $("livesrcrows"); if (!box || !rows) return;
     var later = liveSrcList().filter(function (src) { return !!LIVE_SRC_STATE_WORDS[liveSrcState(src)] || liveSrcStoppable(src); });
     if (!mcp || !db || !S.livesrcReady || !later.length) { box.hidden = true; rows.innerHTML = ""; return; }
@@ -16499,6 +16579,191 @@
   }
   // (guarded: a suite runs this script on a page without these two places)
   ["livesetup", "livesrcrows"].forEach(function (id) { var el = $(id); if (el && el.addEventListener) el.addEventListener("click", onLiveSrcPress); });
+  // ---- the Connectors panel (cr1#1877 slice 1; prefix cn) ----
+  // The page does choices, consent and test calls only. A test answer is
+  // reduced to its SHAPE here (cnShapeOf: types, the listed field names,
+  // counts) and dropped; the server re-checks what is written
+  // (connector_setup.apply_setup). The identity look compares the hash of the
+  // address a connector says it is signed in as with the work accounts' hashes
+  // set-up gave (config/connector_setup); the address itself is never kept.
+  var CN = CFG.connectors && typeof CFG.connectors === "object" ? CFG.connectors : null;
+  // review M4: the panel's static wording and shape keys live here, pinned equal
+  // to connector_setup / connector_jobs by CONNSETUP1; only what varies rides in CFG.
+  var CNK = {"artifact_line":"You are allowing these connectors for this Hub page ({page}). Another page, or a new Hub, asks again.","not_on_page_line":"Not approved on this page yet","gate_lines":{"mismatch":"{job} is signed in as an account that is not the one you confirmed, so nothing was changed.","cannot_check":"Command Room could not check which account {job} is signed in as, so nothing was changed.","no_job":"{job} is not set up on the Hub, so nothing was changed."},"shape_keys":{"calendar":["attendees","date","dateTime","email","end","events","id","isCancelled","items","nextPageToken","organizer","recurringEventId","responseStatus","self","seriesMasterId","showAs","start","status","subject","summary","timeZone","value"]},"identity":{"gmail":"search_threads","google_calendar":"list_calendars","outlook":"get_me","outlook_calendar":"get_me","superhuman":"list_accounts"},"acting":{"superhuman":"acting_email"},"test_args":{"calendar":{"google_calendar":{"from":"startTime","to":"endTime","tz":"timeZone","size":"pageSize","time":"local","args":{"orderBy":"startTime"}},"outlook_calendar":{"from":"afterDateTime","to":"beforeDateTime","tz":null,"size":"limit","time":"rfc3339","args":{"query":"*","order":"oldest"}},"superhuman":{"from":"start_date","to":"end_date","tz":"timezone","time":"rfc3339","args":{"working_hours_only":true,"duration_minutes":30}}}},"words":{"calendar":"Work calendar","email":"Work mail","chat":"Chat","meetings":"Meeting notes","documents":"Files","personal_calendar":"Personal calendar"},"enabled":["calendar"]};
+  var CN_FROM_CHAT_LINE = "This page cannot test connectors on this account. Your calendar keeps working as before.";   // 155s: no loop back to the chat
+  var CN_ARTIFACT_LINE = CNK.artifact_line, CN_NOT_ON_PAGE_LINE = CNK.not_on_page_line, CN_GATE_LINES = CNK.gate_lines, CN_SHAPE_KEYS = CNK.shape_keys;
+  S.cnSetup = null; S.cnTests = null; S.cnBusy = {}; S.cnLine = {};
+  var CN_SHAPE_MAX_N = 99, CN_SHAPE_MAX_OTHER = 999, CN_SHAPE_DEPTH = 6, CN_SHAPE_ITEMS = 5;
+  function cnShapeOf(p, cat, depth) {
+    depth = depth || 0;
+    var keys = CN_SHAPE_KEYS[cat] || [];
+    if (depth >= CN_SHAPE_DEPTH) return { t: "null" };
+    if (typeof p === "boolean") return { t: "bool" };
+    if (typeof p === "number") return { t: "num" };
+    if (typeof p === "string") return { t: "str" };
+    if (p === null || p === undefined) return { t: "null" };
+    if (Array.isArray(p)) {
+      var item = null;
+      p.slice(0, CN_SHAPE_ITEMS).forEach(function (x) { item = cnMerge(item, cnShapeOf(x, cat, depth + 1)); });
+      var a = { t: "arr", n: Math.min(p.length, CN_SHAPE_MAX_N) }; if (item) a.i = item; return a;
+    }
+    if (typeof p === "object") {
+      var kept = {}, other = 0;
+      Object.keys(p).forEach(function (k) { if (keys.indexOf(k) >= 0) kept[k] = cnShapeOf(p[k], cat, depth + 1); else other++; });
+      return { t: "obj", k: kept, other: Math.min(other, CN_SHAPE_MAX_OTHER) };
+    }
+    return { t: "null" };
+  }
+  function cnMerge(a, b) {
+    if (!a) return b;
+    if (a.t !== b.t) return a;
+    if (a.t === "obj") { var k = {}; Object.keys(a.k || {}).forEach(function (x) { k[x] = a.k[x]; }); Object.keys(b.k || {}).forEach(function (x) { k[x] = cnMerge(k[x], b.k[x]); }); return { t: "obj", k: k, other: Math.min(Math.max(a.other || 0, b.other || 0), CN_SHAPE_MAX_OTHER) }; }
+    if (a.t === "arr") { var o = { t: "arr", n: Math.max(a.n || 0, b.n || 0) }; if (a.i || b.i) o.i = cnMerge(a.i, b.i || a.i); return o; }
+    return a;
+  }
+  // The addresses an identity tool's answer says it is signed in as (connector_jobs.identities_from_answer).
+  function cnIdentities(provider, p) {
+    var out = [];
+    try {
+      if (provider === "google_calendar") { var items = p && p.items ? p.items : p; (items || []).forEach(function (it) { if (it && it.primary === true && typeof it.id === "string") out.push(it.id); }); }
+      else if (provider === "outlook" || provider === "outlook_calendar") { var v = p && (p.mail || p.userPrincipalName); if (typeof v === "string") out.push(v); }
+      else if (provider === "superhuman") { var ac = p && p.accounts ? p.accounts : p; (ac || []).forEach(function (a) { var e = a && typeof a === "object" ? a.email : a; if (typeof e === "string") out.push(e); }); }
+    } catch (e) { return []; }
+    return out.filter(function (x) { return x.indexOf("@") > 0; }).map(function (x) { return bareAddr(x); });
+  }
+  function cnDigests(addrs) {
+    if (!addrs.length || typeof hashAll !== "function") return Promise.resolve([]);
+    // fix check NIT: one entry per address, in order, so a hash is never paired with another address
+    return hashAll(addrs).then(function () { return addrs.map(function (a) { return HASHES[normOf(a)]; }); }, function () { return []; });
+  }
+  function cnRow(cat) { return ((CN && CN.rows) || []).filter(function (r) { return r.category === cat; })[0] || null; }
+  // Before a calendar write (spec §5): a confirmed job writes only when its
+  // connector says it is signed in as a confirmed account; a migrated or
+  // legacy job (no confirmed accounts) writes as before (151a).
+  function cnGate(cat, server) {
+    var row = cnRow(cat);
+    if (!row || !row.accounts_h || !row.accounts_h.length) return Promise.resolve({ ok: true });
+    var tool = CNK.identity[row.provider_key], lines = CN_GATE_LINES;
+    var key = CNK.acting[row.provider_key] || "", word = CNK.words[row.category] || "This connector";
+    var no = function (k) { return { ok: false, line: String(lines[k] || "").replace("{job}", word) }; };
+    if (!tool || !mcp) return Promise.resolve(no("cannot_check"));
+    return mcp.callTool(server, tool, {}, { cache: false }).then(function (r) {
+      var addrs = cnIdentities(row.provider_key, r && r.payload);
+      return cnDigests(addrs).then(function (d) {
+        var got = d.filter(Boolean);
+        if (!got.length) return no("cannot_check");
+        var hits = []; d.forEach(function (h, i) { if (h && row.accounts_h.indexOf(h) >= 0) hits.push(addrs[i]); });
+        // review M3: a connector with an account argument acts as the account the write
+        // names, so the write names the confirmed one; with none, several accounts cannot tell
+        if (key) return hits.length ? { ok: true, acting_key: key, acting: hits.sort()[0] } : no("mismatch");
+        if (got.length > 1) return no("cannot_check");
+        return hits.length ? { ok: true } : no("mismatch");
+      });
+    }, function () { return no("cannot_check"); });
+  }
+  function cnCall(cat, server, tool, inp, opts) {
+    return cnGate(cat, server).then(function (g) {
+      if (!g.ok) { var e = new Error(g.line || "Nothing was changed."); e.code = "identity"; throw e; }
+      if (g.acting_key && g.acting) { var named = {}; Object.keys(inp || {}).forEach(function (k) { named[k] = inp[k]; }); named[g.acting_key] = g.acting; inp = named; }
+      return opts ? mcp.callTool(server, tool, inp, opts) : mcp.callTool(server, tool, inp);
+    });
+  }
+  function cnWindow(spec) {
+    var now = Date.now(), to = now + 7 * 864e5, tz = calViewerZone ? calViewerZone() : "UTC", inp = {};
+    Object.keys(spec.args || {}).forEach(function (k) { inp[k] = spec.args[k]; });
+    var f = function (ms) { var d = new Date(ms); return spec.time === "local" ? d.toISOString().slice(0, 19) : d.toISOString(); };
+    if (spec.from) inp[spec.from] = f(now);
+    if (spec.to) inp[spec.to] = f(to);
+    if (spec.tz) inp[spec.tz] = tz;
+    if (spec.size) inp[spec.size] = 1;
+    return inp;
+  }
+  function cnSave(cat, entry) {
+    var jobs = {}; ((S.cnTests && S.cnTests.jobs) ? Object.keys(S.cnTests.jobs) : []).forEach(function (k) { jobs[k] = S.cnTests.jobs[k]; });
+    jobs[cat] = entry;
+    S.cnTests = { jobs: jobs };
+    return db.doc("config/connector_tests").set({ jobs: jobs }).then(null, function () {});
+  }
+  // One test, on the owner's press: who the connector is signed in as, then one small read.
+  function cnTest(cat, cand) {
+    if (!mcp || !db || !CN || S.cnBusy[cat]) return;
+    var spec = CNK.test_args[cat] && CNK.test_args[cat][cand.provider_key];   // review SHOULD 9: by job, then provider
+    var job = S.cnSetup && S.cnSetup.jobs && S.cnSetup.jobs[cat];
+    if (!spec || !job || !CN.hub) return;   // review SHOULD 3: no test before the page has its address
+    S.cnBusy[cat] = true; S.cnLine[cat] = "Testing."; cnRender();
+    var accts = job.accounts || [], entry = { choice: { server_id: cand.server_id, display_name: cand.display_name, provider_key: cand.provider_key } };
+    var test = { at: new Date().toISOString().replace(/\.\d+Z$/, "Z"), artifact: CN.hub || "", tool: cand.test_tool, identity: "cannot_check" };
+    var ident = cand.identity_tool ? mcp.callTool(cand.display_name, cand.identity_tool, {}, { cache: false }).then(function (r) {
+      var addrs = cnIdentities(cand.provider_key, r && r.payload);
+      return cnDigests(addrs).then(function (d) { return { addrs: addrs, d: d }; });
+    }, function () { return { addrs: [], d: [] }; }) : Promise.resolve({ addrs: [], d: [] });
+    ident.then(function (got) {
+      var d = got.d, hit = accts.filter(function (a) { return d.indexOf(a.address_h) >= 0; })[0];
+      test.identity = !d.filter(Boolean).length ? "cannot_check" : (hit ? "match" : "mismatch");
+      if (hit) entry.account_id = hit.account_id;
+      var inp = cnWindow(spec); test.args_keys = Object.keys(inp);
+      // fix check S7: on a connector with an account argument, the test reads as the matched work account
+      var key = CNK.acting[cand.provider_key];
+      if (key && hit) { inp[key] = got.addrs[d.indexOf(hit.address_h)]; }
+      return mcp.callTool(cand.display_name, cand.test_tool, inp, { cache: false }).then(function (r) {
+        var shape = cnShapeOf(r && r.payload, cat);
+        test.shape = shape; entry.approval = "granted";
+        test.result = test.identity === "mismatch" ? "account_mismatch" : "ok";
+        S.cnLine[cat] = test.identity === "match" ? "Working. Say done in the chat to save it." : (test.identity === "mismatch" ? String(CN_GATE_LINES.mismatch || "").replace("{job}", CNK.words[cat] || cat) : "It answered, but which account it is signed in as could not be checked, so it will not be saved. Press Test again.");
+      }, function (e) {
+        var code = e && e.code ? String(e.code) : "upstream_error";
+        test.result = code === "approval_required" || code === "not_in_manifest" ? "needs_approval" : "failed";
+        test.error_code = code; entry.approval = test.result === "needs_approval" ? "denied" : "granted";
+        S.cnLine[cat] = test.result === "needs_approval" ? "Not allowed yet: press Test again and allow it when the page asks." : "The test did not work.";
+      });
+    }).then(function () { return cnSave(cat, Object.assign(entry, { test: test })); }).then(function () { delete S.cnBusy[cat]; cnRender(); });
+  }
+  function cnSkip(cat) { if (!db) return; cnSave(cat, { skip: true }).then(function () { S.cnLine[cat] = "Skipped. Say done in the chat to save it."; cnRender(); }); }
+  function cnRender() {
+    var box = $("connset"), rows = $("connrows"), head = $("connline"); if (!box || !rows) return;
+    if (!CN || !db) { box.hidden = true; rows.innerHTML = ""; return; }
+    // fix check N2: what this page's declaration lets it call (a publish refused naming a part has no test tools)
+    if (mcp && S.cnDeclared === undefined && typeof mcp.listTools === "function") {
+      S.cnDeclared = null;
+      mcp.listTools().then(function (r) { var m = {}; ((r && r.servers) || []).forEach(function (s) { m[s.server] = (s.tools || []).map(function (x) { return x.name; }); }); S.cnDeclared = m; cnRender(); }, function () { S.cnDeclared = {}; cnRender(); });
+    }
+    var canTest = function (c) { return !S.cnDeclared || (S.cnDeclared[c.display_name] || []).indexOf(c.test_tool) >= 0; };
+    var anyCand = false, anyTest = false;
+    Object.keys((S.cnSetup && S.cnSetup.jobs) || {}).forEach(function (k) { ((S.cnSetup.jobs[k] || {}).candidates || []).forEach(function (c) { anyCand = true; if (canTest(c)) anyTest = true; }); });
+    if (head) head.textContent = (CN.hub ? CN_ARTIFACT_LINE.replace("{page}", CN.hub) : "Publish the Hub once more from the chat, then test here.")
+      + (anyCand && !anyTest ? " " + CN_FROM_CHAT_LINE : "") + (CN.unconfirmed_line ? " " + CN.unconfirmed_line : "");
+    rows.innerHTML = Object.keys(CNK.words).map(function (c) {
+      var r = cnRow(c) || { category: c, state: "never_set" };
+      r.word = CNK.words[c]; r.enabled = CNK.enabled.indexOf(c) >= 0;
+      if (r.enabled && CN.hub && !r.here && r.state !== "never_set") r.approval_line = CN_NOT_ON_PAGE_LINE;
+      var job = S.cnSetup && S.cnSetup.jobs && S.cnSetup.jobs[r.category], cands = (job && job.candidates) || [];
+      var sub = S.cnLine[r.category] || r.line || r.approval_line || (r.display_name ? r.display_name : "Not set up.");
+      var acts = "";
+      if (r.enabled && mcp) {
+        // review SHOULD 8: the row names its current connector; another one is a change
+        acts = !CN.hub ? "" : cands.map(function (c, i) { if (!canTest(c)) return ""; var verb = !r.display_name || c.display_name === r.display_name ? "Test " : "Change to "; return '<button class="act" type="button" data-cn="test" data-cat="' + esc(r.category) + '" data-i="' + i + '"' + (S.cnBusy[r.category] ? " disabled" : "") + ">" + verb + esc(c.display_name) + "</button>"; }).join("")
+          + '<button class="act" type="button" data-cn="skip" data-cat="' + esc(r.category) + '">Skip</button>';
+      }
+      return '<div class="row"><div class="main"><div class="title">' + esc(r.word) + '</div><div class="sub">' + esc(sub) + "</div></div>"
+        + (acts ? '<div class="acts">' + acts + "</div>" : "") + "</div>";
+    }).join("") + (mcp && perms && typeof perms.manage === "function" ? '<div class="acts"><button class="act" type="button" data-cn="manage">Manage permissions</button></div>' : "");
+    box.hidden = false;
+  }
+  // Only on the owner's press of "Manage permissions" (the runtime contract:
+  // a button, never on load), through the page's one permissions handle.
+  function permissionsManage() {
+    if (perms && typeof perms.manage === "function") { try { var r = perms.manage(); if (r && r.then) r.then(null, function () {}); } catch (e) { /* the panel did not open */ } }
+  }
+  function onCnPress(ev) {
+    var b = ev.target.closest("button[data-cn]"); if (!b || b.disabled) return;
+    var what = b.getAttribute("data-cn"), cat = b.getAttribute("data-cat");
+    if (what === "manage") { permissionsManage(); return; }
+    var row = cnRow(cat); if (!row || !row.enabled) return;
+    if (what === "skip") { cnSkip(cat); return; }
+    var job = S.cnSetup && S.cnSetup.jobs && S.cnSetup.jobs[cat], cand = job && (job.candidates || [])[Number(b.getAttribute("data-i"))];
+    if (cand) cnTest(cat, cand);
+  }
+  (function () { var el = $("connset"); if (el && el.addEventListener) el.addEventListener("click", onCnPress); })();
   // The list, the filters and the lines around them. `keepPane` leaves the
   // reader alone (a live update must never wipe what the owner is typing).
   function renderInboxList(keepPane) {
@@ -16971,9 +17236,11 @@ var pwVoice = (function () {
       if (hd.longer === true) return null;
       // ...and switched on, the wall's own full names and addresses still count
       return { on: true, names: hd.names.concat(w.off_limits_names), whole: hd.whole, shown: hd.shown,
-               emails: hd.emails.concat(w.off_limits), max_words: Math.max(Number(hd.max_words) || 1, 6) };
+               emails: hd.emails.concat(w.off_limits), max_words: Math.max(Number(hd.max_words) || 1, 6),
+               // the review of SF04 (NIT 6): a list cut past its cap is no list for a subject, whatever it holds
+               cased: Array.isArray(hd.cased) && !(Number(hd.cased_cut) > 0) ? hd.cased : null };
     }
-    return { on: false, names: w.off_limits_names, whole: [], shown: [], emails: w.off_limits, max_words: 6 };
+    return { on: false, names: w.off_limits_names, whole: [], shown: [], emails: w.off_limits, max_words: 6, cased: [] };
   }
   // Review round 1 of the page's writing (must 2): whether any of `texts` names
   // someone on that list, read as the recorder reads them
@@ -16983,9 +17250,13 @@ var pwVoice = (function () {
   // `max_words` long is hashed the way `hub_live.digest` makes them. Answers a
   // promise of true, false, or null when it cannot tell (no list, nothing to
   // hash with, too much).
-  function pwNamed(vd, texts) {
+  // cr1#1882 item 1: `title` screens a draft's subject as the recorder does (`draft_hidden_reason`): a subject opens
+  // no sentence, so an ordinary-word last name written capitalised holds at any position (`hd.cased`, hashed); a
+  // list with no `cased` (an older feed) cannot screen a subject, and answers null
+  function pwNamed(vd, texts, title) {
     var hd = pwList(vd);
     if (!hd) return Promise.resolve(null);
+    if (title && !Array.isArray(hd.cased)) return Promise.resolve(null);
     if (typeof hashAll !== "function" || typeof normOf !== "function") return Promise.resolve(null);
     var raw = (texts || []).map(function (t) { return String(t == null ? "" : t); }).join(" | ");
     var mails = (raw.match(/[^\s<>()\[\]"',;:|]+@[^\s<>()\[\]"',;:|]+/g) || []).map(function (m) { return m.replace(/[.]+$/, "").toLowerCase(); });
@@ -17017,13 +17288,30 @@ var pwVoice = (function () {
       sets.forEach(function (wins) {
         wins.forEach(function (w) { if (has(hd.shown, w.v)) for (var k = w.at; k < w.at + w.n; k++) covered[k] = true; });
       });
-      return sets.some(function (wins) {
+      var named = sets.some(function (wins) {
         return wins.some(function (w) {
           for (var k = w.at; k < w.at + w.n; k++) if (covered[k]) return false;
           return has(hd.names, w.v);
         });
       });
+      if (named || !title || !hd.cased.length) return named;
+      // a title: a capitalised word (or one in capitals) that is a hidden ordinary-word last name, not inside a
+      // visible person's name, word for word with the first reading
+      // the review of SF04 (SHOULD 1): the capitals are read from the same fold the words are hashed from (normOf's NFKD,
+      // marks and format characters dropped), without its lower-casing, so a character NFKD splits into words ("½")
+      // and a mark inside the name cannot shift the words against each other
+      var fold = normOf(raw, true);
+      var orig = fold.replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" "), words0 = readings[0] || [];
+      var caps = orig.length === words0.length ? orig.map(function (o) { return /^\p{Lu}/u.test(o); }) : words0.map(function () { return true; });
+      return words0.some(function (w0, i) { return caps[i] && !covered[i] && has(hd.cased, w0); });
     }, function () { return null; });
+  }
+  // cr1#1882 item 1: a draft's subject in title mode, its body in prose mode; true when either names someone hidden,
+  // null when either cannot be told
+  function pwDraftNamed(vd, subject, body) {
+    return Promise.all([pwNamed(vd, [subject], true), pwNamed(vd, [body])]).then(function (r) {
+      return r[0] === true || r[1] === true ? true : (r[0] === null || r[1] === null ? null : false);
+    });
   }
   // Who it goes to (review round 1, must 1): every recipient a person on file,
   // read from People by their id (an address-only person is refused: the Update
@@ -17225,7 +17513,7 @@ var pwVoice = (function () {
               if (!subject || !body || chk.verdict === "fail") {
                 if (second) return pwFail(chk.findings.some(function (f) { return f.rule === "bracketed_blank"; }) ? "blank" : "check", { findings: chk.findings });
                 // fix check of #1812: a first draft that names someone off limits is never sent back
-                return pwNamed(vd, [subject, body]).then(function (nm) {
+                return pwDraftNamed(vd, subject, body).then(function (nm) {
                   if (nm === null) return pwFail("wall");
                   if (nm) return pwFail("named");
                   return turn(base + "\n\nYour last draft did not pass these checks. Rewrite it so it passes them:\n" + pwFixes(chk.findings) +
@@ -17234,7 +17522,7 @@ var pwVoice = (function () {
               }
               // review round 1 (must 2): what came out is held to the same list the Update
               // holds it to, so the page never calls ready a draft the Update refuses
-              return pwNamed(vd, [subject, body]).then(function (out) {
+              return pwDraftNamed(vd, subject, body).then(function (out) {
                 if (out === null) return pwFail("wall");
                 if (out) return pwFail("named");
                 // fix check at cd06be35b (should): with a caller's id too, who it goes to and its kind
@@ -17339,6 +17627,9 @@ var pwVoice = (function () {
       db.doc("feed/mail_rules").onSnapshot(function (snap) { S.mailrules = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); if (typeof toWallMoved === "function") toWallMoved(); }, onErr);
       // cr1#1765: the off-limits wall on its own, and what set-up asked of each live source
       db.doc("feed/wall").onSnapshot(function (snap) { S.wall = snap.exists ? snap.data() : null; liveWallMoved(); tlWallMoved(); renderInbox(); renderLiveSetup(); liveKick(); tlKick(); if (typeof toWallMoved === "function") toWallMoved(); }, onErr);
+      // cr1#1877: the Connectors panel's candidates (set-up's) and the page's own test results
+      db.doc("config/connector_setup").onSnapshot(function (snap) { S.cnSetup = snap.exists ? snap.data() : null; if (typeof cnRender === "function") cnRender(); }, onErr);
+      db.doc("config/connector_tests").onSnapshot(function (snap) { S.cnTests = snap.exists ? snap.data() : null; }, onErr);
       db.doc("config/live_sources").onSnapshot(function (snap) {
         var was = S.livesrcReady ? liveSrcState("calendar") : null;
         S.livesrc = snap.exists ? snap.data() : null; S.livesrcReady = true; renderLiveSetup();
